@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SHEPHERD-VITA: managed contract test of the Vita native shim (vita/runtime/tests/run-tests.sh). CoreCLR on the Mac, no packages. -->
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable><AllowUnsafeBlocks>true</AllowUnsafeBlocks><InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>ShepherdVita.Contract</RootNamespace></PropertyGroup>
+</Project>

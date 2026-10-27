@@ -1,0 +1,49 @@
+--- a/Box2D/Collision/Shapes/b2PolygonShape.h
++++ b/Box2D/Collision/Shapes/b2PolygonShape.h
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P5 (Unity 2022.3's polygon weld, physics Stage 4 step 4b), behind the runtime value
++// b2_unityPolygonWeldSq (b2PolygonShape.h); with it 0 this file behaves exactly as stock Box2D 2.3.1.
++// Listed in vita/physics/box2d/PATCHES.md (row P5). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
+ *
+@@ -21,6 +24,11 @@
+ 
+ #include <Box2D/Collision/Shapes/b2Shape.h>
+ 
++// Shepherd P5 (ALTERED): > 0: b2PolygonShape::Set welds a vertex whose squared distance to a vertex already kept is below this value
++// (Unity 2022.3: (0.5 b2_linearSlop)^2); 0: the stock comparison (squared distance < 0.5 b2_linearSlop). Set by the shim around
++// one Set call (shim/shepphys.cpp, SP_SHAPE_UNITY_WELD), 0 otherwise.
++extern float32 b2_unityPolygonWeldSq;
++
+ /// A convex polygon. It is assumed that the interior of the polygon is to
+ /// the left of each edge.
+ /// Polygons have a maximum number of vertices equal to b2_maxPolygonVertices.
+--- a/Box2D/Collision/Shapes/b2PolygonShape.cpp
++++ b/Box2D/Collision/Shapes/b2PolygonShape.cpp
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P5 (Unity 2022.3's polygon weld, physics Stage 4 step 4b), behind the runtime value
++// b2_unityPolygonWeldSq (b2PolygonShape.h); with it 0 this file behaves exactly as stock Box2D 2.3.1.
++// Listed in vita/physics/box2d/PATCHES.md (row P5). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
+ *
+@@ -18,6 +21,8 @@
+ 
+ #include <Box2D/Collision/Shapes/b2PolygonShape.h>
+ #include <new>
++
++float32 b2_unityPolygonWeldSq = 0.0f;   // Shepherd P5 (ALTERED): see b2PolygonShape.h
+ 
+ b2Shape* b2PolygonShape::Clone(b2BlockAllocator* allocator) const
+ {
+@@ -138,7 +143,8 @@
+ 		bool unique = true;
+ 		for (int32 j = 0; j < tempCount; ++j)
+ 		{
+-			if (b2DistanceSquared(v, ps[j]) < 0.5f * b2_linearSlop)
++			// Shepherd P5 (ALTERED): Unity 2022.3's weld when b2_unityPolygonWeldSq > 0, else the stock comparison (bit for bit)
++			if (b2_unityPolygonWeldSq > 0.0f ? b2DistanceSquared(v, ps[j]) < b2_unityPolygonWeldSq : b2DistanceSquared(v, ps[j]) < 0.5f * b2_linearSlop)
+ 			{
+ 				unique = false;
+ 				break;

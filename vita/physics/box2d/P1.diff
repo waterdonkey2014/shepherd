@@ -1,0 +1,227 @@
+--- a/Box2D/Dynamics/Contacts/b2Contact.h
++++ b/Box2D/Dynamics/Contacts/b2Contact.h
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
++// runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
++// stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
+ *
+@@ -20,6 +23,11 @@
+ #define B2_CONTACT_H
+ 
+ #include <Box2D/Common/b2Math.h>
++
++// Shepherd P1 (ALTERED): Unity's trigger rules, runtime flags; 0 = stock Box2D 2.3.1 (the default). The Shepherd shim sets them
++// around each b2World::Step from the world's own flags (shim/shepphys.cpp) and resets them to 0 after.
++extern int b2_unityTriggerPhase;      // 1: sensor touching is evaluated after the solve (b2ContactManager::UpdateTriggers)
++extern int b2_unityKinematicTriggers; // 1: a sensor pair needs one non-static body instead of one dynamic body
+ #include <Box2D/Collision/b2Collision.h>
+ #include <Box2D/Collision/Shapes/b2Shape.h>
+ #include <Box2D/Dynamics/b2Fixture.h>
+@@ -188,6 +196,7 @@
+ 	virtual ~b2Contact() {}
+ 
+ 	void Update(b2ContactListener* listener);
++	void UpdateSensor(b2ContactListener* listener);   // Shepherd P1: the sensor half of Update, on post-solve transforms
+ 
+ 	static b2ContactRegister s_registers[b2Shape::e_typeCount][b2Shape::e_typeCount];
+ 	static bool s_initialized;
+--- a/Box2D/Dynamics/Contacts/b2Contact.cpp
++++ b/Box2D/Dynamics/Contacts/b2Contact.cpp
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
++// runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
++// stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
+ *
+@@ -171,6 +174,10 @@
+ 	bool sensorA = m_fixtureA->IsSensor();
+ 	bool sensorB = m_fixtureB->IsSensor();
+ 	bool sensor = sensorA || sensorB;
++	if (sensor && b2_unityTriggerPhase)
++	{
++		return;   // Shepherd P1: sensor touching is updated in b2ContactManager::UpdateTriggers, after the solve
++	}
+ 
+ 	b2Body* bodyA = m_fixtureA->GetBody();
+ 	b2Body* bodyB = m_fixtureB->GetBody();
+@@ -245,3 +252,35 @@
+ 		listener->PreSolve(this, &oldManifold);
+ 	}
+ }
++
++// Shepherd P1: the runtime flags (0 = stock)
++int b2_unityTriggerPhase = 0;
++int b2_unityKinematicTriggers = 0;
++
++// Shepherd P1: the sensor half of b2Contact::Update, run by b2ContactManager::UpdateTriggers on post-solve transforms (Unity's
++// TriggerContactsFinalUpdate). The same overlap test and the same Begin / End rule as the stock sensor branch above.
++void b2Contact::UpdateSensor(b2ContactListener* listener)
++{
++	m_flags |= e_enabledFlag;
++	bool wasTouching = (m_flags & e_touchingFlag) == e_touchingFlag;
++	b2Body* bodyA = m_fixtureA->GetBody();
++	b2Body* bodyB = m_fixtureB->GetBody();
++	bool touching = b2TestOverlap(m_fixtureA->GetShape(), m_indexA, m_fixtureB->GetShape(), m_indexB, bodyA->GetTransform(), bodyB->GetTransform());
++	m_manifold.pointCount = 0;
++	if (touching)
++	{
++		m_flags |= e_touchingFlag;
++	}
++	else
++	{
++		m_flags &= ~e_touchingFlag;
++	}
++	if (wasTouching == false && touching == true && listener)
++	{
++		listener->BeginContact(this);
++	}
++	if (wasTouching == true && touching == false && listener)
++	{
++		listener->EndContact(this);
++	}
++}
+--- a/Box2D/Dynamics/b2ContactManager.h
++++ b/Box2D/Dynamics/b2ContactManager.h
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
++// runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
++// stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
+ *
+@@ -25,6 +28,7 @@
+ class b2ContactFilter;
+ class b2ContactListener;
+ class b2BlockAllocator;
++class b2Fixture;   // Shepherd P1: UnityShouldCollide
+ 
+ // Delegate of b2World.
+ class b2ContactManager
+@@ -40,6 +44,8 @@
+ 	void Destroy(b2Contact* c);
+ 
+ 	void Collide();
++	void UpdateTriggers();   // Shepherd P1: the final trigger pass (b2_unityTriggerPhase)
++	bool UnityShouldCollide(b2Fixture* fixtureA, b2Fixture* fixtureB);   // Shepherd P1: the pair's body rule (b2_unityKinematicTriggers)
+             
+ 	b2BroadPhase m_broadPhase;
+ 	b2Contact* m_contactList;
+--- a/Box2D/Dynamics/b2ContactManager.cpp
++++ b/Box2D/Dynamics/b2ContactManager.cpp
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
++// runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
++// stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
+ *
+@@ -21,7 +24,33 @@
+ #include <Box2D/Dynamics/b2Fixture.h>
+ #include <Box2D/Dynamics/b2WorldCallbacks.h>
+ #include <Box2D/Dynamics/Contacts/b2Contact.h>
++#include <Box2D/Dynamics/Joints/b2Joint.h>   // Shepherd P1: b2JointEdge
+ 
++// Shepherd P1: the body rule of a pair. Stock: b2Body::ShouldCollide (at least one dynamic body; joints' collideConnected).
++// With b2_unityKinematicTriggers a pair with a sensor needs one non-static body instead (Unity's kinematic triggers); joints'
++// collideConnected is kept. Solid pairs keep the stock rule either way.
++bool b2ContactManager::UnityShouldCollide(b2Fixture* fixtureA, b2Fixture* fixtureB)
++{
++	b2Body* bodyA = fixtureA->GetBody();
++	b2Body* bodyB = fixtureB->GetBody();
++	if (b2_unityKinematicTriggers && (fixtureA->IsSensor() || fixtureB->IsSensor()))
++	{
++		if (bodyA->GetType() == b2_staticBody && bodyB->GetType() == b2_staticBody)
++		{
++			return false;
++		}
++		for (b2JointEdge* jn = bodyB->GetJointList(); jn; jn = jn->next)
++		{
++			if (jn->other == bodyA && jn->joint->GetCollideConnected() == false)
++			{
++				return false;
++			}
++		}
++		return true;
++	}
++	return bodyB->ShouldCollide(bodyA);
++}
++
+ b2ContactFilter b2_defaultFilter;
+ b2ContactListener b2_defaultListener;
+ 
+@@ -118,8 +147,8 @@
+ 		// Is this contact flagged for filtering?
+ 		if (c->m_flags & b2Contact::e_filterFlag)
+ 		{
+-			// Should these bodies collide?
+-			if (bodyB->ShouldCollide(bodyA) == false)
++			// Should these bodies collide? (Shepherd P1: the Unity body rule when b2_unityKinematicTriggers is set)
++			if (UnityShouldCollide(fixtureA, fixtureB) == false)
+ 			{
+ 				b2Contact* cNuke = c;
+ 				c = cNuke->GetNext();
+@@ -223,8 +252,8 @@
+ 		edge = edge->next;
+ 	}
+ 
+-	// Does a joint override collision? Is at least one body dynamic?
+-	if (bodyB->ShouldCollide(bodyA) == false)
++	// Does a joint override collision? Is at least one body dynamic? (Shepherd P1: the Unity body rule when b2_unityKinematicTriggers is set)
++	if (UnityShouldCollide(fixtureA, fixtureB) == false)
+ 	{
+ 		return;
+ 	}
+@@ -294,3 +323,28 @@
+ 
+ 	++m_contactCount;
+ }
++
++// Shepherd P1: the final trigger pass (Unity's TriggerContactsFinalUpdate), called by b2World::Step after Solve / SolveTOI when
++// b2_unityTriggerPhase is set: after SynchronizeFixtures, so it sees post-step poses and the contacts FindNewContacts created at the end
++// of this step's solve. The same awake rule as Collide (a pair is updated when one body is awake and not static).
++void b2ContactManager::UpdateTriggers()
++{
++	for (b2Contact* c = m_contactList; c; c = c->GetNext())
++	{
++		b2Fixture* fixtureA = c->GetFixtureA();
++		b2Fixture* fixtureB = c->GetFixtureB();
++		if (fixtureA->IsSensor() == false && fixtureB->IsSensor() == false)
++		{
++			continue;
++		}
++		b2Body* bodyA = fixtureA->GetBody();
++		b2Body* bodyB = fixtureB->GetBody();
++		bool activeA = bodyA->IsAwake() && bodyA->GetType() != b2_staticBody;
++		bool activeB = bodyB->IsAwake() && bodyB->GetType() != b2_staticBody;
++		if (activeA == false && activeB == false)
++		{
++			continue;
++		}
++		c->UpdateSensor(m_contactListener);
++	}
++}
+--- a/Box2D/Dynamics/b2World.cpp
++++ b/Box2D/Dynamics/b2World.cpp
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
++// runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
++// stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2011 Erin Catto http://www.box2d.org
+ *
+@@ -947,6 +950,12 @@
+ 		m_profile.solveTOI = timer.GetMilliseconds();
+ 	}
+ 
++	// Shepherd P1: Unity's trigger pass after the solve (TriggerContactsFinalUpdate)
++	if (b2_unityTriggerPhase)
++	{
++		m_contactManager.UpdateTriggers();
++	}
++
+ 	if (step.dt > 0.0f)
+ 	{
+ 		m_inv_dt0 = step.inv_dt;

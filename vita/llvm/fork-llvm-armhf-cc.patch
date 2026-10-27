@@ -1,0 +1,347 @@
+--- a/src/mono/mono/mini/mini-llvm.c	2026-10-14 12:32:38
++++ b/src/mono/mono/mini/mini-llvm.c	2026-10-14 12:32:38
+@@ -205,6 +205,14 @@
+ 	gboolean has_catch;
+ 	int this_arg_pindex, rgctx_arg_pindex;
+ 	LLVMValueRef imt_rgctx_loc;
++#if defined(TARGET_ARM) && defined(ARM_FPU_VFP_HARD) && defined(TARGET_VITA)
++	/* SHEPHERD-VITA kit #5 (shp_armhf_callconv): this method's convention and its swifterror (r8) parameter */
++	int shp_cc;
++	gboolean shp_rgctx_se;          /* the rgctx parameter is the swifterror parameter */
++	gboolean shp_trailing_se;       /* a trailing swifterror parameter (no rgctx) */
++	LLVMValueRef shp_se_param;
++	LLVMValueRef shp_se_slot;       /* the swifterror alloca the C-convention calls pass (r8 in / clobbered) */
++#endif
+ 	GHashTable *llvm_types;
+ 	LLVMValueRef dbg_md;
+ 	MonoDebugMethodInfo *minfo;
+@@ -529,7 +537,137 @@
+ 	TRACE_FAILURE (reason);
+ 	ctx->cfg->exception_message = g_strdup (message);
+ 	ctx->cfg->disable_llvm = TRUE;
++}
++
++#if defined(TARGET_ARM) && defined(ARM_FPU_VFP_HARD) && defined(TARGET_VITA)
++/*
++ * SHEPHERD-VITA kit #5 (vita/notes/kit5-llvm.md; vita/notes/llvm-aot.md section 14, fix 1): float/double ARGUMENTS on armhf.
++ *
++ * The Mono calling convention of the bundled LLVM 16 (LLVMMono1CallConv, CC 21) lowers arguments as base AAPCS on ARM: floats and
++ * doubles go in core registers / on the stack. Mono's armhf ABI (mini-arm.c get_call_info: add_float) -- its own backend, the
++ * interpreter's entry trampolines (CallContext), gsharedvt, every other caller or callee -- passes them in s0-s15 / d0-d7 with
++ * back-filling, which is what LLVM's C convention does with -float-abi=hard (AAPCS-VFP). Returns agree in both conventions, and so
++ * do signatures without float arguments (core registers + stack, the same rules).
++ *
++ * CC 21 also differs from the C convention in r8 (MONO_ARCH_RGCTX_REG = MONO_ARCH_IMT_REG = ARMREG_V5): an "inreg" argument goes
++ * there, and a CC 21 CALL does not preserve r8 (static rgctx / ftnptr-arg / IMT trampolines load it on the way to the callee), while
++ * a C-convention call does. The C convention's swifterror argument is exactly r8 in and r8 clobbered (ARMCallingConv.td:
++ * CCIfSwiftError -> R8; CSR_AAPCS_SwiftError). So a managed signature that carries a float / double argument gets:
++ *   - the C convention, at its definition and at every call site;
++ *   - one swifterror argument: the rgctx / IMT argument when the method or call has one (where CC 21 has "inreg"), else a trailing
++ *     one (calls pass the function's swifterror alloca without a value; definitions ignore it). The definition loads its rgctx from it
++ *     at entry and stores undef into it (r8 is not preserved, as for CC 21's callers);
++ *   - refused (Mono's own backend compiles the method) when an argument is an HFA (pinvoke signatures only) or a float argument
++ *     would go past s15 (on the stack, or Mono's s16 for a double after 15 singles), where Mono's add_float and AAPCS-VFP part; or
++ *     when it is a pinvoke-flagged definition (a native-to-managed wrapper, called from C: plain C convention) with an rgctx.
++ *   Every other signature keeps CC 21, so its code is what it was.
++ * Checked off the device by vita/llvm/cc_alloc_test.py (with a leading swifterror parameter too): LLVM's C convention puts every
++ * argument where add_float / add_general do in every random signature whose float arguments Mono keeps in s0-s15 (thumbv7 and
++ * armv7), and the swifterror argument in r8; CC 21 in no signature that has a float argument.
++ * SHEPHERD_LLVM_ARMHF_CC=0 in the AOT compiler's environment = CC 21 everywhere (the kit #4 compiler's output, byte for byte);
++ * SHEPHERD_LLVM_ARMHF_CC_LOG=1 prints one "SHP-ARMHF-CC" line per C-convention definition / call and per refusal to stderr.
++ */
++#define SHP_ARMHF_CC 1
++static int shp_armhf_cc_mode = -1, shp_armhf_cc_log = -1;
++
++/* mini-llvm-cpp.cpp (SHEPHERD-VITA kit #5): AllocaInst::setSwiftError */
++void mono_llvm_shp_set_swifterror_alloca (LLVMValueRef alloca);
++
++static LLVMAttributeRef
++shp_swifterror_attr (EmitContext *ctx)
++{
++	return LLVMCreateEnumAttribute (LLVMGetModuleContext (ctx->lmodule), LLVMGetEnumAttributeKindForName ("swifterror", 10), 0);
++}
++
++static LLVMTypeRef
++shp_add_trailing_ptr (EmitContext *ctx, LLVMTypeRef ftype)
++{
++	int n = LLVMCountParamTypes (ftype);
++	LLVMTypeRef *p = g_newa (LLVMTypeRef, n + 1);
++	LLVMGetParamTypes (ftype, p);
++	p [n] = ctx->module->ptr_type;
++	return LLVMFunctionType (LLVMGetReturnType (ftype), p, n + 1, LLVMIsFunctionVarArg (ftype));
++}
++
++/*
++ * The convention of a managed signature at a definition ("def") or call site ("call"): LLVMMono1CallConv, LLVMCCallConv (then
++ * *swifterror = TRUE unless it is a pinvoke-flagged definition) or -1 (refuse LLVM for the method). has_extra_arg: the rgctx /
++ * IMT argument.
++ */
++static int
++shp_armhf_callconv (EmitContext *ctx, MonoMethodSignature *sig, LLVMCallInfo *linfo, gboolean has_extra_arg, const char *what, MonoMethod *callee, gboolean *swifterror)
++{
++	*swifterror = FALSE;
++	if (shp_armhf_cc_mode < 0) {
++		char *v = g_getenv ("SHEPHERD_LLVM_ARMHF_CC");
++		char *l = g_getenv ("SHEPHERD_LLVM_ARMHF_CC_LOG");
++		shp_armhf_cc_mode = (v && !strcmp (v, "0")) ? 0 : 1;
++		shp_armhf_cc_log = (l && strcmp (l, "0")) ? 1 : 0;
++		g_free (v);
++		g_free (l);
++	}
++	if (!shp_armhf_cc_mode)
++		return LLVMMono1CallConv;
++
++	const char *why = NULL;
++	gboolean has_fp = FALSE;
++	guint fpr = 0;
++	gint spare = -1;
++	for (int i = sig->hasthis; i < sig->hasthis + sig->param_count; ++i) {
++		LLVMArgInfo *ainfo = &linfo->args [i];
++		if (ainfo->storage == LLVMArgAsFpArgs) {
++			has_fp = TRUE;
++			why = "armhf: HFA argument (kit5 float-argument ABI)";
++			break;
++		}
++		if (ainfo->storage != LLVMArgNormal || !ainfo->type || m_type_is_byref (ainfo->type))
++			continue;
++		MonoType *t = mini_get_underlying_type (ainfo->type);
++		if (t->type != MONO_TYPE_R4 && t->type != MONO_TYPE_R8)
++			continue;
++		has_fp = TRUE;
++		/* mini-arm.c add_float, register part */
++		if (t->type == MONO_TYPE_R8) {
++			if (fpr >= 16) {
++				why = "armhf: double argument on the stack (kit5 float-argument ABI)";
++				break;
++			}
++			if (fpr % 2) {
++				spare = fpr;
++				fpr ++;
++			}
++			if (fpr + 2 > 16) {
++				why = "armhf: double argument past d7 (kit5 float-argument ABI)";
++				break;
++			}
++			fpr += 2;
++		} else if (spare >= 0) {
++			spare = -1;
++		} else if (fpr < 16) {
++			fpr ++;
++		} else {
++			why = "armhf: float argument on the stack (kit5 float-argument ABI)";
++			break;
++		}
++	}
++	if (!has_fp)
++		return LLVMMono1CallConv;
++	if (!why) {
++		if (!sig->pinvoke)
++			*swifterror = TRUE;
++		else if (has_extra_arg)
++			why = "armhf: pinvoke-flagged float-argument definition with an rgctx (kit5 float-argument ABI)";
++	}
++	if (shp_armhf_cc_log) {
++		char *m = mono_method_full_name (ctx->cfg->method, TRUE);
++		char *c = callee ? mono_method_full_name (callee, TRUE) : mono_signature_get_desc (sig, FALSE);
++		fprintf (stderr, "SHP-ARMHF-CC %s %s | %s | %s%s%s\n", why ? "refuse" : *swifterror ? (has_extra_arg ? "c-r8" : "c-se") : "c", what, m, c, why ? " | " : "", why ? why : "");
++		g_free (m);
++		g_free (c);
++	}
++	return why ? -1 : LLVMCCallConv;
+ }
++#endif
+ 
+ static LLVMValueRef
+ const_int1 (int v)
+@@ -3881,6 +4019,15 @@
+ 	ctx->builder = builder;
+ 
+ 	ctx->alloca_builder = create_builder (ctx);
++#ifdef SHP_ARMHF_CC
++	if (ctx->shp_se_param) {
++		/* a swifterror parameter may only be loaded / stored: the rgctx is its value at entry (r8); undef after that, so r8 is
++		 * not kept alive to be handed back (CC 21's callers do not expect r8 preserved either) */
++		if (ctx->shp_rgctx_se)
++			ctx->rgctx_arg = LLVMBuildLoad2 (builder, ctx->module->ptr_type, ctx->shp_se_param, "rgctx_r8");
++		LLVMBuildStore (builder, LLVMGetUndef (ctx->module->ptr_type), ctx->shp_se_param);
++	}
++#endif
+ 
+ #ifdef TARGET_WASM
+ 	/*
+@@ -4414,6 +4561,30 @@
+ 		cinfo->imt_arg = TRUE;
+ 	if (!call->rgctx_arg_reg && call->method && needs_extra_arg (ctx, call->method))
+ 		cinfo->dummy_arg = TRUE;
++#ifdef SHP_ARMHF_CC
++	int shp_cc = LLVMMono1CallConv;
++	gboolean shp_se = FALSE;
++	if (!sig->pinvoke && !cfg->llvm_only) {
++		shp_cc = shp_armhf_callconv (ctx, sig, cinfo, call->rgctx_arg_reg || call->imt_arg_reg, "call", call->method, &shp_se);
++		if (shp_cc < 0) {
++			set_failure (ctx, "armhf: call with a float-argument signature this LLVM cannot pass like Mono (kit5)");
++			return;
++		}
++		/* inside a protected region the call becomes an invoke (emit_call), and LLVM 16 loses the invoke's end EH label when it
++		 * carries a swifterror argument (SelectionDAGBuilder::LowerCallTo re-roots the DAG on the swifterror copy, chained to the call
++		 * instead of the label): llc then fails writing the Mono EH table ("Cannot represent a difference across sections").
++		 * Without swifterror the call would trust r8 to survive, which the trampolines on the way may not grant: refuse instead. */
++		if (shp_se && get_handler_clause (cfg, bb) != -1) {
++			if (shp_armhf_cc_log) {
++				char *m = mono_method_full_name (cfg->method, TRUE);
++				fprintf (stderr, "SHP-ARMHF-CC refuse call-invoke | %s | a float-argument call inside a protected region\n", m);
++				g_free (m);
++			}
++			set_failure (ctx, "armhf: float-argument call inside a protected region (kit5)");
++			return;
++		}
++	}
++#endif
+ 
+ 	vretaddr = (cinfo->ret.storage == LLVMArgVtypeRetAddr || cinfo->ret.storage == LLVMArgVtypeByRef || cinfo->ret.storage == LLVMArgGsharedvtFixed || cinfo->ret.storage == LLVMArgGsharedvtVariable || cinfo->ret.storage == LLVMArgGsharedvtFixedVtype);
+ 
+@@ -4421,6 +4592,19 @@
+ 	llvm_sig = sig_to_llvm_sig_full (ctx, sig, cinfo, &param_etypes);
+ 	if (!ctx_ok (ctx))
+ 		return;
++#ifdef SHP_ARMHF_CC
++	int shp_se_pindex = -1;
++	if (shp_se) {
++		if (call->imt_arg_reg)
++			shp_se_pindex = cinfo->imt_arg_pindex;
++		else if (call->rgctx_arg_reg)
++			shp_se_pindex = cinfo->rgctx_arg_pindex;
++		else {
++			shp_se_pindex = LLVMCountParamTypes (llvm_sig);
++			llvm_sig = shp_add_trailing_ptr (ctx, llvm_sig);
++		}
++	}
++#endif
+ 
+ 	int const opcode = ins->opcode;
+ 
+@@ -4591,6 +4775,18 @@
+ 		args [cinfo->imt_arg_pindex] = convert (ctx, values [call->imt_arg_reg], ctx->module->ptr_type);
+ #endif
+ 	}
++#ifdef SHP_ARMHF_CC
++	if (shp_se) {
++		/* r8: the rgctx / IMT value, or nothing (a trailing argument), through the function's one swifterror alloca */
++		if (!ctx->shp_se_slot) {
++			ctx->shp_se_slot = build_alloca_llvm_type_name (ctx, ctx->module->ptr_type, TARGET_SIZEOF_VOID_P, "shp_r8");
++			mono_llvm_shp_set_swifterror_alloca (ctx->shp_se_slot);
++		}
++		if (call->imt_arg_reg || call->rgctx_arg_reg)
++			LLVMBuildStore (builder, convert (ctx, args [shp_se_pindex], ctx->module->ptr_type), ctx->shp_se_slot);
++		args [shp_se_pindex] = ctx->shp_se_slot;
++	}
++#endif
+ 	switch (cinfo->ret.storage) {
+ 	case LLVMArgGsharedvtVariable: {
+ 		MonoInst *var = get_vreg_to_inst (cfg, call->inst.dreg);
+@@ -4754,14 +4950,26 @@
+ 	/* The two can't be used together, so use only one LLVM calling conv to pass them */
+ 	g_assert (!(call->rgctx_arg_reg && call->imt_arg_reg));
+ 	if (!sig->pinvoke && !cfg->llvm_only)
++#ifdef SHP_ARMHF_CC
++		LLVMSetInstructionCallConv (lcall, shp_cc);
++#else
+ 		LLVMSetInstructionCallConv (lcall, LLVMMono1CallConv);
++#endif
+ 
+ 	if (cinfo->ret.storage == LLVMArgVtypeByRef)
+ 		mono_llvm_add_instr_attr_with_type (lcall, 1 + cinfo->vret_arg_pindex, LLVM_ATTR_STRUCT_RET, type_to_llvm_type (ctx, sig->ret));
++#ifdef SHP_ARMHF_CC
++	if (shp_se) {
++		LLVMAddCallSiteAttribute (lcall, 1 + shp_se_pindex, shp_swifterror_attr (ctx));
++	} else {
++#endif
+ 	if (!ctx->llvm_only && call->rgctx_arg_reg)
+ 		mono_llvm_add_instr_attr (lcall, 1 + cinfo->rgctx_arg_pindex, LLVM_ATTR_IN_REG);
+ 	if (call->imt_arg_reg)
+ 		mono_llvm_add_instr_attr (lcall, 1 + cinfo->imt_arg_pindex, LLVM_ATTR_IN_REG);
++#ifdef SHP_ARMHF_CC
++	}
++#endif
+ 
+ 	/* Add byval attributes if needed */
+ 	for (guint16 i = 0; i < sig->param_count; ++i) {
+@@ -12491,9 +12699,29 @@
+ 	else if (needs_extra_arg (ctx, cfg->method))
+ 		linfo->dummy_arg = TRUE;
+ 
++#ifdef SHP_ARMHF_CC
++	ctx->shp_cc = LLVMMono1CallConv;
++	if (!cfg->llvm_only) {
++		gboolean shp_se = FALSE;
++		ctx->shp_cc = shp_armhf_callconv (ctx, sig, linfo, linfo->rgctx_arg, "def", NULL, &shp_se);
++		if (ctx->shp_cc < 0) {
++			set_failure (ctx, "armhf: float-argument signature this LLVM cannot pass like Mono (kit5)");
++			return;
++		}
++		ctx->shp_rgctx_se = shp_se && linfo->rgctx_arg;
++		ctx->shp_trailing_se = shp_se && !linfo->rgctx_arg;
++	}
++#endif
+ 	ctx->method_type = method_type = sig_to_llvm_sig_full (ctx, sig, linfo, &ctx->param_etypes);
+ 	if (!ctx_ok (ctx))
+ 		return;
++#ifdef SHP_ARMHF_CC
++	int shp_trailing_pindex = -1;
++	if (ctx->shp_trailing_se) {
++		shp_trailing_pindex = LLVMCountParamTypes (method_type);
++		ctx->method_type = method_type = shp_add_trailing_ptr (ctx, method_type);
++	}
++#endif
+ 
+ 	method = LLVMAddFunction (lmodule, ctx->method_name, method_type);
+ 	ctx->lmethod = method;
+@@ -12506,8 +12734,18 @@
+ 		LLVMAddTargetDependentFunctionAttr (method, "target-features", "+exception-handling");
+ 	}
+ 
++#ifdef SHP_ARMHF_CC
+ 	if (!cfg->llvm_only)
++		LLVMSetFunctionCallConv (method, ctx->shp_cc);
++	if (ctx->shp_trailing_se) {
++		ctx->shp_se_param = LLVMGetParam (method, shp_trailing_pindex);
++		LLVMAddAttributeAtIndex (method, 1 + shp_trailing_pindex, shp_swifterror_attr (ctx));   /* made undef at entry: emit_entry_bb */
++		LLVMSetValueName (ctx->shp_se_param, "shp_r8");
++	}
++#else
++	if (!cfg->llvm_only)
+ 		LLVMSetFunctionCallConv (method, LLVMMono1CallConv);
++#endif
+ 
+ 	/* if the method doesn't contain
+ 	 *  (1) a call (so it's a leaf method)
+@@ -12625,6 +12863,12 @@
+ 		 * MONO_ARCH_RGCTX_REG in the Mono calling convention in llvm, i.e.
+ 		 * CC_X86_64_Mono in X86CallingConv.td.
+ 		 */
++#ifdef SHP_ARMHF_CC
++		if (ctx->shp_rgctx_se) {
++			ctx->shp_se_param = ctx->rgctx_arg;   /* loaded at entry (emit_entry_bb): the rgctx arrives in r8 */
++			LLVMAddAttributeAtIndex (method, 1 + linfo->rgctx_arg_pindex, shp_swifterror_attr (ctx));
++		} else
++#endif
+ 		if (!ctx->llvm_only)
+ 			mono_llvm_add_param_attr (ctx->rgctx_arg, LLVM_ATTR_IN_REG);
+ 		LLVMSetValueName (ctx->rgctx_arg, "rgctx");
+--- a/src/mono/mono/mini/mini-llvm-cpp.cpp	2026-10-14 12:32:38
++++ b/src/mono/mono/mini/mini-llvm-cpp.cpp	2026-10-14 12:32:38
+@@ -111,6 +111,14 @@
+ 		? b->Insert (new AllocaInst (ty, 0, sz, to_align (alignment)), Name)
+ 		: b->CreateAlloca (ty, 0, sz, Name);
+ 	return wrap (ins);
++}
++
++/* SHEPHERD-VITA kit #5 (mini-llvm.c shp_armhf_callconv): the alloca that passes r8 (an rgctx / IMT argument, or nothing) at the
++ * C-convention calls of float-argument signatures */
++extern "C" void
++mono_llvm_shp_set_swifterror_alloca (LLVMValueRef alloca)
++{
++	cast<AllocaInst> (unwrap (alloca))->setSwiftError (true);
+ }
+ 
+ LLVMValueRef

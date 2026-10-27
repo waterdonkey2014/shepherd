@@ -1,0 +1,2587 @@
+diff --git a/eng/native/configureplatform.cmake b/eng/native/configureplatform.cmake
+index e6e0273bc..e9dca5162 100644
+--- a/eng/native/configureplatform.cmake
++++ b/eng/native/configureplatform.cmake
+@@ -11,6 +11,15 @@ set(PRERELEASE 0)
+ #----------------------------------------
+ set(CLR_CMAKE_HOST_OS ${CMAKE_SYSTEM_NAME})
+ string(TOLOWER ${CLR_CMAKE_HOST_OS} CLR_CMAKE_HOST_OS)
++# SHEPHERD-VITA: the vitasdk toolchain reports CMAKE_SYSTEM_NAME=Generic and sets VITA=True.
++if(CLR_CMAKE_HOST_OS STREQUAL generic AND VITA)
++    set(CLR_CMAKE_HOST_OS vita)
++endif()
++if(CLR_CMAKE_HOST_OS STREQUAL vita)
++    set(CLR_CMAKE_HOST_UNIX 1)
++    set(CLR_CMAKE_HOST_VITA 1)
++    set(CLR_CMAKE_HOST_UNIX_ARM 1)
++endif()
+ if(CLR_CMAKE_HOST_OS STREQUAL linux)
+     set(CLR_CMAKE_HOST_UNIX 1)
+     if(CLR_CROSS_COMPONENTS_BUILD)
+@@ -416,6 +425,11 @@ if(CLR_CMAKE_TARGET_OS STREQUAL sunos)
+     set(CLR_CMAKE_TARGET_SUNOS 1)
+ endif(CLR_CMAKE_TARGET_OS STREQUAL sunos)
+ 
++if(CLR_CMAKE_TARGET_OS STREQUAL vita)
++    set(CLR_CMAKE_TARGET_UNIX 1)
++    set(CLR_CMAKE_TARGET_VITA 1)
++endif(CLR_CMAKE_TARGET_OS STREQUAL vita)
++
+ if(CLR_CMAKE_TARGET_OS STREQUAL haiku)
+     set(CLR_CMAKE_TARGET_UNIX 1)
+     set(CLR_CMAKE_TARGET_HAIKU 1)
+@@ -480,13 +494,15 @@ endif()
+ 
+ if(NOT CLR_CMAKE_TARGET_BROWSER AND NOT CLR_CMAKE_TARGET_WASI)
+     # The default linker on Solaris also does not support PIE.
+-    if(NOT CLR_CMAKE_TARGET_ANDROID AND NOT CLR_CMAKE_TARGET_SUNOS AND NOT CLR_CMAKE_TARGET_APPLE AND NOT MSVC)
++    if(NOT CLR_CMAKE_TARGET_ANDROID AND NOT CLR_CMAKE_TARGET_SUNOS AND NOT CLR_CMAKE_TARGET_APPLE AND NOT CLR_CMAKE_TARGET_VITA AND NOT MSVC)
+         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -pie")
+         add_compile_options($<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,EXECUTABLE>:-fPIE>)
+         add_compile_options($<$<STREQUAL:$<TARGET_PROPERTY:TYPE>,SHARED_LIBRARY>:-fPIC>)
+     endif()
+ 
+-    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
++    if(NOT CLR_CMAKE_TARGET_VITA)
++        set(CMAKE_POSITION_INDEPENDENT_CODE ON)
++    endif()
+ endif()
+ 
+ string(TOLOWER "${CMAKE_BUILD_TYPE}" LOWERCASE_CMAKE_BUILD_TYPE)
+diff --git a/src/mono/CMakeLists.txt b/src/mono/CMakeLists.txt
+index b1fa4eaca..a415555e8 100644
+--- a/src/mono/CMakeLists.txt
++++ b/src/mono/CMakeLists.txt
+@@ -99,7 +99,10 @@ add_definitions(-DHAVE_CONFIG_H)
+ 
+ if(GCC)
+   add_definitions(-g)  # TODO: should this really be on by default?
+-  add_definitions(-fPIC)
++  if(NOT VITA)
++    # SHEPHERD-VITA: vita-elf-create rejects GOT relocations (R_ARM_BASE_PREL/GOT_BREL); Vita code is non-PIC
++    add_definitions(-fPIC)
++  endif()
+   add_definitions(-fvisibility=hidden)
+   set(USE_GCC_ATOMIC_OPS 1)
+ endif()
+@@ -165,6 +168,13 @@ if(NOT AOT_TARGET_TRIPLE STREQUAL "")
+   elseif(AOT_TARGET_TRIPLE STREQUAL "armv7-none-linux-androideabi")
+     set(TARGET_SYSTEM_NAME "android")
+     set(TARGET_ARCH "arm")
++  elseif(AOT_TARGET_TRIPLE STREQUAL "armv7-vita-eabihf")
++    # SHEPHERD-VITA: PS Vita (Cortex-A9, armv7-a, VFPv3/NEON, AAPCS-VFP hard-float, newlib, static ELF)
++    set(TARGET_SYSTEM_NAME "vita")
++    set(TARGET_ARCH "arm")
++    if(NOT MONO_ARM_FPU)
++      set(MONO_ARM_FPU "vfp-hard")
++    endif()
+   elseif(AOT_TARGET_TRIPLE STREQUAL "aarch64-linux-gnu")
+     set(TARGET_SYSTEM_NAME "linux")
+     set(TARGET_ARCH "arm64")
+@@ -185,6 +195,10 @@ message ("CMAKE_SYSTEM_VARIANT=${CMAKE_SYSTEM_VARIANT}")
+ 
+ set(CLR_CMAKE_HOST_OS ${CMAKE_SYSTEM_NAME})
+ string(TOLOWER ${CLR_CMAKE_HOST_OS} CLR_CMAKE_HOST_OS)
++# SHEPHERD-VITA: the vitasdk toolchain reports CMAKE_SYSTEM_NAME=Generic and sets VITA=True.
++if(CLR_CMAKE_HOST_OS STREQUAL "generic" AND VITA)
++  set(CLR_CMAKE_HOST_OS "vita")
++endif()
+ 
+ # TODO: check if we can enable this on more platforms
+ # set(MONO_KEYWORD_THREAD "__thread")
+@@ -290,6 +304,21 @@ elseif(CLR_CMAKE_HOST_OS STREQUAL "windows")
+     # the combination of /Zi compiler flag and /DEBUG /OPT:REF /OPT:ICF
+     # linker flags is needed to create .pdb output on release builds
+   endif()
++elseif(CLR_CMAKE_HOST_OS STREQUAL "vita")
++  # SHEPHERD-VITA: newlib + pthread-embedded, no signals, no mmap, no dlopen, static only.
++  set(HOST_VITA 1)
++  set(HOST_NO_SYMLINKS 1)
++  add_definitions(-DHOST_VITA -D_GNU_SOURCE -D_THREAD_SAFE)
++  set(DISABLE_EXECUTABLES 1)
++  set(DISABLE_SHARED_LIBS 1)
++  set(STATIC_COMPONENTS 1)
++  set(INTERNAL_ZLIB 1)
++  # no AF_UNIX/TCP diagnostics server, no EventPipe on the Vita (same as WASI)
++  add_definitions(-DDISABLE_EVENTPIPE -DDISABLE_SOCKET_TRANSPORT -DDISABLE_EGD_SOCKET)
++  set(ENABLE_PERFTRACING 0)
++  if(NOT MONO_ARM_FPU)
++    set(MONO_ARM_FPU "vfp-hard")
++  endif()
+ elseif(CLR_CMAKE_HOST_OS STREQUAL "sunos")
+   set(HOST_SOLARIS 1)
+   add_definitions(-DGC_SOLARIS_THREADS -DGC_SOLARIS_PTHREADS -D_REENTRANT -D_POSIX_PTHREAD_SEMANTICS -DUSE_MMAP -DUSE_MUNMAP -DHOST_SOLARIS -D__EXTENSIONS__ -D_XPG4_2)
+@@ -353,6 +382,9 @@ elseif(TARGET_SYSTEM_NAME STREQUAL "wasi")
+ elseif(TARGET_SYSTEM_NAME STREQUAL "windows")
+   set(TARGET_WIN32 1)
+   set(TARGET_WINDOWS 1)
++elseif(TARGET_SYSTEM_NAME STREQUAL "vita")
++  set(TARGET_UNIX 1)
++  set(TARGET_VITA 1)
+ elseif(TARGET_SYSTEM_NAME STREQUAL "sunos")
+   set(TARGET_UNIX 1)
+   set(TARGET_SOLARIS 1)
+@@ -470,6 +502,9 @@ elseif(TARGET_ARCH MATCHES "arm")
+   set(HAVE_ARMV5 1)
+   set(HAVE_ARMV6 1)
+   #set(HAVE_ARMV7 1) # TODO: figure out if we should set this
++  if(TARGET_VITA)
++    set(HAVE_ARMV7 1)
++  endif()
+ elseif(TARGET_ARCH STREQUAL "riscv64")
+   set(TARGET_RISCV 1)
+   set(TARGET_RISCV64 1)
+@@ -773,6 +808,9 @@ elseif(HOST_WIN32)
+ elseif(HOST_SOLARIS)
+   set(ICU_FLAGS "-DPALEXPORT=\"\" -DTARGET_UNIX -Wno-reserved-id-macro -Wno-documentation -Wno-documentation-unknown-command -Wno-switch-enum -Wno-covered-switch-default -Wno-extra-semi-stmt -Wno-unknown-warning-option")
+   set(HAVE_SYS_ICU 1)
++elseif(HOST_VITA)
++  # SHEPHERD-VITA: no ICU on the Vita; the BCL runs with InvariantGlobalization=true.
++  add_definitions(-DNO_GLOBALIZATION_SHIM)
+ elseif(TARGET_FREEBSD)
+   set(ICU_FLAGS "-DTARGET_UNIX -Wno-deprecated-declarations")
+   set(HAVE_SYS_ICU 1)
+diff --git a/src/mono/cmake/config.h.in b/src/mono/cmake/config.h.in
+index 70de81d18..89c6778e0 100644
+--- a/src/mono/cmake/config.h.in
++++ b/src/mono/cmake/config.h.in
+@@ -99,6 +99,12 @@
+ /* Target Platform is Linux */
+ #cmakedefine TARGET_LINUX 1
+ 
++/* SHEPHERD-VITA: PS Vita (vitasdk, newlib) */
++#cmakedefine HOST_VITA 1
++
++/* SHEPHERD-VITA: PS Vita AOT/runtime target */
++#cmakedefine TARGET_VITA 1
++
+ /* Target Platform is Linux (bionic libc)*/
+ #cmakedefine TARGET_LINUX_BIONIC 1
+ 
+diff --git a/src/mono/cmake/configure.cmake b/src/mono/cmake/configure.cmake
+index 013783129..64dc4ee9c 100644
+--- a/src/mono/cmake/configure.cmake
++++ b/src/mono/cmake/configure.cmake
+@@ -99,6 +99,11 @@ endif()
+ 
+ check_include_files("sys/types.h;sys/user.h" HAVE_SYS_USER_H)
+ 
++if(HOST_VITA)
++  # SHEPHERD-VITA: vitasdk's pthread-embedded semaphore.h uses mode_t without including sys/types.h
++  check_include_files("sys/types.h;semaphore.h" HAVE_SEMAPHORE_H)
++endif()
++
+ if(HOST_IOS OR HOST_TVOS OR HOST_MACCAT)
+   # getentropy isn't allowed in the AppStore: https://github.com/rust-lang/rust/issues/102643
+   set(HAVE_GETENTROPY 0)
+@@ -148,7 +153,8 @@ check_type_size("long" SIZEOF_LONG)
+ check_type_size("long long" SIZEOF_LONG_LONG)
+ check_type_size("size_t" SIZEOF_SIZE_T)
+ 
+-if (HOST_LINUX)
++if (HOST_LINUX OR HOST_VITA)
++  # SHEPHERD-VITA: the vita build compiles with -D_GNU_SOURCE (newlib then declares the GNU strerror_r)
+   set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+ endif()
+ 
+@@ -166,7 +172,7 @@ check_c_source_compiles(
+   "
+   HAVE_GNU_STRERROR_R)
+ 
+-if (HOST_LINUX OR HOST_ANDROID)
++if (HOST_LINUX OR HOST_ANDROID OR HOST_VITA)
+   set(CMAKE_REQUIRED_DEFINITIONS)
+ endif()
+ 
+@@ -300,4 +306,32 @@ elseif(HOST_WASI)
+   set(HAVE_MMAP 1)
+   set(DISABLE_PROFILER 1)
+   set(ENABLE_INTERP_LIB 1)
++elseif(HOST_VITA)
++  # SHEPHERD-VITA: newlib/pthread-embedded on the PS Vita. These link (newlib ships stubs) but do not work:
++  # no processes, no signals delivered between threads (pthread_kill -> EINVAL), no rusage/auxv/syslog.
++  # Forcing them off makes the dead code paths compile out instead of failing at run time.
++  set(HAVE_KILL 0)
++  set(HAVE_PTHREAD_KILL 0)
++  set(HAVE_SIGACTION 0)
++  set(HAVE_FORK 0)
++  set(HAVE_EXECV 0)
++  set(HAVE_EXECVE 0)
++  set(HAVE_EXECVP 0)
++  set(HAVE_SYSTEM 0)
++  set(HAVE_SETPGID 0)
++  set(HAVE_GETRUSAGE 0)
++  set(HAVE_GETAUXVAL 0)
++  set(HAVE_GETRLIMIT 0)
++  set(HAVE_WAITPID 0)
++  set(HAVE_MMAP 0)
++  set(HAVE_SYS_MMAN_H 0)
++  set(HAVE_DLADDR 0)
++  set(HAVE_BACKTRACE_SYMBOLS 0)
++  set(HAVE_GETPEERNAME 0)
++  set(HAVE_SYS_UTSNAME_H 0)
++  set(HAVE_SYS_SYSCTL_H 0)
++  set(HAVE_SYS_USER_H 0)
++  set(HAVE_SYS_ICU 0)
++  # dlfcn.h exists but there is no dynamic loader: mono-dl-vita.c resolves symbols from a static table
++  set(HAVE_DLFCN_H 0)
+ endif()
+diff --git a/src/mono/mono/metadata/class-init.c b/src/mono/mono/metadata/class-init.c
+index 995406e86..583751c1b 100644
+--- a/src/mono/mono/metadata/class-init.c
++++ b/src/mono/mono/metadata/class-init.c
+@@ -4199,7 +4199,7 @@ mono_class_create_array_fill_type (void)
+ 	aklass.klass.class_kind = MONO_CLASS_GC_FILLER;
+ 	aklass.klass.element_class = mono_defaults.int64_class;
+ 	aklass.klass.rank = 1;
+-	aklass.klass.instance_size = MONO_SIZEOF_MONO_ARRAY;
++	aklass.klass.instance_size = MONO_SIZEOF_MONO_ARRAY_HOST;
+ 	aklass.klass.sizes.element_size = 8;
+ 	aklass.klass.size_inited = 1;
+ 	aklass.klass.name = "array_filler_type";
+diff --git a/src/mono/mono/metadata/icall.c b/src/mono/mono/metadata/icall.c
+index 6ba9978b1..b9eb1e49f 100644
+--- a/src/mono/mono/metadata/icall.c
++++ b/src/mono/mono/metadata/icall.c
+@@ -80,6 +80,9 @@
+ #include <mono/utils/mono-proclib.h>
+ #include <mono/utils/mono-string.h>
+ #include <mono/utils/mono-error-internals.h>
++#ifdef HOST_VITA
++#include <mono/utils/mono-vita.h>
++#endif
+ #include <mono/utils/mono-mmap.h>
+ #include <mono/utils/mono-digest.h>
+ #include <mono/utils/bsearch.h>
+@@ -7363,7 +7366,12 @@ ves_icall_System_GC_RemovePressure (guint64 value)
+ MonoBoolean
+ ves_icall_System_Threading_Thread_YieldInternal (void)
+ {
++#ifdef HOST_VITA
++	/* SHEPHERD-VITA: back-to-back managed yields back off (utils/mono-vita-yield.c) */
++	mono_vita_managed_yield ();
++#else
+ 	mono_threads_platform_yield ();
++#endif
+ 	return TRUE;
+ }
+ 
+diff --git a/src/mono/mono/metadata/monitor.c b/src/mono/mono/metadata/monitor.c
+index 14e3d3112..aaddb1e45 100644
+--- a/src/mono/mono/metadata/monitor.c
++++ b/src/mono/mono/metadata/monitor.c
+@@ -378,7 +378,7 @@ mon_new (gsize id)
+ 		if (!monitor_freelist) {
+ 			MonitorArray *last;
+ 			LOCK_DEBUG (g_message ("%s: allocating more monitors: %d", __func__, array_size));
+-			marray = (MonitorArray *)g_malloc0 (MONO_SIZEOF_MONO_ARRAY + array_size * sizeof (MonoThreadsSync));
++			marray = (MonitorArray *)g_malloc0 (MONO_SIZEOF_MONO_ARRAY_HOST + array_size * sizeof (MonoThreadsSync));
+ 			marray->num_monitors = array_size;
+ 			array_size *= 2;
+ 			/* link into the freelist */
+diff --git a/src/mono/mono/metadata/object-internals.h b/src/mono/mono/metadata/object-internals.h
+index 1909411c7..7bb0f7c21 100644
+--- a/src/mono/mono/metadata/object-internals.h
++++ b/src/mono/mono/metadata/object-internals.h
+@@ -180,6 +180,11 @@ MONO_DEFINE_SPAN_OF_T (MonoSpanOfObjects, MonoObject*)
+ MONO_DEFINE_SPAN_OF_T (MonoSpanOfVoid, void)
+ 
+ #define MONO_SIZEOF_MONO_ARRAY (MONO_STRUCT_OFFSET_CONSTANT (MonoArray, vector))
++/* SHEPHERD-VITA: header size of arrays/strings in the memory of the process that allocates them.
++ * Identical to MONO_SIZEOF_MONO_ARRAY/STRING except in a cross compiler whose target pointer size differs
++ * from the host's (armv7 target, arm64 host): there the host GC must size host objects with the host layout,
++ * otherwise host-allocated arrays overflow by 16 bytes (sgen-alloc.c:409 '*p == NULL' while AOT-compiling CoreLib). */
++#define MONO_SIZEOF_MONO_ARRAY_HOST (G_STRUCT_OFFSET (MonoArray, vector))
+ 
+ struct _MonoString {
+ 	MonoObject object;
+@@ -188,6 +193,7 @@ struct _MonoString {
+ };
+ 
+ #define MONO_SIZEOF_MONO_STRING (MONO_STRUCT_OFFSET (MonoString, chars))
++#define MONO_SIZEOF_MONO_STRING_HOST (G_STRUCT_OFFSET (MonoString, chars))
+ 
+ #define mono_object_class(obj) (((MonoObject*)(obj))->vtable->klass)
+ #define mono_object_domain(obj) (((MonoObject*)(obj))->vtable->domain)
+diff --git a/src/mono/mono/metadata/object.c b/src/mono/mono/metadata/object.c
+index 36be06dca..68f70d6c0 100644
+--- a/src/mono/mono/metadata/object.c
++++ b/src/mono/mono/metadata/object.c
+@@ -5840,9 +5840,9 @@ mono_array_calc_byte_len (MonoClass *klass, uintptr_t len, uintptr_t *res)
+ 	if (CHECK_MUL_OVERFLOW_UN (byte_len, len))
+ 		return FALSE;
+ 	byte_len *= len;
+-	if (CHECK_ADD_OVERFLOW_UN (byte_len, MONO_SIZEOF_MONO_ARRAY))
++	if (CHECK_ADD_OVERFLOW_UN (byte_len, MONO_SIZEOF_MONO_ARRAY_HOST))
+ 		return FALSE;
+-	byte_len += MONO_SIZEOF_MONO_ARRAY;
++	byte_len += MONO_SIZEOF_MONO_ARRAY_HOST;
+ 
+ 	*res = byte_len;
+ 
+@@ -6753,10 +6753,10 @@ mono_object_get_size_internal (MonoObject* o)
+ 
+ 	MonoClass* klass = mono_object_class (o);
+ 	if (klass == mono_defaults.string_class) {
+-		return MONO_SIZEOF_MONO_STRING + 2 * mono_string_length_internal ((MonoString*) o) + 2;
++		return MONO_SIZEOF_MONO_STRING_HOST + 2 * mono_string_length_internal ((MonoString*) o) + 2;
+ 	} else if (o->vtable->rank) {
+ 		MonoArray *array = (MonoArray*)o;
+-		size_t size = MONO_SIZEOF_MONO_ARRAY + mono_array_element_size (klass) * mono_array_length_internal (array);
++		size_t size = MONO_SIZEOF_MONO_ARRAY_HOST + mono_array_element_size (klass) * mono_array_length_internal (array);
+ 		if (array->bounds) {
+ 			size += 3;
+ 			size &= ~3;
+@@ -6976,7 +6976,7 @@ mono_string_get_pinned (MonoStringHandle str, MonoError *error)
+ 		return str;
+ 
+ 	const gsize length = mono_string_handle_length (str);
+-	const gsize size = MONO_SIZEOF_MONO_STRING + (length + 1) * sizeof (gunichar2);
++	const gsize size = MONO_SIZEOF_MONO_STRING_HOST + (length + 1) * sizeof (gunichar2);
+ 	MonoStringHandle news = MONO_HANDLE_CAST (MonoString, mono_gc_alloc_handle_pinned_obj (MONO_HANDLE_GETVAL (str, object.vtable), size));
+ 	if (!MONO_HANDLE_BOOL (news)) {
+ 		mono_error_set_out_of_memory (error, "Could not allocate %" G_GSIZE_FORMAT " bytes", size);
+diff --git a/src/mono/mono/metadata/sgen-client-mono.h b/src/mono/mono/metadata/sgen-client-mono.h
+index 8bdae1b9f..31774fe04 100644
+--- a/src/mono/mono/metadata/sgen-client-mono.h
++++ b/src/mono/mono/metadata/sgen-client-mono.h
+@@ -100,7 +100,7 @@ sgen_mono_array_size (GCVTable vtable, MonoArray *array, mword *bounds_size, mwo
+ 	else
+ 		element_size = m_class_get_sizes (vtable->klass).element_size;
+ 
+-	size_without_bounds = size = MONO_SIZEOF_MONO_ARRAY + (mword)element_size * mono_array_length_internal (array);
++	size_without_bounds = size = MONO_SIZEOF_MONO_ARRAY_HOST + (mword)element_size * mono_array_length_internal (array);
+ 
+ 	if (G_UNLIKELY (array->bounds)) {
+ 		size += sizeof (mono_array_size_t) - 1;
+@@ -126,7 +126,7 @@ sgen_client_slow_object_get_size (GCVTable vtable, GCObject* o)
+ 	 * mono_array_length_internal not using the object's vtable.
+ 	 */
+ 	if (klass == mono_defaults.string_class) {
+-		return MONO_SIZEOF_MONO_STRING + 2 * mono_string_length_fast ((MonoString*) o) + 2;
++		return MONO_SIZEOF_MONO_STRING_HOST + 2 * mono_string_length_fast ((MonoString*) o) + 2;
+ 	} else if (m_class_get_rank (klass)) {
+ 		return sgen_mono_array_size (vtable, (MonoArray*)o, NULL, 0);
+ 	} else {
+diff --git a/src/mono/mono/metadata/sgen-mono.c b/src/mono/mono/metadata/sgen-mono.c
+index 4d008a746..0806c9ad1 100644
+--- a/src/mono/mono/metadata/sgen-mono.c
++++ b/src/mono/mono/metadata/sgen-mono.c
+@@ -350,7 +350,7 @@ sgen_client_array_fill_range (char *start, size_t size)
+ {
+ 	MonoArray *o;
+ 
+-	if (size < MONO_SIZEOF_MONO_ARRAY) {
++	if (size < MONO_SIZEOF_MONO_ARRAY_HOST) {
+ 		memset (start, 0, size);
+ 		return FALSE;
+ 	}
+@@ -361,8 +361,8 @@ sgen_client_array_fill_range (char *start, size_t size)
+ 	o->obj.synchronisation = (MonoThreadsSync *)GINT_TO_POINTER (-1);
+ 	o->bounds = NULL;
+ 	/* We use array of int64 */
+-	g_assert ((size - MONO_SIZEOF_MONO_ARRAY) % 8 == 0);
+-	o->max_length = (mono_array_size_t)((size - MONO_SIZEOF_MONO_ARRAY) / 8);
++	g_assert ((size - MONO_SIZEOF_MONO_ARRAY_HOST) % 8 == 0);
++	o->max_length = (mono_array_size_t)((size - MONO_SIZEOF_MONO_ARRAY_HOST) / 8);
+ 
+ 	return TRUE;
+ }
+@@ -370,10 +370,10 @@ sgen_client_array_fill_range (char *start, size_t size)
+ void
+ sgen_client_zero_array_fill_header (void *p, size_t size)
+ {
+-	if (size >= MONO_SIZEOF_MONO_ARRAY) {
+-		memset (p, 0, MONO_SIZEOF_MONO_ARRAY);
++	if (size >= MONO_SIZEOF_MONO_ARRAY_HOST) {
++		memset (p, 0, MONO_SIZEOF_MONO_ARRAY_HOST);
+ 	} else {
+-		static guint8 zeros [MONO_SIZEOF_MONO_ARRAY];
++		static guint8 zeros [MONO_SIZEOF_MONO_ARRAY_HOST];
+ 
+ 		SGEN_ASSERT (0, !memcmp (p, zeros, size), "TLAB segment must be zeroed out.");
+ 	}
+diff --git a/src/mono/mono/mini/CMakeLists.txt b/src/mono/mono/mini/CMakeLists.txt
+index 08b90567e..35602fea6 100644
+--- a/src/mono/mono/mini/CMakeLists.txt
++++ b/src/mono/mono/mini/CMakeLists.txt
+@@ -276,12 +276,18 @@ set(windows_sources
+ set(posix_sources
+     mini-posix.c)
+ 
++# SHEPHERD-VITA: no signals/fork on the PS Vita
++set(vita_sources
++    mini-vita.c)
++
+ if(HOST_DARWIN)
+ set(os_sources "${darwin_sources};${posix_sources}")
+ elseif(HOST_LINUX OR HOST_SOLARIS OR HOST_FREEBSD)
+ set(os_sources "${posix_sources}")
+ elseif(HOST_WIN32)
+ set(os_sources "${windows_sources}")
++elseif(HOST_VITA)
++set(os_sources "${vita_sources}")
+ endif()
+ 
+ set(interp_sources
+diff --git a/src/mono/mono/mini/aot-compiler.c b/src/mono/mono/mini/aot-compiler.c
+index 8dcdacf07..7de52b350 100644
+--- a/src/mono/mono/mini/aot-compiler.c
++++ b/src/mono/mono/mini/aot-compiler.c
+@@ -15499,6 +15499,15 @@ emit_aot_image (MonoAotCompile *acfg)
+ 	if (acfg->w)
+ 		mono_img_writer_emit_start (acfg->w);
+ 
++#if defined(TARGET_VITA) && defined(TARGET_ARM)
++	/* SHEPHERD-VITA: vitasdk gcc/as default to Thumb-2; mono's arm backend emits A32 code and plain 'bl'
++	 * directives, so pin ARM state and record the AAPCS-VFP (hard-float) ABI so ld rejects softfp mixes. */
++	if (!acfg->aot_opts.llvm_only) {
++		fprintf (acfg->fp, "\t.arm\n");
++		fprintf (acfg->fp, "\t.eabi_attribute 28, 1\n");
++	}
++#endif
++
+ 	if (acfg->dwarf)
+ 		mono_dwarf_writer_emit_base_info (acfg->dwarf, g_path_get_basename (acfg->image->name), mono_unwind_get_cie_program ());
+ 
+diff --git a/src/mono/mono/mini/exceptions-arm.c b/src/mono/mono/mini/exceptions-arm.c
+index 3af1e4dbf..e2e0f5ad0 100644
+--- a/src/mono/mono/mini/exceptions-arm.c
++++ b/src/mono/mono/mini/exceptions-arm.c
+@@ -599,7 +599,8 @@ get_handle_signal_exception_addr (void)
+ gboolean
+ mono_arch_handle_exception (void *ctx, gpointer obj)
+ {
+-#if defined(MONO_CROSS_COMPILE)
++#if defined(MONO_CROSS_COMPILE) || defined(HOST_VITA)
++	/* SHEPHERD-VITA: no SIGSEGV/SIGFPE handlers on the Vita; exceptions are raised by explicit checks */
+ 	g_assert_not_reached ();
+ #elif defined(MONO_ARCH_USE_SIGACTION)
+ 	arm_ucontext *sigctx = (arm_ucontext*)ctx;
+@@ -649,7 +650,7 @@ mono_arch_handle_exception (void *ctx, gpointer obj)
+ gpointer
+ mono_arch_ip_from_context (void *sigctx)
+ {
+-#ifdef MONO_CROSS_COMPILE
++#if defined(MONO_CROSS_COMPILE) || defined(HOST_VITA)
+ 	g_assert_not_reached ();
+ #else
+ 	arm_ucontext *my_uc = (arm_ucontext*)sigctx;
+diff --git a/src/mono/mono/mini/method-to-ir.c b/src/mono/mono/mini/method-to-ir.c
+index 3faf125cd..41bafaf0c 100644
+--- a/src/mono/mono/mini/method-to-ir.c
++++ b/src/mono/mono/mini/method-to-ir.c
+@@ -4031,7 +4031,60 @@ method_does_not_return (MonoMethod *method)
+ static int inline_limit, llvm_jit_inline_limit, llvm_aot_inline_limit;
+ static gboolean inline_limit_inited;
+ 
++static /*
++ * SHEPHERD-VITA (V6 stage 2): SHEPHERD_AOT_INLINE_IMAGES=<name>[,<name>...] (an assembly name, or a prefix ending in '*') limits the
++ * methods an AOT compilation may inline to those of the listed assemblies. The PS Vita build compiles Shepherd.Engine against the
++ * owner's rewritten Unity/game assemblies (to resolve their types); with the engine + BCL listed here, none of their method bodies
++ * is copied into the eboot: calls into them stay calls (into the interpreter). SHEPHERD_AOT_INLINE_LOG=1 prints each refused callee
++ * once and the total at exit. Unset = upstream behaviour. Only mono-aot-cross reads it (the Vita runtime has no JIT).
++ */
++static char **shepherd_inline_images;
++static int shepherd_inline_init, shepherd_inline_refused, shepherd_inline_log;
++static GHashTable *shepherd_inline_seen;
++
++static void
++shepherd_inline_report (void)
++{
++	if (shepherd_inline_images)
++		fprintf (stderr, "SHEPHERD: %d inline(s) of methods outside SHEPHERD_AOT_INLINE_IMAGES refused (%d distinct methods)\n",
++			 shepherd_inline_refused, shepherd_inline_seen ? g_hash_table_size (shepherd_inline_seen) : 0);
++}
++
+ static gboolean
++shepherd_aot_inline_refused (MonoMethod *method)
++{
++	if (!shepherd_inline_init) {
++		shepherd_inline_init = 1;
++		const char *v = g_getenv ("SHEPHERD_AOT_INLINE_IMAGES");
++		if (v && *v) {
++			shepherd_inline_images = g_strsplit (v, ",", -1);
++			shepherd_inline_log = g_getenv ("SHEPHERD_AOT_INLINE_LOG") != NULL;
++			shepherd_inline_seen = g_hash_table_new (NULL, NULL);
++			atexit (shepherd_inline_report);
++		}
++	}
++	if (!shepherd_inline_images)
++		return FALSE;
++	MonoImage *image = m_class_get_image (method->klass);
++	const char *name = image && image->assembly_name ? image->assembly_name : "";
++	for (char **p = shepherd_inline_images; *p; p++) {
++		size_t n = strlen (*p);
++		if (n && (*p) [n - 1] == '*' ? strncmp (name, *p, n - 1) == 0 : strcmp (name, *p) == 0)
++			return FALSE;
++	}
++	shepherd_inline_refused++;
++	if (!g_hash_table_lookup (shepherd_inline_seen, method)) {
++		g_hash_table_insert (shepherd_inline_seen, method, method);
++		if (shepherd_inline_log) {
++			char *full = mono_method_full_name (method, TRUE);
++			fprintf (stderr, "SHEPHERD: not inlined (%s): %s\n", name, full);
++			g_free (full);
++		}
++	}
++	return TRUE;
++}
++
++gboolean
+ mono_method_check_inlining (MonoCompile *cfg, MonoMethod *method)
+ {
+ 	MonoMethodHeaderSummary header;
+@@ -4050,6 +4103,9 @@ mono_method_check_inlining (MonoCompile *cfg, MonoMethod *method)
+ 	if (cfg->inline_depth > 10)
+ 		return FALSE;
+ 
++	if (cfg->compile_aot && shepherd_aot_inline_refused (method))   /* SHEPHERD-VITA: see above */
++		return FALSE;
++
+ 	if (!mono_method_get_header_summary (method, &header))
+ 		return FALSE;
+ 
+@@ -4092,6 +4148,20 @@ mono_method_check_inlining (MonoCompile *cfg, MonoMethod *method)
+ 	if (header.code_size >= GINT_TO_UINT32(limit) && !(method->iflags & METHOD_IMPL_ATTRIBUTE_AGGRESSIVE_INLINING))
+ 		return FALSE;
+ 
++	/* SHEPHERD-VITA: MONO_AGGRESSIVE_INLINELIMIT=N caps [AggressiveInlining] at N bytes of IL. Unset (the default)
++	 * keeps upstream behavior. Used by the PS Vita AOT build to keep CoreLib's A32 text inside the +-32 MiB 'bl'
++	 * reach (CoreLib's huge AggressiveInlining surface - Vector128/Span helpers - is most of its AOT size). */
++	if (method->iflags & METHOD_IMPL_ATTRIBUTE_AGGRESSIVE_INLINING) {
++		static int aggressive_limit = -2;
++		if (aggressive_limit == -2) {
++			char *s = g_getenv ("MONO_AGGRESSIVE_INLINELIMIT");
++			aggressive_limit = s ? atoi (s) : -1;
++			g_free (s);
++		}
++		if (aggressive_limit >= 0 && header.code_size >= GINT_TO_UINT32 (aggressive_limit))
++			return FALSE;
++	}
++
+ 	/*
+ 	 * if we can initialize the class of the method right away, we do,
+ 	 * otherwise we don't allow inlining if the class needs initialization,
+diff --git a/src/mono/mono/mini/mini-arm-gsharedvt.c b/src/mono/mono/mini/mini-arm-gsharedvt.c
+index 21605acbd..859d4b786 100644
+--- a/src/mono/mono/mini/mini-arm-gsharedvt.c
++++ b/src/mono/mono/mini/mini-arm-gsharedvt.c
+@@ -156,6 +156,22 @@ mono_arch_get_gsharedvt_call_info (MonoMemoryManager *mem_manager, gpointer addr
+ 		gcinfo = caller_cinfo;
+ 	}
+ 
++#if defined (TARGET_VITA)
++	/*
++	 * SHEPHERD-VITA: RegTypeHFA (all-float struct in VFP registers) is only assigned to PINVOKE signatures
++	 * (get_call_info: IS_HARD_FLOAT && sig->pinvoke && is_hfa). gsharedvt transitions always have managed
++	 * signatures, where a Vector2/Vector3/Color/Quaternion argument travels as RegTypeStructByVal in core registers
++	 * and stack slots (handled by the slot map below) and is returned through the hidden vret pointer. Neither this
++	 * function nor the trampoline handles VFP-register structs, so fail with a precise message if that ever changes.
++	 */
++	if (caller_cinfo->ret.storage == RegTypeHFA || callee_cinfo->ret.storage == RegTypeHFA)
++		g_error ("gsharedvt transition with an HFA return value is not implemented (normal sig %s)", mono_signature_full_name (normal_sig));
++	for (aindex = 0; aindex < caller_cinfo->nargs; ++aindex) {
++		if (caller_cinfo->args [aindex].storage == RegTypeHFA || callee_cinfo->args [aindex].storage == RegTypeHFA)
++			g_error ("gsharedvt transition with an HFA argument %d is not implemented (normal sig %s)", aindex, mono_signature_full_name (normal_sig));
++	}
++#endif
++
+ 	if (gcinfo->ret.storage == RegTypeStructByAddr && gsig->ret && mini_is_gsharedvt_type (gsig->ret)) {
+ 		/*
+ 		 * The return type is gsharedvt
+diff --git a/src/mono/mono/mini/mini-arm.c b/src/mono/mono/mini/mini-arm.c
+index daa8f3f48..9889ba863 100644
+--- a/src/mono/mono/mini/mini-arm.c
++++ b/src/mono/mono/mini/mini-arm.c
+@@ -804,7 +804,8 @@ mono_arch_init (void)
+ {
+ 	char *cpu_arch;
+ 
+-#ifdef TARGET_WATCHOS
++#if defined(TARGET_WATCHOS) || defined(HOST_VITA)
++	/* SHEPHERD-VITA: no SIGSEGV trigger pages (and no mprotect) on the Vita */
+ 	mini_debug_options.soft_breakpoints = TRUE;
+ #endif
+ 
+@@ -818,7 +819,8 @@ mono_arch_init (void)
+ 		mono_mprotect (bp_trigger_page, mono_pagesize (), 0);
+ 	}
+ 
+-#if defined(__ARM_EABI__)
++#if defined(__ARM_EABI__) || defined(TARGET_VITA)
++	/* SHEPHERD-VITA: the cross compiler runs on a non-EABI host; the Vita is always AAPCS(-VFP). */
+ 	eabi_supported = TRUE;
+ #endif
+ 
+@@ -875,7 +877,8 @@ mono_arch_init (void)
+ 	   have a way to properly detect CPU features on it. */
+ 	thumb_supported = TRUE;
+ 	iphone_abi = TRUE;
+-#elif defined(TARGET_ANDROID)
++#elif defined(TARGET_ANDROID) || defined(TARGET_VITA)
++	/* SHEPHERD-VITA: Cortex-A9 has ARM + Thumb-2 (vitasdk C code is Thumb-2 by default) */
+ 	thumb_supported = TRUE;
+ #else
+ 	thumb_supported = mono_hwcap_arm_has_thumb;
+@@ -7252,6 +7255,10 @@ mono_arch_stop_single_stepping (void)
+ gboolean
+ mono_arch_is_single_step_event (void *info, void *sigctx)
+ {
++#ifdef HOST_VITA
++	/* SHEPHERD-VITA: soft breakpoints only, no signals */
++	return FALSE;
++#else
+ 	siginfo_t *sinfo = (siginfo_t*)info;
+ 
+ 	if (!ss_trigger_page)
+@@ -7262,6 +7269,7 @@ mono_arch_is_single_step_event (void *info, void *sigctx)
+ 		return TRUE;
+ 	else
+ 		return FALSE;
++#endif
+ }
+ 
+ /*
+@@ -7272,6 +7280,9 @@ mono_arch_is_single_step_event (void *info, void *sigctx)
+ gboolean
+ mono_arch_is_breakpoint_event (void *info, void *sigctx)
+ {
++#ifdef HOST_VITA
++	return FALSE;
++#else
+ 	siginfo_t *sinfo = (siginfo_t*)info;
+ 
+ 	if (!ss_trigger_page)
+@@ -7286,6 +7297,7 @@ mono_arch_is_breakpoint_event (void *info, void *sigctx)
+ 	} else {
+ 		return FALSE;
+ 	}
++#endif
+ }
+ 
+ /*
+diff --git a/src/mono/mono/mini/mini-arm.h b/src/mono/mono/mini/mini-arm.h
+index 73bcc8bb8..aa6929a0a 100644
+--- a/src/mono/mono/mini/mini-arm.h
++++ b/src/mono/mono/mini/mini-arm.h
+@@ -324,7 +324,8 @@ typedef struct MonoCompileArch {
+ 
+ #define MONO_ARCH_USE_SIGACTION 1
+ 
+-#if defined(HOST_WATCHOS)
++#if defined(HOST_WATCHOS) || defined(HOST_VITA)
++/* SHEPHERD-VITA: no signal handlers on the Vita */
+ #undef MONO_ARCH_USE_SIGACTION
+ #endif
+ 
+@@ -371,7 +372,7 @@ typedef struct MonoCompileArch {
+ #define MONO_ARCH_HAVE_INTERP_PINVOKE_TRAMP 1
+ #define MONO_ARCH_HAVE_INTERP_NATIVE_TO_MANAGED 1
+ 
+-#if defined(TARGET_WATCHOS) || (defined(__linux__) && !defined(TARGET_ANDROID))
++#if defined(TARGET_WATCHOS) || (defined(__linux__) && !defined(TARGET_ANDROID)) || defined(TARGET_VITA)
+ #define MONO_ARCH_DISABLE_HW_TRAPS 1
+ #define MONO_ARCH_HAVE_UNWIND_BACKTRACE 1
+ #endif
+@@ -402,7 +403,9 @@ typedef struct MonoCompileArch {
+ 
+ #define MONO_ARCH_INIT_TOP_LMF_ENTRY(lmf)
+ 
+-#if defined(TARGET_TVOS) || defined(TARGET_WATCHOS)
++/* SHEPHERD-VITA: no SIGSEGV on the Vita -> null checks must be explicit compares, unless a
++ * DATA_ABORT handler (kubridge) is proven to work: build with -DVITA_HW_NULL_CHECKS to opt out. */
++#if defined(TARGET_TVOS) || defined(TARGET_WATCHOS) || (defined(TARGET_VITA) && !defined(VITA_HW_NULL_CHECKS))
+ #define MONO_ARCH_EXPLICIT_NULL_CHECKS 1
+ #endif
+ 
+diff --git a/src/mono/mono/mini/mini-vita.c b/src/mono/mono/mini/mini-vita.c
+new file mode 100644
+index 000000000..0bafb58da
+--- /dev/null
++++ b/src/mono/mono/mini/mini-vita.c
+@@ -0,0 +1,124 @@
++/**
++ * \file
++ * SHEPHERD-VITA: per-OS hooks of the JIT/AOT runtime for the PS Vita.
++ *
++ * The Vita runtime installs no signal or exception handlers at all: managed null dereferences, divisions
++ * by zero and overflows are caught by explicit checks (MONO_ARCH_EXPLICIT_NULL_CHECKS / MONO_ARCH_NEED_DIV_CHECK
++ * in the AOT code and the interpreter), and a native crash is left to the OS (the kernel writes a core dump).
++ * There is no sampling profiler (it needs signals) and no fork/exec for crash reporting.
++ */
++
++#include <config.h>
++
++#ifdef HOST_VITA
++
++#include <glib.h>
++#include <string.h>
++#include "mini.h"
++#include "mini-runtime.h"
++#include <mono/utils/mono-signal-handler.h>
++#include <mono/utils/mono-vita.h>
++#include <mono/metadata/mempool-internals.h>
++#ifndef DISABLE_INTERPRETER
++#include "interp/interp-internals.h"
++#endif
++
++void
++mono_runtime_install_handlers (void)
++{
++}
++
++void
++mono_runtime_posix_install_handlers (void)
++{
++}
++
++void
++mono_runtime_shutdown_handlers (void)
++{
++}
++
++void
++mono_runtime_setup_stat_profiler (void)
++{
++	g_warning ("the sampling profiler is not available on the PS Vita (no signals)");
++}
++
++void
++mono_runtime_shutdown_stat_profiler (void)
++{
++}
++
++gboolean
++MONO_SIG_HANDLER_SIGNATURE (mono_chain_signal)
++{
++	return FALSE;
++}
++
++void
++mono_chain_signal_to_default_sigsegv_handler (void)
++{
++}
++
++gboolean
++mono_thread_state_init_from_handle (MonoThreadUnwindState *tctx, MonoThreadInfo *info, void *sigctx)
++{
++	/* Only used by async (signal) suspend and the sampling profiler; neither exists on the Vita. */
++	g_error ("%s: not supported on the PS Vita (cooperative suspend only)", __func__);
++	return FALSE;
++}
++
++void
++mono_init_native_crash_info (void)
++{
++}
++
++void
++mono_dump_native_crash_info (const char *signal, MonoContext *mctx, MONO_SIG_HANDLER_INFO_TYPE *info)
++{
++}
++
++void
++mono_post_native_crash_handler (const char *signal, MonoContext *mctx, MONO_SIG_HANDLER_INFO_TYPE *info, gboolean crash_chaining)
++{
++	if (!crash_chaining)
++		abort ();
++}
++
++void
++mono_gdb_render_native_backtraces (pid_t crashed_pid)
++{
++}
++
++/* SHEPHERD-VITA V6: counters for the host's checkpoint lines (mono_counters is a no-op in dotnet/runtime, but the
++ * structures it used to export are still maintained). */
++void
++mono_vita_get_runtime_stats (MonoVitaRuntimeStats *s)
++{
++	memset (s, 0, sizeof (*s));
++#ifndef DISABLE_INTERPRETER
++	s->interp_transforms = mono_interp_stats.methods_transformed;
++	s->interp_inlined = mono_interp_stats.inlined_methods;
++	s->interp_emitted_instructions = mono_interp_stats.emitted_instructions;
++#endif
++	s->interp_methods = mono_jit_stats.methods_with_interp;
++	s->aot_methods = mono_jit_stats.methods_aot;
++	s->mempool_bytes = mono_mempool_get_bytes_allocated ();
++	s->methods = mono_stats.method_count;
++	s->initialized_classes = mono_stats.initialized_class_count;
++	s->used_classes = mono_stats.used_class_count;
++	s->generic_classes = mono_stats.generic_class_count;
++	s->inflated_types = mono_stats.inflated_type_count;
++	s->inflated_methods = mono_stats.inflated_method_count;
++	s->vtable_bytes = mono_stats.class_vtable_size;
++	s->static_data_bytes = mono_stats.class_static_data_size;
++	s->imt_bytes = mono_stats.imt_tables_size;
++	s->delegates_created = mono_stats.delegate_creations;
++}
++
++#else
++
++#include <mono/utils/mono-compiler.h>
++MONO_EMPTY_SOURCE_FILE (mini_vita);
++
++#endif /* HOST_VITA */
+diff --git a/src/mono/mono/mini/tramp-arm-gsharedvt.c b/src/mono/mono/mini/tramp-arm-gsharedvt.c
+index f06b5e635..a851c8176 100644
+--- a/src/mono/mono/mini/tramp-arm-gsharedvt.c
++++ b/src/mono/mono/mini/tramp-arm-gsharedvt.c
+@@ -10,6 +10,7 @@
+  */
+ #include <config.h>
+ #include <glib.h>
++#include <string.h>
+ 
+ #include <mono/metadata/abi-details.h>
+ #include <mono/metadata/marshal.h>
+@@ -34,6 +35,72 @@ emit_bx (guint8* code, int reg)
+ 	return code;
+ }
+ 
++#if defined (TARGET_VITA)
++/*
++ * SHEPHERD-VITA: VFP argument copy of the armhf gsharedvt transition, indexed by SINGLE-precision register.
++ * ArgInfo.reg of a RegTypeFP argument is an s-register number (add_float in mini-arm.c), and a float can sit in an
++ * odd s-register (the second of two floats, or back-filled after a double). Upstream copies
++ * callee_fregs [reg / 2] = caller_fregs [reg / 2] and reads T-by-ref floats through a double*, so it moves the
++ * whole d-register: (float a, float b) <-> (T a, T b) hands the callee the wrong float, and a float that changes
++ * s-register clobbers its neighbour. Here every value is copied with its own size (4 or 8) at its own s-register,
++ * and a by-ref T points at its exact s-register slot. The areas hold d0-d7 (= s0-s15) as saved by the trampoline.
++ * A float that one signature passes in a VFP register and the other on the stack (more than 16 single-precision
++ * argument registers' worth) is copied to/from its stack slot(s) instead of hitting an assert.
++ */
++static void
++vita_gsharedvt_copy_fregs (GSharedVtCallInfo *info, gpointer *caller, gpointer *callee, float *caller_sregs, float *callee_sregs)
++{
++	CallInfo *caller_cinfo = info->caller_cinfo;
++	CallInfo *callee_cinfo = info->callee_cinfo;
++
++	for (int aindex = 0; aindex < caller_cinfo->nargs; ++aindex) {
++		ArgInfo *ainfo = &caller_cinfo->args [aindex];
++		ArgInfo *ainfo2 = &callee_cinfo->args [aindex];
++
++		if (ainfo->storage == RegTypeFP) {
++			float *src = &caller_sregs [ainfo->reg];
++
++			switch (ainfo2->storage) {
++			case RegTypeFP:
++				memcpy (&callee_sregs [ainfo2->reg], src, ainfo2->size);
++				break;
++			case RegTypeGSharedVtInReg:
++				/* gsharedvt T passed by address: point at the value inside the saved caller VFP area */
++				callee [ainfo2->reg] = src;
++				break;
++			case RegTypeGSharedVtOnStack:
++				callee [(ainfo2->offset / 4) + 4] = src;
++				break;
++			case RegTypeBase:
++				memcpy (&callee [(ainfo2->offset / 4) + 4], src, ainfo->size);
++				break;
++			default:
++				g_assert_not_reached ();
++				break;
++			}
++		} else if (ainfo2->storage == RegTypeFP) {
++			float *dst = &callee_sregs [ainfo2->reg];
++
++			switch (ainfo->storage) {
++			case RegTypeGSharedVtInReg:
++				/* gsharedvt T received by address: load the value with its real size */
++				memcpy (dst, caller [ainfo->reg], ainfo2->size);
++				break;
++			case RegTypeGSharedVtOnStack:
++				memcpy (dst, caller [(ainfo->offset / 4) + 4], ainfo2->size);
++				break;
++			case RegTypeBase:
++				memcpy (dst, &caller [(ainfo->offset / 4) + 4], ainfo2->size);
++				break;
++			default:
++				g_assert_not_reached ();
++				break;
++			}
++		}
++	}
++}
++#endif
++
+ gpointer
+ mono_arm_start_gsharedvt_call (GSharedVtCallInfo *info, gpointer *caller, gpointer *callee, gpointer mrgctx_reg,
+ 							   double *caller_fregs, double *callee_fregs)
+@@ -110,6 +177,10 @@ mono_arm_start_gsharedvt_call (GSharedVtCallInfo *info, gpointer *caller, gpoint
+ 
+ 	/* The slot based approach above is very complicated, use a nested switch instead for fp regs */
+ 	// FIXME: Use this for the other cases as well
++#if defined (TARGET_VITA)
++	if (info->have_fregs)
++		vita_gsharedvt_copy_fregs (info, caller, callee, (float *) caller_fregs, (float *) callee_fregs);
++#else
+ 	if (info->have_fregs) {
+ 		CallInfo *caller_cinfo = info->caller_cinfo;
+ 		CallInfo *callee_cinfo = info->callee_cinfo;
+@@ -167,6 +238,7 @@ mono_arm_start_gsharedvt_call (GSharedVtCallInfo *info, gpointer *caller, gpoint
+ 			}
+ 		}
+ 	}
++#endif
+ 
+ 	if (info->vcall_offset != -1) {
+ 		MonoObject *this_obj = (MonoObject*)caller [0];
+diff --git a/src/mono/mono/sgen/sgen-conf.h b/src/mono/mono/sgen/sgen-conf.h
+index 2f988b646..d4664f860 100644
+--- a/src/mono/mono/sgen/sgen-conf.h
++++ b/src/mono/mono/sgen/sgen-conf.h
+@@ -106,6 +106,11 @@ typedef target_mword SgenDescriptor;
+ #if defined (HOST_WASM) || defined(TARGET_WASM)
+ #define DEFAULT_MAJOR SGEN_MAJOR_SERIAL
+ #define DEFAULT_SWEEP_MODE SGEN_SWEEP_SERIAL
++#elif defined (HOST_VITA)
++/* SHEPHERD-VITA: serial mark AND serial sweep by default. A concurrent sweep needs a sgen worker thread that the
++ * next major GC waits on (the "serial mark + concurrent sweep" major-GC hang class); the Vita runs without it. */
++#define DEFAULT_MAJOR SGEN_MAJOR_SERIAL
++#define DEFAULT_SWEEP_MODE SGEN_SWEEP_SERIAL
+ #elif defined(HAVE_CONC_GC_AS_DEFAULT)
+ /* Use concurrent major on deskstop platforms */
+ #define DEFAULT_MAJOR SGEN_MAJOR_CONCURRENT
+@@ -255,4 +260,14 @@ typedef target_mword SgenDescriptor;
+  */
+ #define SGEN_PARALLEL_MINOR_MIN_NURSERY_SIZE (1 << 24)
+ 
++/* SHEPHERD-VITA V6: the host hears about every allocation refused by max-heap-size (sgen then collects and retries;
++ * a refusal that survives the collection is an OutOfMemoryException, or a NULL the interpreter's box paths do not check).
++ * Expands to nothing on other targets, on the line it is used on, so no other line moves. */
++#ifdef HOST_VITA
++void mono_vita_sgen_heap_limit (size_t request, int space, size_t allocated, size_t max_heap);
++#define MONO_VITA_HEAP_LIMIT_HOOK(request, space, allocated, max_heap) mono_vita_sgen_heap_limit ((request), (space), (allocated), (max_heap))
++#else
++#define MONO_VITA_HEAP_LIMIT_HOOK(request, space, allocated, max_heap) do { } while (0)
++#endif
++
+ #endif
+diff --git a/src/mono/mono/sgen/sgen-marksweep.c b/src/mono/mono/sgen/sgen-marksweep.c
+index ce6418050..34faaa9b3 100644
+--- a/src/mono/mono/sgen/sgen-marksweep.c
++++ b/src/mono/mono/sgen/sgen-marksweep.c
+@@ -2746,6 +2746,14 @@ static void
+ post_param_init (SgenMajorCollector *collector)
+ {
+ 	collector->sweeps_lazily = lazy_sweep;
++#if defined (HOST_VITA) && !defined (DISABLE_SGEN_MAJOR_MARKSWEEP_CONC)
++	/* SHEPHERD-VITA: the sweep worker context is created here, after MONO_GC_PARAMS was parsed, so
++	 * (no-)concurrent-sweep decides whether sgen_thread_pool_start () spawns the worker thread. Upstream creates it
++	 * in sgen_marksweep_init_internal (), before the options are seen: with "no-concurrent-sweep" the idle worker
++	 * still exists, and with "concurrent-sweep" on a serial-sweep default no context would exist. */
++	if (concurrent_sweep && sweep_pool_context < 0)
++		sweep_pool_context = sgen_thread_pool_create_context (1, NULL, NULL, NULL, NULL, NULL);
++#endif
+ }
+ 
+ /*
+@@ -2965,9 +2973,11 @@ sgen_marksweep_init_internal (SgenMajorCollector *collector, gboolean is_concurr
+ 	else if (is_concurrent)
+ 		sgen_workers_create_context (GENERATION_OLD, 1);
+ 
++#if !defined (HOST_VITA)
+ 	if (concurrent_sweep)
+ 		sweep_pool_context = sgen_thread_pool_create_context (1, NULL, NULL, NULL, NULL, NULL);
+ #endif
++#endif
+ }
+ 
+ void
+diff --git a/src/mono/mono/sgen/sgen-memory-governor.c b/src/mono/mono/sgen/sgen-memory-governor.c
+index 7d98d96c7..a4495b373 100644
+--- a/src/mono/mono/sgen/sgen-memory-governor.c
++++ b/src/mono/mono/sgen/sgen-memory-governor.c
+@@ -503,7 +503,7 @@ sgen_memgov_try_alloc_space (mword size, int space)
+ {
+ 	if (sgen_memgov_available_free_space () < size) {
+ 		SGEN_ASSERT (4, !sgen_workers_is_worker_thread (mono_native_thread_id_get ()), "Memory shouldn't run out in worker thread");
+-		return FALSE;
++		MONO_VITA_HEAP_LIMIT_HOOK (size, space, allocated_heap, max_heap_size); return FALSE;
+ 	}
+ 
+ 	SGEN_ATOMIC_ADD_P (allocated_heap, size);
+diff --git a/src/mono/mono/tools/offsets-tool/offsets-tool.py b/src/mono/mono/tools/offsets-tool/offsets-tool.py
+index 5246cbbd4..60fa67887 100644
+--- a/src/mono/mono/tools/offsets-tool/offsets-tool.py
++++ b/src/mono/mono/tools/offsets-tool/offsets-tool.py
+@@ -127,6 +127,16 @@ class OffsetsTool:
+ 					print ("could not find a valid include path for target, provide one via --prefix=<path>.", file=sys.stderr)
+ 					sys.exit (1)
+ 
++		# SHEPHERD-VITA: PS Vita, armv7-a hard-float EABI, newlib (vitasdk). --sysroot=$VITASDK/arm-vita-eabi
++		elif "armv7-vita-eabihf" == args.abi:
++			require_sysroot (args)
++			self.target = Target ("TARGET_ARM", "TARGET_VITA", ["ARM_FPU_VFP_HARD", "HAVE_ARMV5", "HAVE_ARMV6", "HAVE_ARMV7", "HOST_VITA", "MONO_CROSS_COMPILE", "USE_MONO_CTX", "__vita__"])
++			self.target_args += ["--target=armv7a-none-eabihf", "-mfloat-abi=hard", "-mfpu=neon"]
++			self.target_args += ["-isystem", args.sysroot + "/include"]
++			if args.prefixes:
++				for prefix in args.prefixes:
++					self.target_args += ["-isystem", prefix + "/include"]
++
+ 		elif "aarch64-linux-gnu" == args.abi:
+ 			require_sysroot (args)
+ 			self.target = Target ("TARGET_ARM64", None, LINUX_DEFINES)
+diff --git a/src/mono/mono/utils/CMakeLists.txt b/src/mono/mono/utils/CMakeLists.txt
+index 0932797e5..955c3fa89 100644
+--- a/src/mono/mono/utils/CMakeLists.txt
++++ b/src/mono/mono/utils/CMakeLists.txt
+@@ -28,6 +28,10 @@ set(utils_unix_sources
+ 
+ if(HOST_WIN32)
+     set(utils_platform_sources ${utils_win32_sources})
++elseif(HOST_VITA)
++    # SHEPHERD-VITA: no mmap (dlmalloc is not needed: the code manager is data-only and uses memalign),
++    # threads/memory/dl backends for the PS Vita
++    set(utils_platform_sources os-event-unix.c mono-threads-vita.c mono-mmap-vita.c mono-dl-vita.c mono-vita-yield.c mono-vita-yield.h mono-vita.h)
+ elseif(HOST_WASI)
+     set(utils_platform_sources ${utils_unix_sources} mono-threads-wasi.S)
+ else()
+diff --git a/src/mono/mono/utils/memfuncs.c b/src/mono/mono/utils/memfuncs.c
+index 5d4b2dccb..60c37386a 100644
+--- a/src/mono/mono/utils/memfuncs.c
++++ b/src/mono/mono/utils/memfuncs.c
+@@ -25,6 +25,9 @@
+  */
+ 
+ #include <config.h>
++#ifdef HOST_VITA
++#include <mono/utils/mono-vita.h>
++#endif
+ #include <glib.h>
+ #include <string.h>
+ #include <errno.h>
+@@ -253,7 +256,12 @@ mono_gc_memmove_atomic (void *dest, const void *src, size_t size)
+ guint64
+ mono_determine_physical_ram_size (void)
+ {
+-#if defined (TARGET_WIN32)
++#if defined (HOST_VITA)
++	/* SHEPHERD-VITA: what the GC can actually get is the mono_valloc arena (sysconf has no _SC_PHYS_PAGES) */
++	MonoVitaArenaStats st;
++	mono_vita_vm_arena_get_stats (&st);
++	return st.arena_size ? (guint64) st.arena_size : _DEFAULT_MEM_SIZE;
++#elif defined (TARGET_WIN32)
+ 	MEMORYSTATUSEX memstat;
+ 
+ 	memstat.dwLength = sizeof (memstat);
+@@ -344,7 +352,11 @@ mono_determine_physical_ram_size (void)
+ guint64
+ mono_determine_physical_ram_available_size (void)
+ {
+-#if defined (TARGET_WIN32)
++#if defined (HOST_VITA)
++	MonoVitaArenaStats st;
++	mono_vita_vm_arena_get_stats (&st);
++	return (guint64) (st.arena_size - st.used);
++#elif defined (TARGET_WIN32)
+ 	MEMORYSTATUSEX memstat;
+ 
+ 	memstat.dwLength = sizeof (memstat);
+diff --git a/src/mono/mono/utils/mono-codeman.c b/src/mono/mono/utils/mono-codeman.c
+index 26f8715c6..a4400fa85 100644
+--- a/src/mono/mono/utils/mono-codeman.c
++++ b/src/mono/mono/utils/mono-codeman.c
+@@ -17,6 +17,10 @@
+ #include <mono/utils/mono-counters.h>
+ #if _WIN32
+ static void* mono_code_manager_heap;
++#elif defined(HOST_VITA)
++/* SHEPHERD-VITA: no dlmalloc (it needs mmap/sbrk). The Vita never generates code, so "code" memory is
++ * plain data memory: chunks come from the mono_valloc arena as RW, dynamic allocations from memalign. */
++#include <malloc.h>
+ #else
+ #define USE_DL_PREFIX 1
+ #include "dlmalloc.h"
+@@ -131,6 +135,9 @@ codechunk_valloc (void *preferred, guint32 size, gboolean no_exec)
+ 		g_hash_table_insert (valloc_freelists, GUINT_TO_POINTER (size), freelist);
+ 	} else {
+ 		int prot;
++#ifdef HOST_VITA
++		no_exec = TRUE;
++#endif
+ 		if (!no_exec)
+ 			prot = MONO_PROT_RWX | ARCH_MAP_FLAGS;
+ 		else
+@@ -345,6 +352,8 @@ mono_codeman_malloc (gsize n)
+ 	void* const heap = mono_code_manager_heap;
+ 	g_assert (heap);
+ 	return HeapAlloc (heap, 0, n);
++#elif defined(HOST_VITA)
++	return memalign (MIN_ALIGN, n);
+ #else
+ 	mono_codeman_enable_write ();
+ 	gpointer res = dlmemalign (MIN_ALIGN, n);
+@@ -362,6 +371,8 @@ mono_codeman_free (gpointer p)
+ 	void* const heap = mono_code_manager_heap;
+ 	g_assert (heap);
+ 	HeapFree (heap, 0, p);
++#elif defined(HOST_VITA)
++	free (p);
+ #else
+ 	mono_codeman_enable_write ();
+ 	dlfree (p);
+@@ -501,6 +512,19 @@ new_codechunk (MonoCodeManager *cman, int size)
+ 
+ 	const int flags = mono_codeman_allocation_type (cman);
+ 	const int pagesize = mono_pagesize ();
++
++#ifdef HOST_VITA
++	if (!no_exec) {
++		/* SHEPHERD-VITA: interpreter + static AOT only. Memory reserved from a JIT/dynamic code manager is
++		 * data memory here; if anything ever executes it, it faults. Say so once, loudly, before that happens. */
++		static gboolean warned;
++		if (!warned) {
++			warned = TRUE;
++			g_warning ("vita: %s code manager reserves %d bytes: run-time code generation is not possible on the PS Vita",
++				   dynamic ? "dynamic" : "JIT", size);
++		}
++	}
++#endif
+ 	const int valloc_granule = mono_valloc_granule ();
+ 
+ 	if (dynamic) {
+diff --git a/src/mono/mono/utils/mono-compiler.h b/src/mono/mono/utils/mono-compiler.h
+index f8df4d828..543036c3a 100644
+--- a/src/mono/mono/utils/mono-compiler.h
++++ b/src/mono/mono/utils/mono-compiler.h
+@@ -52,6 +52,15 @@ typedef ptrdiff_t ssize_t;
+ 
+ #endif /* _MSC_VER */
+ 
++#ifdef HOST_VITA
++// SHEPHERD-VITA: newlib does not define _POSIX_VERSION, so <limits.h> has no SSIZE_MAX
++#include <stdint.h>
++#include <limits.h>
++#ifndef SSIZE_MAX
++#define SSIZE_MAX INTPTR_MAX
++#endif
++#endif
++
+ // Quiet Visual Studio linker warning, LNK4221: This object file does not define any previously
+ // undefined public symbols, so it will not be used by any link operation that consumes this library.
+ // And other linkers, e.g. older Apple.
+diff --git a/src/mono/mono/utils/mono-context.c b/src/mono/mono/utils/mono-context.c
+index 9585a0c72..38d25e6d6 100644
+--- a/src/mono/mono/utils/mono-context.c
++++ b/src/mono/mono/utils/mono-context.c
+@@ -460,7 +460,8 @@ mono_monoctx_to_sigctx (MonoContext *mctx, void *ctx)
+ void
+ mono_sigctx_to_monoctx (void *sigctx, MonoContext *mctx)
+ {
+-#ifdef MONO_CROSS_COMPILE
++#if defined(MONO_CROSS_COMPILE) || defined(HOST_VITA)
++	/* SHEPHERD-VITA: no signals, so there is never a signal context to convert */
+ 	g_assert_not_reached ();
+ #elif defined(HOST_WIN32)
+ 	CONTEXT *context = (CONTEXT*)sigctx;
+@@ -487,7 +488,7 @@ mono_sigctx_to_monoctx (void *sigctx, MonoContext *mctx)
+ void
+ mono_monoctx_to_sigctx (MonoContext *mctx, void *ctx)
+ {
+-#ifdef MONO_CROSS_COMPILE
++#if defined(MONO_CROSS_COMPILE) || defined(HOST_VITA)
+ 	g_assert_not_reached ();
+ #elif defined(HOST_WIN32)
+ 	CONTEXT *context = (CONTEXT*)ctx;
+diff --git a/src/mono/mono/utils/mono-dl-vita.c b/src/mono/mono/utils/mono-dl-vita.c
+new file mode 100644
+index 000000000..91f0e2888
+--- /dev/null
++++ b/src/mono/mono/utils/mono-dl-vita.c
+@@ -0,0 +1,140 @@
++/**
++ * \file
++ * SHEPHERD-VITA: mono_dl backend for the PS Vita. There is no dynamic loader.
++ *
++ * Everything is linked statically into the eboot. mono_dl_open (NULL) ("the executable", also used for
++ * DllImport("__Internal")) returns a pseudo handle whose symbols come from the tables the host registers with
++ * mono_vita_register_static_symbols (normally generated from the AOT modules' direct-pinvoke references plus the
++ * host's own exports). Any other library name fails with an explicit error; the host's PINVOKE_OVERRIDE maps
++ * library names such as libSystem.Native to the same tables before the loader ever gets here.
++ */
++
++#include <config.h>
++
++#ifdef HOST_VITA
++
++#include <glib.h>
++#include <string.h>
++#include <stdio.h>
++#include <pthread.h>
++
++#include "mono/utils/mono-dl.h"
++#include "mono/utils/mono-vita.h"
++
++#define VITA_MAX_TABLES 16
++
++typedef struct {
++	const MonoVitaStaticSymbol *symbols;
++	int count;
++} VitaSymbolTable;
++
++static VitaSymbolTable tables [VITA_MAX_TABLES];
++static int n_tables;
++static pthread_mutex_t tables_mutex = PTHREAD_MUTEX_INITIALIZER;
++static GHashTable *symbol_index; /* name -> addr, built lazily from all tables */
++
++/* the "executable" handle */
++static int vita_self_handle;
++#define VITA_SELF ((void *)&vita_self_handle)
++
++static char last_error [256];
++
++static void
++set_error (const char *fmt, const char *arg)
++{
++	snprintf (last_error, sizeof (last_error), fmt, arg ? arg : "(null)");
++}
++
++void
++mono_vita_register_static_symbols (const MonoVitaStaticSymbol *symbols, int count)
++{
++	pthread_mutex_lock (&tables_mutex);
++	if (n_tables >= VITA_MAX_TABLES)
++		g_error ("%s: too many static symbol tables (max %d)", __func__, VITA_MAX_TABLES);
++	tables [n_tables].symbols = symbols;
++	tables [n_tables].count = count;
++	n_tables++;
++	if (symbol_index) {
++		for (int i = 0; i < count; ++i)
++			g_hash_table_insert (symbol_index, (gpointer)symbols [i].name, symbols [i].addr);
++	}
++	pthread_mutex_unlock (&tables_mutex);
++}
++
++void *
++mono_vita_lookup_static_symbol (const char *name)
++{
++	void *res;
++	if (!name)
++		return NULL;
++	pthread_mutex_lock (&tables_mutex);
++	if (!symbol_index) {
++		symbol_index = g_hash_table_new (g_str_hash, g_str_equal);
++		for (int t = 0; t < n_tables; ++t)
++			for (int i = 0; i < tables [t].count; ++i)
++				g_hash_table_insert (symbol_index, (gpointer)tables [t].symbols [i].name, tables [t].symbols [i].addr);
++	}
++	res = g_hash_table_lookup (symbol_index, name);
++	pthread_mutex_unlock (&tables_mutex);
++	return res;
++}
++
++const char *
++mono_dl_get_so_prefix (void)
++{
++	return "lib";
++}
++
++const char **
++mono_dl_get_so_suffixes (void)
++{
++	static const char *suffixes [] = {
++		".so",
++		"",
++	};
++	return suffixes;
++}
++
++void *
++mono_dl_open_file (const char *file, int flags, MonoError *error)
++{
++	if (!file)
++		return VITA_SELF;
++	set_error ("dlopen is not available on the PS Vita (static build): '%s' must be resolved through the static symbol table / PINVOKE_OVERRIDE", file);
++	return NULL;
++}
++
++void
++mono_dl_close_handle (MonoDl *module, MonoError *error)
++{
++}
++
++void *
++mono_dl_lookup_symbol (MonoDl *module, const char *name)
++{
++	void *res = NULL;
++	if (module && module->handle == VITA_SELF)
++		res = mono_vita_lookup_static_symbol (name);
++	if (!res)
++		set_error ("symbol '%s' is not in the PS Vita static symbol table", name);
++	return res;
++}
++
++int
++mono_dl_convert_flags (int mono_flags, int native_flags)
++{
++	return native_flags;
++}
++
++char *
++mono_dl_current_error_string (void)
++{
++	return g_strdup (last_error [0] ? last_error : "no dynamic loader on the PS Vita");
++}
++
++#else
++
++#include <mono/utils/mono-compiler.h>
++MONO_EMPTY_SOURCE_FILE (mono_dl_vita);
++
++#endif /* HOST_VITA */
+diff --git a/src/mono/mono/utils/mono-hwcap-arm.c b/src/mono/mono/utils/mono-hwcap-arm.c
+index 47e44d14c..7d059c2fd 100644
+--- a/src/mono/mono/utils/mono-hwcap-arm.c
++++ b/src/mono/mono/utils/mono-hwcap-arm.c
+@@ -22,7 +22,9 @@
+ 
+ #include "mono/utils/mono-hwcap.h"
+ 
+-#if HAVE_GETAUXVAL && !defined(HOST_ANDROID)
++#if defined(HOST_VITA)
++/* SHEPHERD-VITA: fixed hardware, no auxv or /proc */
++#elif HAVE_GETAUXVAL && !defined(HOST_ANDROID)
+ #include <sys/auxv.h>
+ #elif defined(__APPLE__)
+ #include <mach/machine.h>
+@@ -38,7 +40,16 @@
+ void
+ mono_hwcap_arch_init (void)
+ {
+-#if HAVE_GETAUXVAL && !defined(HOST_ANDROID)
++#if defined(HOST_VITA)
++	/* SHEPHERD-VITA: PS Vita = 4x Cortex-A9 MPCore: ARMv7-A, Thumb-2, VFPv3-D32 + NEON */
++	mono_hwcap_arm_is_v5 = TRUE;
++	mono_hwcap_arm_is_v6 = TRUE;
++	mono_hwcap_arm_is_v7 = TRUE;
++	mono_hwcap_arm_has_vfp = TRUE;
++	mono_hwcap_arm_has_vfp3 = TRUE;
++	mono_hwcap_arm_has_thumb = TRUE;
++	mono_hwcap_arm_has_thumb2 = TRUE;
++#elif HAVE_GETAUXVAL && !defined(HOST_ANDROID)
+ 	unsigned long hwcap;
+ 	unsigned long platform;
+ 
+diff --git a/src/mono/mono/utils/mono-logger.c b/src/mono/mono/utils/mono-logger.c
+index 83a97b326..07bd91898 100644
+--- a/src/mono/mono/utils/mono-logger.c
++++ b/src/mono/mono/utils/mono-logger.c
+@@ -153,11 +153,14 @@ mono_trace_set_logdest_string (const char *dest)
+ 		if (mono_internal_current_level == G_LOG_LEVEL_ERROR || mono_internal_current_level == G_LOG_LEVEL_CRITICAL)
+ 			mono_trace_set_level (G_LOG_LEVEL_WARNING);
+ 
++#ifndef HOST_VITA
++	/* SHEPHERD-VITA: no syslog on the PS Vita; MONO_LOG_DEST=syslog falls through to the log file writer */
+ 	} else if (dest && !strcmp("syslog", dest)) {
+ 		logger.opener = mono_log_open_syslog;
+ 		logger.writer = mono_log_write_syslog;
+ 		logger.closer = mono_log_close_syslog;
+ 		logger.dest   = (char *) dest;
++#endif
+ 	} else {
+ 		logger.opener = mono_log_open_logfile;
+ 		logger.writer = mono_log_write_logfile;
+diff --git a/src/mono/mono/utils/mono-mmap-vita.c b/src/mono/mono/utils/mono-mmap-vita.c
+new file mode 100644
+index 000000000..915921b5f
+--- /dev/null
++++ b/src/mono/mono/utils/mono-mmap-vita.c
+@@ -0,0 +1,477 @@
++/**
++ * \file
++ * SHEPHERD-VITA: mono_valloc/mono_vfree/mono_mprotect for the PS Vita, without mmap.
++ *
++ * The Vita has no mmap and no per-page protection for user memory. Mono's "virtual memory" users
++ * (sgen nursery, major-heap blocks, LOS sections, card tables, hazard pointers, interpreter stacks, ...)
++ * are served from ONE large USER_RW memory block, carved in 4 KiB pages:
++ *   - free space is a sorted array of page extents (first fit, any power-of-two alignment);
++ *   - frees may return any page-aligned subrange of an earlier allocation (sgen frees runs of blocks)
++ *     and coalesce with their neighbours;
++ *   - every allocation is zero-filled (callers rely on anonymous-mmap semantics);
++ *   - DATA ONLY: requests for executable memory are refused and counted. The runtime is interpreter +
++ *     static AOT; nothing may generate code at run time.
++ * The arena is either handed over by the host (mono_vita_vm_arena_init) or allocated here on first use
++ * with sceKernelAllocMemBlock (budget from mono_vita_vm_arena_set_budget, default 64 MiB).
++ *
++ * Fatal errors (double free, a free outside the arena, corrupt bookkeeping) are raised only AFTER
++ * arena_mutex is released: g_error runs the host's fatal log handler, which reads the arena stats.
++ * Nothing in this file calls out (g_error/g_assert/logging) while it holds the lock.
++ */
++
++#include <config.h>
++
++#ifdef HOST_VITA
++
++#include <glib.h>
++#include <string.h>
++#include <errno.h>
++#include <pthread.h>
++
++#include <psp2/kernel/sysmem.h>
++
++#include "mono-mmap.h"
++#include "mono-mmap-internals.h"
++#include "mono-vita.h"
++#include <mono/utils/mono-errno.h>
++
++#define VITA_PAGE 4096u
++#define VITA_DEFAULT_ARENA_BUDGET (64u * 1024 * 1024)
++#define VITA_DEFAULT_LOG_STEP (8u * 1024 * 1024)
++
++typedef struct {
++	guint32 start; /* page index from arena_base */
++	guint32 count; /* pages */
++} VitaExtent;
++
++static pthread_mutex_t arena_mutex = PTHREAD_MUTEX_INITIALIZER;
++static guint8 *arena_base;          /* first allocatable page */
++static guint32 arena_pages;
++static VitaExtent *extents;         /* sorted by start, non-adjacent (always coalesced) */
++static guint32 n_extents, max_extents;
++static size_t arena_budget = VITA_DEFAULT_ARENA_BUDGET;
++static SceUID arena_block = -1;     /* only when the runtime allocated the block itself */
++static gboolean arena_failed_init;
++
++static size_t used_bytes, peak_bytes, next_log_mark;
++static guint32 n_allocs, n_frees, n_failed, n_exec;
++
++static size_t log_step = VITA_DEFAULT_LOG_STEP;
++static void default_log (const char *event, const MonoVitaArenaStats *stats, size_t request);
++static MonoVitaArenaLogFn log_fn = default_log;
++
++static void
++default_log (const char *event, const MonoVitaArenaStats *stats, size_t request)
++{
++	g_message ("vita-arena %s: used %u KiB, peak %u KiB of %u KiB, %u free extents (largest %u KiB), request %u KiB, exec refused %u",
++		event, (unsigned)(stats->used / 1024), (unsigned)(stats->peak / 1024), (unsigned)(stats->arena_size / 1024),
++		stats->free_extents, (unsigned)(stats->largest_free / 1024), (unsigned)(request / 1024), stats->exec_requests);
++}
++
++static void
++fill_stats_locked (MonoVitaArenaStats *s)
++{
++	guint32 largest = 0;
++	for (guint32 i = 0; i < n_extents; ++i)
++		if (extents [i].count > largest)
++			largest = extents [i].count;
++	s->arena_size = (size_t)arena_pages * VITA_PAGE;
++	s->used = used_bytes;
++	s->peak = peak_bytes;
++	s->largest_free = (size_t)largest * VITA_PAGE;
++	s->free_extents = n_extents;
++	s->failed_allocs = n_failed;
++	s->exec_requests = n_exec;
++	s->allocs = n_allocs;
++	s->frees = n_frees;
++}
++
++/* Lays out the bookkeeping at the start of [base, base+size) and makes the rest one free extent. */
++static int
++arena_setup_locked (void *base, size_t size)
++{
++	guint8 *b = (guint8 *)base;
++	if (!b || ((gsize)b & (VITA_PAGE - 1)) || size < 16 * VITA_PAGE)
++		return -1;
++	guint32 total_pages = (guint32)(size / VITA_PAGE);
++	/* free extents are separated by used pages: at most ceil(pages/2) of them */
++	guint32 cap = total_pages / 2 + 2;
++	guint32 meta_pages = (guint32)((cap * sizeof (VitaExtent) + VITA_PAGE - 1) / VITA_PAGE);
++	extents = (VitaExtent *)b;
++	max_extents = cap;
++	arena_base = b + (size_t)meta_pages * VITA_PAGE;
++	arena_pages = total_pages - meta_pages;
++	extents [0].start = 0;
++	extents [0].count = arena_pages;
++	n_extents = 1;
++	next_log_mark = log_step;
++	return 0;
++}
++
++static gboolean
++arena_ensure_locked (void)
++{
++	if (arena_base)
++		return TRUE;
++	if (arena_failed_init)
++		return FALSE;
++	size_t size = (arena_budget + VITA_PAGE - 1) & ~(size_t)(VITA_PAGE - 1);
++	SceUID blk = sceKernelAllocMemBlock ("mono-vm-arena", SCE_KERNEL_MEMBLOCK_TYPE_USER_RW, size, NULL);
++	void *base = NULL;
++	if (blk < 0 || sceKernelGetMemBlockBase (blk, &base) < 0 || arena_setup_locked (base, size) != 0) {
++		if (blk >= 0)
++			sceKernelFreeMemBlock (blk);
++		arena_failed_init = TRUE;
++		return FALSE;
++	}
++	arena_block = blk;
++	return TRUE;
++}
++
++int
++mono_vita_vm_arena_init (void *base, size_t size)
++{
++	int res;
++	pthread_mutex_lock (&arena_mutex);
++	if (arena_base)
++		res = -1; /* already initialized (explicitly or by a first allocation) */
++	else
++		res = arena_setup_locked (base, size);
++	pthread_mutex_unlock (&arena_mutex);
++	return res;
++}
++
++void
++mono_vita_vm_arena_set_budget (size_t size)
++{
++	pthread_mutex_lock (&arena_mutex);
++	if (!arena_base)
++		arena_budget = size;
++	pthread_mutex_unlock (&arena_mutex);
++}
++
++void
++mono_vita_vm_arena_get_stats (MonoVitaArenaStats *stats)
++{
++	pthread_mutex_lock (&arena_mutex);
++	fill_stats_locked (stats);
++	pthread_mutex_unlock (&arena_mutex);
++}
++
++int
++mono_vita_vm_arena_try_get_stats (MonoVitaArenaStats *stats)
++{
++	/* never blocks: for fatal-error paths, which may run on a thread that is inside an arena call */
++	if (pthread_mutex_trylock (&arena_mutex) != 0)
++		return -1;
++	fill_stats_locked (stats);
++	pthread_mutex_unlock (&arena_mutex);
++	return 0;
++}
++
++void
++mono_vita_vm_arena_set_log (MonoVitaArenaLogFn fn, size_t step)
++{
++	pthread_mutex_lock (&arena_mutex);
++	log_fn = fn;
++	log_step = step ? step : VITA_DEFAULT_LOG_STEP;
++	next_log_mark = (used_bytes / log_step + 1) * log_step;
++	pthread_mutex_unlock (&arena_mutex);
++}
++
++static void
++extent_remove (guint32 i)
++{
++	memmove (&extents [i], &extents [i + 1], (n_extents - i - 1) * sizeof (VitaExtent));
++	n_extents--;
++}
++
++/* FALSE (nothing changed) when the extent table is full. That cannot happen while the bookkeeping is intact
++ * (free extents are never adjacent, so there are at most pages/2 + 1 of them); the caller reports it after
++ * releasing the lock. */
++static gboolean
++extent_insert (guint32 i, guint32 start, guint32 count)
++{
++	if (n_extents >= max_extents)
++		return FALSE;
++	memmove (&extents [i + 1], &extents [i], (n_extents - i) * sizeof (VitaExtent));
++	extents [i].start = start;
++	extents [i].count = count;
++	n_extents++;
++	return TRUE;
++}
++
++/* Takes pages [start, start+count) out of extent i, which must contain them. FALSE (nothing changed) when
++ * the split needs an extent slot and none is left. */
++static gboolean
++extent_carve (guint32 i, guint32 start, guint32 count)
++{
++	VitaExtent e = extents [i];
++	guint32 pre = start - e.start;
++	guint32 post = e.start + e.count - (start + count);
++	if (pre && post) {
++		if (!extent_insert (i + 1, start + count, post))
++			return FALSE;
++		extents [i].count = pre;
++	} else if (pre) {
++		extents [i].count = pre;
++	} else if (post) {
++		extents [i].start = start + count;
++		extents [i].count = post;
++	} else {
++		extent_remove (i);
++	}
++	return TRUE;
++}
++
++#define VITA_ALLOC_NO_SPACE (-1)
++#define VITA_ALLOC_TABLE_FULL (-2) /* corrupt bookkeeping: reported by the caller after unlocking */
++
++/* Returns the page index of an allocation of 'pages' pages aligned to 'align' bytes, or VITA_ALLOC_*. */
++static gint64
++arena_alloc_locked (guint32 pages, size_t align, guint8 *hint, gboolean fixed)
++{
++	if (hint && hint >= arena_base && hint < arena_base + (size_t)arena_pages * VITA_PAGE &&
++	    !(((gsize)hint) & (VITA_PAGE - 1)) && !(((gsize)hint) & (align - 1))) {
++		guint32 hp = (guint32)((hint - arena_base) / VITA_PAGE);
++		for (guint32 i = 0; i < n_extents && extents [i].start <= hp; ++i) {
++			if (hp >= extents [i].start && (guint64)hp + pages <= (guint64)extents [i].start + extents [i].count)
++				return extent_carve (i, hp, pages) ? hp : VITA_ALLOC_TABLE_FULL;
++		}
++	}
++	if (fixed)
++		return VITA_ALLOC_NO_SPACE;
++	for (guint32 i = 0; i < n_extents; ++i) {
++		gsize abs = (gsize)(arena_base + (size_t)extents [i].start * VITA_PAGE);
++		gsize aligned = (abs + align - 1) & ~(gsize)(align - 1);
++		guint32 pad = (guint32)((aligned - abs) / VITA_PAGE);
++		if ((guint64)pad + pages <= extents [i].count) {
++			guint32 start = extents [i].start + pad;
++			return extent_carve (i, start, pages) ? start : VITA_ALLOC_TABLE_FULL;
++		}
++	}
++	return VITA_ALLOC_NO_SPACE;
++}
++
++typedef enum {
++	VITA_FREE_OK,
++	VITA_FREE_OVERLAP,     /* double free: the range overlaps the free extent in *conflict */
++	VITA_FREE_TABLE_FULL   /* corrupt bookkeeping */
++} VitaFreeStatus;
++
++/* Returns the range [start, start+pages) to the free list. Changes nothing unless it returns VITA_FREE_OK;
++ * the caller raises the error after releasing arena_mutex. */
++static VitaFreeStatus
++arena_free_locked (guint32 start, guint32 pages, VitaExtent *conflict)
++{
++	guint32 i = 0;
++	/* first extent that starts after the freed range */
++	while (i < n_extents && extents [i].start < start)
++		i++;
++	if (i > 0 && extents [i - 1].start + extents [i - 1].count > start) {
++		*conflict = extents [i - 1];
++		return VITA_FREE_OVERLAP;
++	}
++	if (i < n_extents && start + pages > extents [i].start) {
++		*conflict = extents [i];
++		return VITA_FREE_OVERLAP;
++	}
++
++	gboolean merge_prev = i > 0 && extents [i - 1].start + extents [i - 1].count == start;
++	gboolean merge_next = i < n_extents && start + pages == extents [i].start;
++	if (merge_prev && merge_next) {
++		extents [i - 1].count += pages + extents [i].count;
++		extent_remove (i);
++	} else if (merge_prev) {
++		extents [i - 1].count += pages;
++	} else if (merge_next) {
++		extents [i].start = start;
++		extents [i].count += pages;
++	} else if (!extent_insert (i, start, pages)) {
++		return VITA_FREE_TABLE_FULL;
++	}
++	return VITA_FREE_OK;
++}
++
++static void *
++vita_valloc (void *addr, size_t length, size_t alignment, int flags, MonoMemAccountType type)
++{
++	MonoVitaArenaStats st;
++	const char *event = NULL;
++	void *res = NULL;
++
++	if (flags & MONO_MMAP_EXEC) {
++		/* Data memory only. Something tried to get memory to generate code into: refuse loudly. */
++		pthread_mutex_lock (&arena_mutex);
++		n_exec++;
++		pthread_mutex_unlock (&arena_mutex);
++		g_warning ("vita-arena: refused EXECUTABLE memory request (%u bytes, %s): the Vita runtime never generates code",
++			   (unsigned) length, mono_mem_account_type_name (type));
++		return NULL;
++	}
++	if (length == 0)
++		return NULL;
++	if (alignment < VITA_PAGE)
++		alignment = VITA_PAGE;
++	g_assert (!(alignment & (alignment - 1)));
++
++	size_t bytes = (length + VITA_PAGE - 1) & ~(size_t)(VITA_PAGE - 1);
++	if (!mono_valloc_can_alloc (bytes))
++		return NULL;
++
++	gboolean corrupt = FALSE;
++	pthread_mutex_lock (&arena_mutex);
++	if (arena_ensure_locked ()) {
++		gint64 p = arena_alloc_locked ((guint32)(bytes / VITA_PAGE), alignment, (guint8 *)addr, (flags & MONO_MMAP_FIXED) != 0);
++		if (p == VITA_ALLOC_TABLE_FULL) {
++			corrupt = TRUE;
++			fill_stats_locked (&st);
++		} else if (p >= 0) {
++			res = arena_base + (size_t)p * VITA_PAGE;
++			used_bytes += bytes;
++			n_allocs++;
++			if (used_bytes > peak_bytes)
++				peak_bytes = used_bytes;
++			if (used_bytes >= next_log_mark) {
++				next_log_mark = (used_bytes / log_step + 1) * log_step;
++				event = "grow";
++			}
++		} else {
++			n_failed++;
++			event = "FAIL";
++		}
++	} else {
++		n_failed++;
++		event = "FAIL (no arena)";
++	}
++	if (event)
++		fill_stats_locked (&st);
++	pthread_mutex_unlock (&arena_mutex);
++
++	if (corrupt)
++		g_error ("vita-arena: free-extent table full (%u of %u) allocating %u KiB: arena bookkeeping is corrupt",
++			 st.free_extents, (unsigned) max_extents, (unsigned)(bytes / 1024));
++	if (res) {
++		memset (res, 0, bytes);
++		mono_account_mem (type, (ssize_t)bytes);
++	}
++	if (event && log_fn)
++		log_fn (event, &st, bytes);
++	return res;
++}
++
++int
++mono_pagesize (void)
++{
++	return VITA_PAGE;
++}
++
++int
++mono_valloc_granule (void)
++{
++	return VITA_PAGE;
++}
++
++void
++mono_setmmapjit (int flag)
++{
++	/* no JIT on the Vita */
++}
++
++void*
++mono_valloc (void *addr, size_t length, int flags, MonoMemAccountType type)
++{
++	return vita_valloc (addr, length, VITA_PAGE, flags, type);
++}
++
++void*
++mono_valloc_aligned (size_t size, size_t alignment, int flags, MonoMemAccountType type)
++{
++	return vita_valloc (NULL, size, alignment, flags, type);
++}
++
++int
++mono_vfree (void *addr, size_t length, MonoMemAccountType type)
++{
++	guint8 *a = (guint8 *)addr;
++	if (!a || !length)
++		return 0;
++	size_t bytes = (length + VITA_PAGE - 1) & ~(size_t)(VITA_PAGE - 1);
++	VitaFreeStatus fs = VITA_FREE_OK;
++	VitaExtent conflict = { 0, 0 };
++	pthread_mutex_lock (&arena_mutex);
++	guint8 *base = arena_base;
++	size_t span = (size_t)arena_pages * VITA_PAGE;
++	gboolean outside = !base || a < base || ((gsize)a & (VITA_PAGE - 1)) || a + bytes > base + span;
++	if (!outside) {
++		fs = arena_free_locked ((guint32)((a - base) / VITA_PAGE), (guint32)(bytes / VITA_PAGE), &conflict);
++		if (fs == VITA_FREE_OK) {
++			used_bytes -= bytes;
++			n_frees++;
++		}
++	}
++	pthread_mutex_unlock (&arena_mutex);
++
++	/* only now, with the lock released (the host's fatal log handler reads the arena stats) */
++	if (outside)
++		g_error ("vita-arena: mono_vfree (%p, %u) outside the arena [%p, +%u KiB)",
++			 addr, (unsigned) length, base, (unsigned)(span / 1024));
++	if (fs == VITA_FREE_OVERLAP)
++		g_error ("vita-arena: double free of %p (+%u pages): overlaps free extent %p (+%u pages)",
++			 addr, (unsigned)(bytes / VITA_PAGE), base + (size_t)conflict.start * VITA_PAGE, conflict.count);
++	if (fs == VITA_FREE_TABLE_FULL)
++		g_error ("vita-arena: free-extent table full freeing %p (+%u pages): arena bookkeeping is corrupt",
++			 addr, (unsigned)(bytes / VITA_PAGE));
++	mono_account_mem (type, -(ssize_t)bytes);
++	return 0;
++}
++
++int
++mono_mprotect (void *addr, size_t length, int flags)
++{
++	if (flags & MONO_MMAP_EXEC) {
++		pthread_mutex_lock (&arena_mutex);
++		n_exec++;
++		pthread_mutex_unlock (&arena_mutex);
++		g_warning ("vita-arena: refused mprotect(EXEC) on %p (+%u): data memory only", addr, (unsigned) length);
++		mono_set_errno (EACCES);
++		return -1;
++	}
++	if (flags & MONO_MMAP_DISCARD)
++		memset (addr, 0, length);
++	/* No page protection for user memory on the Vita: PROT_NONE guard pages are not enforced
++	 * (explicit null checks and stack-limit checks are used instead). */
++	return 0;
++}
++
++/* ---- V6: max-heap-size refusals (sgen-memory-governor.c, MONO_VITA_HEAP_LIMIT_HOOK) */
++static MonoVitaHeapLimitFn heap_limit_fn;
++static volatile unsigned heap_limit_count;
++
++void
++mono_vita_set_heap_limit_callback (MonoVitaHeapLimitFn fn)
++{
++	heap_limit_fn = fn;
++}
++
++unsigned
++mono_vita_heap_limit_count (void)
++{
++	return heap_limit_count;
++}
++
++void mono_vita_sgen_heap_limit (size_t request, int space, size_t allocated, size_t max_heap);
++void
++mono_vita_sgen_heap_limit (size_t request, int space, size_t allocated, size_t max_heap)
++{
++	unsigned n = ++heap_limit_count;
++	if (heap_limit_fn)
++		heap_limit_fn (request, space, allocated, max_heap, n);
++}
++
++#else
++
++#include <mono/utils/mono-compiler.h>
++MONO_EMPTY_SOURCE_FILE (mono_mmap_vita);
++
++#endif /* HOST_VITA */
+diff --git a/src/mono/mono/utils/mono-mmap.c b/src/mono/mono/utils/mono-mmap.c
+index 09af6f899..2f9db7eba 100644
+--- a/src/mono/mono/utils/mono-mmap.c
++++ b/src/mono/mono/utils/mono-mmap.c
+@@ -133,6 +133,10 @@ mono_mem_account_register_counters (void)
+ // WebAssembly implementation in mono-mmap-wasm.c
+ #define HAVE_VALLOC_ALIGNED
+ 
++#elif defined(HOST_VITA)
++// SHEPHERD-VITA: arena implementation (no mmap, data memory only) in mono-mmap-vita.c
++#define HAVE_VALLOC_ALIGNED
++
+ #else
+ 
+ #if defined(HAVE_MMAP)
+diff --git a/src/mono/mono/utils/mono-os-mutex.c b/src/mono/mono/utils/mono-os-mutex.c
+index b306c91e2..6f2eb7dd4 100644
+--- a/src/mono/mono/utils/mono-os-mutex.c
++++ b/src/mono/mono/utils/mono-os-mutex.c
+@@ -48,7 +48,12 @@ mono_os_cond_timedwait (mono_cond_t *cond, mono_mutex_t *mutex, guint32 timeout_
+ 	}
+ 	return res != 0 ? -1 : 0;
+ #else
+-#ifdef BROKEN_CLOCK_SOURCE
++#if defined(HOST_VITA)
++	/* SHEPHERD-VITA: the same clock pthread-embedded's pte_relmillisecs measures against */
++	res = clock_gettime (CLOCK_REALTIME, &ts);
++	if (G_UNLIKELY (res != 0))
++		g_error ("%s: clock_gettime failed with \"%s\" (%d)", __func__, g_strerror (errno), errno);
++#elif defined(BROKEN_CLOCK_SOURCE)
+ 	struct timeval tv;
+ 
+ 	/* clock_gettime is not supported in MAC OS x */
+diff --git a/src/mono/mono/utils/mono-os-mutex.h b/src/mono/mono/utils/mono-os-mutex.h
+index 20055973f..f90da626b 100644
+--- a/src/mono/mono/utils/mono-os-mutex.h
++++ b/src/mono/mono/utils/mono-os-mutex.h
+@@ -36,7 +36,8 @@
+ 
+ #if !defined(HOST_WIN32)
+ 
+-#if !defined(CLOCK_MONOTONIC) || defined(HOST_DARWIN) || defined(HOST_WASI)
++#if !defined(CLOCK_MONOTONIC) || defined(HOST_DARWIN) || defined(HOST_WASI) || defined(HOST_VITA)
++/* SHEPHERD-VITA: pthread-embedded ignores the condattr clock and measures abstime against CLOCK_REALTIME */
+ #define BROKEN_CLOCK_SOURCE
+ #endif
+ 
+diff --git a/src/mono/mono/utils/mono-os-semaphore.h b/src/mono/mono/utils/mono-os-semaphore.h
+index bf06c79ef..ca30beaff 100644
+--- a/src/mono/mono/utils/mono-os-semaphore.h
++++ b/src/mono/mono/utils/mono-os-semaphore.h
+@@ -236,9 +236,22 @@ mono_os_sem_timedwait (MonoSemType *sem, guint32 timeout_ms, MonoSemFlags flags)
+ 	if (timeout_ms == MONO_INFINITE_WAIT)
+ 		return (MonoSemTimedwaitRet) mono_os_sem_wait (sem, flags);
+ 
++#ifdef HOST_VITA
++	/* SHEPHERD-VITA: pthread-embedded converts the absolute timeout back to a relative one with
++	 * clock_gettime (CLOCK_REALTIME) (via ftime); use exactly that clock so timeouts are neither early nor late. */
++	{
++		struct timespec now;
++		res = clock_gettime (CLOCK_REALTIME, &now);
++		if (G_UNLIKELY (res != 0))
++			g_error ("%s: clock_gettime failed with \"%s\" (%d)", __func__, g_strerror (errno), errno);
++		t.tv_sec = now.tv_sec;
++		t.tv_usec = now.tv_nsec / 1000;
++	}
++#else
+ 	res = gettimeofday (&t, NULL);
+ 	if (G_UNLIKELY (res != 0))
+ 		g_error ("%s: gettimeofday failed with \"%s\" (%d)", __func__, g_strerror (errno), errno);
++#endif
+ 
+ 	ts.tv_sec = timeout_ms / 1000 + t.tv_sec;
+ 	ts.tv_nsec = (timeout_ms % 1000) * 1000000 + t.tv_usec * 1000;
+diff --git a/src/mono/mono/utils/mono-proclib.c b/src/mono/mono/utils/mono-proclib.c
+index 2627c5aa0..5284d91cc 100644
+--- a/src/mono/mono/utils/mono-proclib.c
++++ b/src/mono/mono/utils/mono-proclib.c
+@@ -69,6 +69,9 @@ mono_cpu_count (void)
+ 	SYSTEM_INFO info;
+ 	GetSystemInfo (&info);
+ 	return info.dwNumberOfProcessors;
++#elif defined(HOST_VITA)
++	/* SHEPHERD-VITA: an application gets the three user cores of the Cortex-A9 MPCore (core 3 belongs to the system) */
++	return 3;
+ #else
+ #ifdef HOST_ANDROID
+ 	/* Android tries really hard to save power by powering off CPUs on SMP phones which
+diff --git a/src/mono/mono/utils/mono-threads-coop.c b/src/mono/mono/utils/mono-threads-coop.c
+index 4f3ea537c..d8998c506 100644
+--- a/src/mono/mono/utils/mono-threads-coop.c
++++ b/src/mono/mono/utils/mono-threads-coop.c
+@@ -656,10 +656,15 @@ mono_threads_suspend_policy_init (void)
+ 
+ 		MONO_DEFINE_LAST_ERROR_RESTORE_POINT;
+ 
++#ifdef HOST_VITA
++		/* SHEPHERD-VITA: no async signals -> full cooperative suspend is the only policy that can work */
++		policy = MONO_THREADS_SUSPEND_FULL_COOP;
++#else
+ 		   (policy = threads_suspend_policy_getenv ())
+ 		|| (policy = threads_suspend_policy_default ())
+ 		|| (policy = threads_suspend_policy_getenv_compat ())
+ 		|| (policy = MONO_THREADS_SUSPEND_FULL_PREEMPTIVE);
++#endif
+ 
+ 		MONO_RESTORE_LAST_ERROR_FROM_RESTORE_POINT;
+ 
+diff --git a/src/mono/mono/utils/mono-threads-vita.c b/src/mono/mono/utils/mono-threads-vita.c
+new file mode 100644
+index 000000000..ba4403ce3
+--- /dev/null
++++ b/src/mono/mono/utils/mono-threads-vita.c
+@@ -0,0 +1,336 @@
++/**
++ * \file
++ * SHEPHERD-VITA: low-level threading backend for the PS Vita (vitasdk: newlib + pthread-embedded on SceKernel threads).
++ *
++ * Cooperative suspend only. The Vita has no asynchronous signals (pthread_kill returns EINVAL), so a thread can
++ * never be stopped from outside: every runtime thread polls for suspend requests at safepoints and is considered
++ * suspended while it is in a GC-safe (blocking) region. Nothing here installs a signal or exception handler.
++ *
++ * Stacks: SceKernel threads get a kernel-allocated stack with no guard page; the size is fixed at creation.
++ * Stack bounds come from sceKernelGetThreadInfo. TLS goes through pthread keys (pthread-embedded keeps a
++ * per-thread key list; gcc is built with --disable-tls, so there is no __thread).
++ */
++
++#include <config.h>
++
++#include <mono/utils/mono-threads.h>
++#include <mono/utils/mono-compiler.h>
++
++#if defined (USE_VITA_BACKEND)
++
++#include <mono/utils/mono-threads-api.h>
++#include <mono/utils/mono-threads-coop.h>
++#include <mono/utils/mono-threads-debug.h>
++#include <mono/utils/mono-mmap.h>
++#include <mono/utils/mono-vita.h>
++#include <mono/metadata/gc-internals.h>
++
++#include <glib.h>
++#include <errno.h>
++#include <string.h>
++#include <pthread.h>
++
++#include <psp2/kernel/threadmgr.h>
++
++#define VITA_MIN_THREAD_STACK (64 * 1024)
++#define VITA_DEFAULT_THREAD_STACK (1024 * 1024)
++
++static size_t vita_default_stack_size = VITA_DEFAULT_THREAD_STACK;
++static SceUID vita_main_thread_uid = -1;
++
++void
++mono_vita_set_default_thread_stack_size (size_t size)
++{
++	if (size < VITA_MIN_THREAD_STACK)
++		size = VITA_MIN_THREAD_STACK;
++	vita_default_stack_size = (size + 4095) & ~(size_t)4095;
++}
++
++/* ---- suspend backend: coop only ---- */
++
++void
++mono_threads_suspend_init_signals (void)
++{
++	/* no signals on the Vita */
++}
++
++void
++mono_threads_suspend_init (void)
++{
++	if (!mono_threads_is_cooperative_suspension_enabled ())
++		g_error ("The PS Vita runtime supports cooperative suspend only (MONO_THREADS_SUSPEND=coop)");
++}
++
++void
++mono_threads_suspend_register (MonoThreadInfo *info)
++{
++	/* Runs on the attaching thread. Mono never cancels threads; with cancellation disabled pthread-embedded
++	 * waits block in sceKernelWaitSema directly instead of polling a cancel flag every 0.5 ms
++	 * (pte_cancellable_wait -> pte_osSemaphoreCancellablePend), which would cost thousands of wakeups per
++	 * second per idle thread on the Vita. */
++	int old;
++	pthread_setcancelstate (PTHREAD_CANCEL_DISABLE, &old);
++}
++
++void
++mono_threads_suspend_free (MonoThreadInfo *info)
++{
++}
++
++gboolean
++mono_threads_suspend_begin_async_suspend (MonoThreadInfo *info, gboolean interrupt_kernel)
++{
++	/* Only reachable with preemptive/hybrid suspend, which this backend refuses in suspend_init. */
++	g_error ("%s: asynchronous suspend is impossible on the PS Vita (no signals)", __func__);
++	return FALSE;
++}
++
++gboolean
++mono_threads_suspend_check_suspend_result (MonoThreadInfo *info)
++{
++	return TRUE;
++}
++
++gboolean
++mono_threads_suspend_begin_async_resume (MonoThreadInfo *info)
++{
++	/* Coop resume posts the thread's resume semaphore in mono-threads.c; nothing asynchronous to do. */
++	return TRUE;
++}
++
++void
++mono_threads_suspend_abort_syscall (MonoThreadInfo *info)
++{
++	/* No way to interrupt a blocking SceKernel call from another thread without signals. Blocking waits in
++	 * the runtime are GC-safe (so they never stall a stop-the-world) and interruptible waits go through
++	 * MonoOSEvent/semaphores that the interrupt path posts directly. */
++}
++
++gint
++mono_threads_suspend_search_alternative_signal (void)
++{
++	return -1;
++}
++
++gint
++mono_threads_suspend_get_suspend_signal (void)
++{
++	return -1;
++}
++
++gint
++mono_threads_suspend_get_restart_signal (void)
++{
++	return -1;
++}
++
++gint
++mono_threads_suspend_get_abort_signal (void)
++{
++	return -1;
++}
++
++/* ---- platform threads ---- */
++
++int
++mono_thread_info_get_system_max_stack_size (void)
++{
++	/* the kernel caps a thread stack well below this; let the create call fail if it is too big */
++	return 32 * 1024 * 1024;
++}
++
++gboolean
++mono_thread_platform_create_thread (MonoThreadStart thread_fn, gpointer thread_data, gsize* const stack_size, MonoNativeThreadId *tid)
++{
++	pthread_attr_t attr;
++	pthread_t thread;
++	gint res;
++	gsize set_stack_size = stack_size ? *stack_size : 0;
++
++	if (set_stack_size == 0)
++		set_stack_size = vita_default_stack_size;
++	if (set_stack_size < VITA_MIN_THREAD_STACK)
++		set_stack_size = VITA_MIN_THREAD_STACK;
++	set_stack_size = (set_stack_size + 4095) & ~(gsize)4095;
++
++	res = pthread_attr_init (&attr);
++	if (res != 0)
++		g_error ("%s: pthread_attr_init failed, error: \"%s\" (%d)", __func__, g_strerror (res), res);
++
++	/* pthread-embedded passes this to sceKernelCreateThread (stackaddr is ignored: the kernel allocates the stack) */
++	res = pthread_attr_setstacksize (&attr, set_stack_size);
++	if (res != 0)
++		g_error ("%s: pthread_attr_setstacksize failed, error: \"%s\" (%d)", __func__, g_strerror (res), res);
++
++	res = mono_gc_pthread_create (&thread, &attr, (gpointer (*)(gpointer)) thread_fn, thread_data);
++	pthread_attr_destroy (&attr);
++	if (res) {
++		g_warning ("%s: pthread_create (stack %u KiB) failed: %d", __func__, (unsigned)(set_stack_size / 1024), res);
++		return FALSE;
++	}
++
++	if (tid)
++		*tid = thread;
++	if (stack_size)
++		*stack_size = set_stack_size;
++	return TRUE;
++}
++
++void
++mono_threads_platform_get_stack_bounds (guint8 **staddr, size_t *stsize)
++{
++	SceKernelThreadInfo info;
++	int tmp;
++	int res;
++
++	memset (&info, 0, sizeof (info));
++	info.size = sizeof (info);
++	res = sceKernelGetThreadInfo (sceKernelGetThreadId (), &info);
++	if (G_UNLIKELY (res < 0))
++		g_error ("%s: sceKernelGetThreadInfo failed: 0x%08x", __func__, res);
++
++	*staddr = (guint8 *) info.stack;
++	*stsize = (size_t) info.stackSize;
++
++	/* SceKernelThreadInfo.stack is the low end of the stack block; the stack grows down from stack + stackSize.
++	 * Accept the other reading too (stack = top) rather than trusting undocumented layout blindly. */
++	guint8 *sp = (guint8 *)&tmp;
++	if (sp >= *staddr && sp < *staddr + *stsize)
++		return;
++	if (sp < *staddr && sp >= *staddr - *stsize) {
++		*staddr -= *stsize;
++		return;
++	}
++	g_error ("%s: thread 0x%x stack info [%p, +0x%x) does not contain sp %p", __func__,
++		 (unsigned) sceKernelGetThreadId (), (void *) info.stack, (unsigned) *stsize, (void*)sp);
++}
++
++gboolean
++mono_threads_platform_is_main_thread (void)
++{
++	return vita_main_thread_uid == sceKernelGetThreadId ();
++}
++
++void
++mono_threads_platform_init (void)
++{
++	/* the thread that initializes the runtime (the host runs Mono on a created thread with a big stack) */
++	vita_main_thread_uid = sceKernelGetThreadId ();
++}
++
++gboolean
++mono_threads_platform_in_critical_region (THREAD_INFO_TYPE *info)
++{
++	return FALSE;
++}
++
++gboolean
++mono_threads_platform_yield (void)
++{
++	/* pthread-embedded's sched_yield sleeps a full millisecond; a short delay is enough to let an
++	 * equal-priority thread on this core run. */
++	sceKernelDelayThread (100);
++	return TRUE;
++}
++
++void
++mono_threads_platform_exit (gsize exit_code)
++{
++	pthread_exit ((gpointer) exit_code);
++}
++
++gboolean
++mono_thread_platform_external_eventloop_keepalive_check (void)
++{
++	return FALSE;
++}
++
++MonoNativeThreadId
++mono_native_thread_id_get (void)
++{
++	return pthread_self ();
++}
++
++guint64
++mono_native_thread_os_id_get (void)
++{
++	return (guint64)(guint32) sceKernelGetThreadId ();
++}
++
++gboolean
++mono_native_thread_id_equals (MonoNativeThreadId id1, MonoNativeThreadId id2)
++{
++	return pthread_equal (id1, id2);
++}
++
++typedef struct {
++	void *(*func) (void *);
++	void *arg;
++} VitaNativeThreadStart;
++
++static void *
++vita_native_thread_start (void *data)
++{
++	VitaNativeThreadStart start = *(VitaNativeThreadStart *) data;
++	int old;
++
++	g_free (data);
++	/* Native helper threads (sgen thread-pool workers, the utility thread) never pass through
++	 * mono_threads_suspend_register: disable cancellation here too, so their idle condition waits block in
++	 * sceKernelWaitSema instead of polling pthread-embedded's cancel flag every 0.5 ms. */
++	pthread_setcancelstate (PTHREAD_CANCEL_DISABLE, &old);
++	return start.func (start.arg);
++}
++
++gboolean
++mono_native_thread_create (MonoNativeThreadId *tid, gpointer func, gpointer arg)
++{
++	pthread_attr_t attr;
++	int res;
++	VitaNativeThreadStart *start = g_new (VitaNativeThreadStart, 1);
++
++	start->func = (void *(*)(void *)) func;
++	start->arg = arg;
++	/* without an attr pthread-embedded uses _pthread_stack_default_user (or 32 KiB): be explicit */
++	pthread_attr_init (&attr);
++	pthread_attr_setstacksize (&attr, vita_default_stack_size);
++	res = pthread_create (tid, &attr, vita_native_thread_start, start);
++	pthread_attr_destroy (&attr);
++	if (res != 0)
++		g_free (start);
++	return res == 0;
++}
++
++size_t
++mono_native_thread_get_name (MonoNativeThreadId tid, char *name_out, size_t max_len)
++{
++	return 0;
++}
++
++void
++mono_native_thread_set_name (MonoNativeThreadId tid, const char *name)
++{
++	/* SceKernel thread names are fixed at creation ("pthread"); Mono keeps the managed name itself. */
++}
++
++gboolean
++mono_native_thread_join (MonoNativeThreadId tid)
++{
++	void *res;
++
++	return !pthread_join (tid, &res);
++}
++
++void
++mono_memory_barrier_process_wide (void)
++{
++	/* The Vita has no mprotect-induced IPI trick. A full barrier on this core plus a reschedule is the
++	 * closest equivalent; only FlushProcessWriteBuffers uses this (no JIT patching on the Vita). */
++	__sync_synchronize ();
++}
++
++#else
++
++MONO_EMPTY_SOURCE_FILE (mono_threads_vita);
++
++#endif /* USE_VITA_BACKEND */
+diff --git a/src/mono/mono/utils/mono-threads.h b/src/mono/mono/utils/mono-threads.h
+index b03a930db..1392b750a 100644
+--- a/src/mono/mono/utils/mono-threads.h
++++ b/src/mono/mono/utils/mono-threads.h
+@@ -130,6 +130,9 @@ and reduce the number of casts drastically.
+ 
+ #ifdef HOST_WASM
+ #define USE_WASM_BACKEND
++#elif defined (HOST_VITA)
++/* SHEPHERD-VITA: cooperative suspend only; vitasdk has no async signals (pthread_kill -> EINVAL). */
++#define USE_VITA_BACKEND
+ #elif defined (_POSIX_VERSION)
+ #if defined (__MACH__) && !defined (USE_SIGNALS_ON_MACH)
+ #define USE_MACH_BACKEND
+@@ -890,7 +893,7 @@ mono_win32_abort_blocking_io_call (THREAD_INFO_TYPE *info);
+ 		if (GetLastError () != _last_error_restore_point) \
+ 			mono_SetLastError (_last_error_restore_point);
+ 
+-#elif defined(USE_WASM_BACKEND) || defined (USE_POSIX_BACKEND)
++#elif defined(USE_WASM_BACKEND) || defined (USE_POSIX_BACKEND) || defined (USE_VITA_BACKEND)
+ 
+ #define MONO_DEFINE_LAST_ERROR_RESTORE_POINT     \
+ 	int _last_errno_restore_point = errno;
+diff --git a/src/mono/mono/utils/mono-vita-yield.c b/src/mono/mono/utils/mono-vita-yield.c
+new file mode 100644
+index 000000000..af3eef5c4
+--- /dev/null
++++ b/src/mono/mono/utils/mono-vita-yield.c
+@@ -0,0 +1,79 @@
++/**
++ * \file
++ * SHEPHERD-VITA: managed Thread.Yield for the PS Vita (icall.c's ves_icall_System_Threading_Thread_YieldInternal under HOST_VITA).
++ *
++ * The game polls with Thread.Yield: DOGames.Threading.DispatchThread's worker loop spins on an empty queue (IsEmpty, then
++ * Thread.Yield) for the whole run, and spine-unity's SkeletonAnimation.BaseLateUpdate / SkeletonRenderer.LateUpdate /
++ * AnimationState.WaitForBGProcessingToComplete wait for that worker the same way. With the runtime's platform yield
++ * (mono_threads_platform_yield: sceKernelDelayThread (100)) the idle worker wakes ~10,000 times a second and keeps most of a
++ * core busy (the Mac sim measured 79 % of one).
++ *
++ * Here a thread that yields back to back (it comes back within VITA_YIELD_GAP_US of its previous yield returning, i.e. it did no
++ * other work in between) backs off: the first 16 yields of a run sleep 100 us (as before: short completion waits stay fast), then
++ * 250, 500 and from the 64th on 1000 us. Any gap longer than VITA_YIELD_GAP_US starts a new run. So the idle worker settles at
++ * ~1,000 wake-ups a second; a wait that is still spinning after ~2 ms (16 short yields + 16 x 250 us) can overshoot its event by
++ * at most 1 ms. Only managed Thread.Yield takes this path: the runtime's own yields (stop-the-world restart, suspend retries,
++ * Thread.Sleep (0)) keep mono_threads_platform_yield.
++ *
++ * Per-thread state lives in a small table keyed by the SceKernel thread id (the toolchain has no __thread); a thread that finds no
++ * free slot yields the old way. The policy (mono-vita-yield.h) is pure and unit-tested on the Mac (vita/runtime/tests/test_yield.c).
++ */
++
++#include <config.h>
++
++#ifdef HOST_VITA
++
++#include <stdint.h>
++#include <psp2/kernel/threadmgr.h>
++#include <psp2/kernel/processmgr.h>
++#include <mono/utils/mono-vita.h>
++#include <mono/utils/mono-vita-yield.h>
++
++#define VY_SLOTS 64
++static struct { volatile SceUID tid; uint64_t last; unsigned run; } vy_slot [VY_SLOTS];
++static volatile uint64_t vy_calls, vy_delay_us, vy_backed_off, vy_no_slot;
++
++static int
++vy_find (SceUID tid)
++{
++	for (int i = 0; i < VY_SLOTS; i++)
++		if (vy_slot [i].tid == tid)
++			return i;
++	for (int i = 0; i < VY_SLOTS; i++)
++		if (vy_slot [i].tid == 0 && __sync_bool_compare_and_swap (&vy_slot [i].tid, 0, tid))
++			return i;
++	return -1;
++}
++
++void
++mono_vita_managed_yield (void)
++{
++	SceUID tid = sceKernelGetThreadId ();
++	int s = vy_find (tid);
++	unsigned run = 0;
++	if (s >= 0) {
++		run = mono_vita_yield_next_run (vy_slot [s].last, sceKernelGetProcessTimeWide (), vy_slot [s].run);
++		vy_slot [s].run = run;
++	} else {
++		__sync_fetch_and_add (&vy_no_slot, 1);
++	}
++	unsigned d = mono_vita_yield_delay_us (run);
++	__sync_fetch_and_add (&vy_calls, 1);
++	__sync_fetch_and_add (&vy_delay_us, d);
++	if (d > MONO_VITA_YIELD_BASE_US)
++		__sync_fetch_and_add (&vy_backed_off, 1);
++	sceKernelDelayThread (d);
++	if (s >= 0)
++		vy_slot [s].last = sceKernelGetProcessTimeWide ();
++}
++
++void
++mono_vita_get_yield_stats (uint64_t *calls, uint64_t *delay_us, uint64_t *backed_off, uint64_t *no_slot)
++{
++	if (calls) *calls = vy_calls;
++	if (delay_us) *delay_us = vy_delay_us;
++	if (backed_off) *backed_off = vy_backed_off;
++	if (no_slot) *no_slot = vy_no_slot;
++}
++
++#endif /* HOST_VITA */
+diff --git a/src/mono/mono/utils/mono-vita-yield.h b/src/mono/mono/utils/mono-vita-yield.h
+new file mode 100644
+index 000000000..0b1525dbf
+--- /dev/null
++++ b/src/mono/mono/utils/mono-vita-yield.h
+@@ -0,0 +1,33 @@
++/**
++ * \file
++ * SHEPHERD-VITA: the back-off policy of managed Thread.Yield on the PS Vita (mono-vita-yield.c). Pure and header-only so that
++ * the Mac unit test (vita/runtime/tests/test_yield.c) runs the exact code the device runs.
++ */
++#ifndef __MONO_UTILS_MONO_VITA_YIELD_H__
++#define __MONO_UTILS_MONO_VITA_YIELD_H__
++
++#include <stdint.h>
++
++/* a yield that starts less than this many microseconds after the same thread's previous yield returned continues a run */
++#define MONO_VITA_YIELD_GAP_US 200
++/* the platform yield's delay (mono-threads-vita.c), kept for the first yields of a run */
++#define MONO_VITA_YIELD_BASE_US 100
++#define MONO_VITA_YIELD_MAX_US 1000
++
++/* the run length after a yield that starts at 'now' (us); 'last' = when the previous one returned (0 = never), 'run' = its run length */
++static inline unsigned
++mono_vita_yield_next_run (uint64_t last, uint64_t now, unsigned run)
++{
++	if (last != 0 && now >= last && now - last < MONO_VITA_YIELD_GAP_US)
++		return run < 0xffffu ? run + 1 : run;
++	return 0;
++}
++
++/* the delay of a yield that is the run'th back-to-back one (0 = the first) */
++static inline unsigned
++mono_vita_yield_delay_us (unsigned run)
++{
++	return run < 16 ? MONO_VITA_YIELD_BASE_US : run < 32 ? 250 : run < 64 ? 500 : MONO_VITA_YIELD_MAX_US;
++}
++
++#endif
+diff --git a/src/mono/mono/utils/mono-vita.h b/src/mono/mono/utils/mono-vita.h
+new file mode 100644
+index 000000000..f11353357
+--- /dev/null
++++ b/src/mono/mono/utils/mono-vita.h
+@@ -0,0 +1,100 @@
++/**
++ * \file
++ * SHEPHERD-VITA: embedding API of the PS Vita (vitasdk, HOST_VITA) port of the Mono runtime.
++ *
++ * Self-contained on purpose (no Mono headers): the host includes it directly.
++ * Everything here is data memory only; the Vita runtime never generates or maps executable code.
++ */
++#ifndef __MONO_UTILS_MONO_VITA_H__
++#define __MONO_UTILS_MONO_VITA_H__
++
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#define MONO_VITA_API __attribute__((visibility("default")))
++
++/* ---- static symbol table (replaces dlopen/dlsym; see mono-dl-vita.c) ---- */
++typedef struct {
++	const char *name;
++	void *addr;
++} MonoVitaStaticSymbol;
++
++/* Registers a table of linked symbols. Lookups through mono_dl_open (NULL)/"__Internal" and the
++ * host's P/Invoke override resolve against all registered tables. May be called before mono init. */
++MONO_VITA_API void mono_vita_register_static_symbols (const MonoVitaStaticSymbol *symbols, int count);
++/* Returns NULL when the symbol is not in any registered table. */
++MONO_VITA_API void *mono_vita_lookup_static_symbol (const char *name);
++
++/* ---- VM arena: backs mono_valloc/mono_vfree/mono_mprotect (sgen nursery, major heap, LOS, ...) ---- */
++typedef struct {
++	size_t arena_size;      /* bytes managed by the arena (after the bookkeeping pages) */
++	size_t used;            /* bytes currently handed out */
++	size_t peak;            /* high-water mark of used */
++	size_t largest_free;    /* largest free extent */
++	unsigned int free_extents;
++	unsigned int failed_allocs;
++	unsigned int exec_requests; /* valloc/mprotect calls that asked for EXEC (served as data only / refused) */
++	unsigned int allocs, frees;
++} MonoVitaArenaStats;
++
++/* Give the runtime its arena: a USER_RW block the host allocated (base must be 4 KiB aligned).
++ * Must be called before mono_jit_init*. Returns 0 on success. */
++MONO_VITA_API int mono_vita_vm_arena_init (void *base, size_t size);
++/* Alternative: let the runtime allocate one sceKernelAllocMemBlock USER_RW block of this size on first use
++ * (default 64 MiB when neither this nor mono_vita_vm_arena_init is called). */
++MONO_VITA_API void mono_vita_vm_arena_set_budget (size_t size);
++MONO_VITA_API void mono_vita_vm_arena_get_stats (MonoVitaArenaStats *stats);
++/* Same, but never blocks: returns 0 with *stats filled, or -1 (stats untouched) when the arena lock is held.
++ * For fatal-error and exit paths, which may run on a thread that is inside an arena call. */
++MONO_VITA_API int mono_vita_vm_arena_try_get_stats (MonoVitaArenaStats *stats);
++/* Called (outside the arena lock) every time usage crosses another 'step' bytes and on every failed
++ * allocation; the default prints through g_message. */
++typedef void (*MonoVitaArenaLogFn) (const char *event, const MonoVitaArenaStats *stats, size_t request);
++MONO_VITA_API void mono_vita_vm_arena_set_log (MonoVitaArenaLogFn fn, size_t step);
++
++/* ---- GC heap limit: called by sgen (GC lock held: log only, never call into Mono) whenever an allocation is refused
++ * by max-heap-size. space: 0 = major heap, 1 = LOS (SgenMemgovSpace). count = refusals so far. */
++typedef void (*MonoVitaHeapLimitFn) (size_t request, int space, size_t allocated, size_t max_heap, unsigned count);
++MONO_VITA_API void mono_vita_set_heap_limit_callback (MonoVitaHeapLimitFn fn);
++MONO_VITA_API unsigned mono_vita_heap_limit_count (void);
++
++/* ---- managed Thread.Yield (mono-vita-yield.c): back-to-back yields of a thread back off from 100 us to 1 ms ---- */
++void mono_vita_managed_yield (void);
++/* totals since start: managed yields, microseconds slept in them, yields that slept longer than 100 us, yields with no state slot */
++MONO_VITA_API void mono_vita_get_yield_stats (uint64_t *calls, uint64_t *delay_us, uint64_t *backed_off, uint64_t *no_slot);
++
++/* ---- runtime counters (V6: the device run's checkpoint lines; read without locks, so approximate) ---- */
++typedef struct {
++	int64_t interp_transforms;          /* interpreter transforms done (a method re-transformed by tiering counts twice) */
++	int32_t interp_methods;             /* distinct methods that got interpreter code */
++	int32_t interp_inlined;             /* methods inlined by the interpreter's transform */
++	int32_t interp_emitted_instructions;
++	int32_t aot_methods;                /* AOT method bodies looked up and used */
++	int64_t mempool_bytes;              /* all MonoMemPools: image metadata, class/method data, interpreter code */
++	int32_t methods;                    /* MonoMethods created */
++	int32_t initialized_classes;
++	int32_t used_classes;
++	int32_t generic_classes;            /* MonoGenericClass instances */
++	int32_t inflated_types;
++	int32_t inflated_methods;
++	int32_t vtable_bytes;
++	int32_t static_data_bytes;
++	int32_t imt_bytes;
++	int32_t delegates_created;
++} MonoVitaRuntimeStats;
++MONO_VITA_API void mono_vita_get_runtime_stats (MonoVitaRuntimeStats *stats);
++
++/* ---- threads ---- */
++/* Stack size for threads Mono creates without an explicit size (managed threads, finalizer, sgen workers).
++ * Default 1 MiB. The Vita has no guard pages: a stack overflow corrupts memory instead of faulting. */
++MONO_VITA_API void mono_vita_set_default_thread_stack_size (size_t size);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* __MONO_UTILS_MONO_VITA_H__ */
+diff --git a/src/native/minipal/getexepath.h b/src/native/minipal/getexepath.h
+index dfee16910..783d7f603 100644
+--- a/src/native/minipal/getexepath.h
++++ b/src/native/minipal/getexepath.h
+@@ -74,6 +74,9 @@ static inline char* minipal_getexepath(void)
+ #elif defined(TARGET_WASM)
+     // This is a packaging convention that our tooling should enforce.
+     return strdup("/managed");
++#elif defined(__vita__)
++    // SHEPHERD-VITA: PS Vita apps always run from the mounted app package; there is no /proc.
++    return strdup("app0:eboot.bin");
+ #else
+ #ifdef __linux__
+     const char* symlinkEntrypointExecutable = "/proc/self/exe";

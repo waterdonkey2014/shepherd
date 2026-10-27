@@ -1,0 +1,493 @@
+SHEPHERD-VITA DIAG patch (devfail1, 2026-10-07): DIAG-ONLY hooks for the PS Vita runtime, on top of dotnet-runtime-v8.0.31-shepherd-vita.patch.
+Apply to a COPY of the fork's src/mono (vita/toolchain/build-runtime-diag.sh does), never to the shared checkout. Every hook is
+line-neutral and empty without -DSHEPHERD_VITA_DIAG: the patched tree compiles to the normal objects (build-runtime-diag.sh prove).
+
+diff -ruN a/src/mono/mono/metadata/exception.c b/src/mono/mono/metadata/exception.c
+--- a/src/mono/mono/metadata/exception.c
++++ b/src/mono/mono/metadata/exception.c
+@@ -55,19 +55,19 @@
+ {
+ 	HANDLE_FUNCTION_ENTER ();
+ 
+-	MonoClass * const klass = mono_class_load_from_name (image, name_space, name);
++	SHP_DIAG_EXC_BEGIN ("new_by_name", image, 0, name_space, name) MonoClass * const klass = mono_class_load_from_name (image, name_space, name);
+ 
+ 	MonoObjectHandle o = mono_object_new_handle (klass, error);
+-	goto_if_nok (error, return_null);
++	SHP_DIAG_EXC_CHECK ("new_by_name", 2, image, 0, klass, error) goto_if_nok (error, return_null);
+ 
+ 	mono_runtime_object_init_handle (o, error);
+-	mono_error_assert_ok (error);
++	SHP_DIAG_EXC_CHECK ("new_by_name", 3, image, 0, klass, error) mono_error_assert_ok (error);
+ 
+ 	goto_if_ok (error, exit);
+ return_null:
+ 	MONO_HANDLE_ASSIGN (o, NULL_HANDLE);
+ exit:
+-	HANDLE_FUNCTION_RETURN_REF (MonoException, MONO_HANDLE_CAST (MonoException, o));
++	SHP_DIAG_EXC_END () HANDLE_FUNCTION_RETURN_REF (MonoException, MONO_HANDLE_CAST (MonoException, o));
+ }
+ 
+ /**
+@@ -107,7 +107,7 @@
+ 	HANDLE_FUNCTION_ENTER ();
+ 	ERROR_DECL (error);
+ 	MonoExceptionHandle ret = mono_exception_new_by_name (image, name_space, name, error);
+-	mono_error_assert_ok (error);
++	SHP_DIAG_EXC_CHECK ("from_name_domain", 2, image, 0, NULL, error) mono_error_assert_ok (error);
+ 	HANDLE_FUNCTION_RETURN_OBJ (ret);
+ }
+ 
+@@ -127,16 +127,16 @@
+ 	ERROR_DECL (error);
+ 	MonoClass *klass;
+ 
+-	klass = mono_class_get_checked (image, token, error);
+-	mono_error_assert_ok (error);
++	SHP_DIAG_EXC_BEGIN ("from_token", image, token, NULL, NULL) klass = mono_class_get_checked (image, token, error);
++	SHP_DIAG_EXC_CHECK ("from_token", 1, image, token, NULL, error) mono_error_assert_ok (error);
+ 
+ 	MonoObjectHandle o = mono_object_new_handle (klass, error);
+-	mono_error_assert_ok (error);
++	SHP_DIAG_EXC_CHECK ("from_token", 2, image, token, klass, error) mono_error_assert_ok (error);
+ 
+ 	mono_runtime_object_init_handle (o, error);
+-	mono_error_assert_ok (error);
++	SHP_DIAG_EXC_CHECK ("from_token", 3, image, token, klass, error) mono_error_assert_ok (error);
+ 
+-	HANDLE_FUNCTION_RETURN_OBJ (MONO_HANDLE_CAST (MonoException, o));
++	SHP_DIAG_EXC_END () HANDLE_FUNCTION_RETURN_OBJ (MONO_HANDLE_CAST (MonoException, o));
+ }
+ 
+ static MonoExceptionHandle
+@@ -150,7 +150,7 @@
+ 	MonoMethod *m;
+ 
+ 	MonoObjectHandle o = mono_object_new_handle (klass, error);
+-	mono_error_assert_ok (error);
++	SHP_DIAG_EXC_CHECK ("two_strings", 2, NULL, 0, klass, error) mono_error_assert_ok (error);
+ 
+ 	iter = NULL;
+ 	while ((m = mono_class_get_methods (klass, &iter))) {
+diff -ruN a/src/mono/mono/mini/exceptions-arm.c b/src/mono/mono/mini/exceptions-arm.c
+--- a/src/mono/mono/mini/exceptions-arm.c
++++ b/src/mono/mono/mini/exceptions-arm.c
+@@ -189,7 +189,7 @@
+ 	/* Clear thumb bit */
+ 	pc &= ~1;
+ 
+-	mono_arm_throw_exception ((MonoObject*)mono_exception_from_token (mono_defaults.corlib, ex_token), pc, sp, int_regs, fp_regs, FALSE);
++	SHP_DIAG_THROW_CTX (pc, sp, int_regs, fp_regs) mono_arm_throw_exception ((MonoObject*)mono_exception_from_token (mono_defaults.corlib, ex_token), pc, sp, int_regs, fp_regs, FALSE);
+ }
+ 
+ void
+diff -ruN a/src/mono/mono/mini/shepherd-vita-diag.c b/src/mono/mono/mini/shepherd-vita-diag.c
+--- a/src/mono/mono/mini/shepherd-vita-diag.c
++++ b/src/mono/mono/mini/shepherd-vita-diag.c
+@@ -0,0 +1,333 @@
++/* SHEPHERD-VITA DIAG (devfail1, 2026-10-07): the diagnostic hooks of mono/utils/shepherd-vita-diag.h. DIAG-ONLY: this file is
++ * compiled only into the diagnostic runtime (vita/toolchain/build-runtime-diag.sh, SHEPHERD_VITA_DIAG); the normal runtime
++ * build never sees it.
++ *
++ * Output goes through the host's shepherd_vita_native_log (the "N> " lines of hello-diag.txt / menu-diag.txt), one line per
++ * call, each kept under ~600 bytes (the hosts' line buffers are 768 / 1024).
++ * Nothing here runs managed code, allocates managed objects or takes a runtime lock other than what the logging host and the
++ * jit-info / stack-walk readers take; it reads exception objects only while the calling thread is in GC-unsafe mode (the
++ * creation paths) or with the world stopped (the suspend-state fatal).
++ * Environment: SHEPHERD_DIAG_EXC_LOG=<n> lines for the first n runtime-created exceptions (default 400; 0 = failures only);
++ * nested creations (depth >= 2) and every 1000th one are always logged (up to 400 more).
++ */
++#include <config.h>
++#include <glib.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <semaphore.h>
++
++#include <mono/metadata/object-internals.h>
++#include <mono/metadata/class-internals.h>
++#include <mono/metadata/metadata-internals.h>
++#include <mono/metadata/debug-helpers.h>
++#include <mono/metadata/tabledefs.h>
++#include <mono/metadata/tokentype.h>
++#include <mono/utils/mono-error-internals.h>
++#include <mono/utils/mono-threads.h>
++#include "mini.h"
++#include "mini-runtime.h"
++
++#ifdef SHEPHERD_VITA_DIAG
++
++#include <psp2/kernel/threadmgr.h>
++
++/* the host's durable log (vita/hello/host.c, vita/shepherd/host.c); weak, so a host without it still links */
++extern void shepherd_vita_native_log (const char *msg) __attribute__ ((weak));
++
++static void dlog (const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
++static void dlog (const char *fmt, ...)
++{
++	char buf [640];
++	va_list ap;
++	va_start (ap, fmt);
++	vsnprintf (buf, sizeof (buf), fmt, ap);
++	va_end (ap);
++	if (shepherd_vita_native_log)
++		shepherd_vita_native_log (buf);
++	else
++		g_warning ("%s", buf);
++}
++
++/* ---------------------------------------------------------------- per-thread state (no TLS keyword on this target) */
++
++#define DIAG_THREADS 32
++#define DIAG_DEPTHS 8
++typedef struct {
++	int valid;
++	unsigned long pc, sp;
++	host_mgreg_t regs [8];    /* r4-r11, as the throw trampoline saved them */
++	double fregs [16];
++} DiagCtx;
++typedef struct {
++	volatile int tid;         /* SceUID of the owning thread (0 = free) */
++	int depth;                /* runtime exception creations in progress on this thread */
++	DiagCtx pending;          /* the context a by-token throw just saved; the next from_token takes it */
++	DiagCtx ctx [DIAG_DEPTHS + 1];   /* [d] = the throw site of the creation in progress at nesting depth d */
++} DiagThread;
++static DiagThread g_thr [DIAG_THREADS];
++
++static DiagThread *me (void)
++{
++	int tid = sceKernelGetThreadId ();
++	for (int i = 0; i < DIAG_THREADS; ++i)
++		if (g_thr [i].tid == tid)
++			return &g_thr [i];
++	for (int i = 0; i < DIAG_THREADS; ++i)
++		if (!g_thr [i].tid && mono_atomic_cas_i32 ((volatile gint32 *) &g_thr [i].tid, tid, 0) == 0)
++			return &g_thr [i];
++	return &g_thr [DIAG_THREADS - 1];   /* more threads than slots: share the last one (depth becomes approximate) */
++}
++
++static volatile gint32 g_exc_seq, g_extra_logged;
++static int g_exc_log_max = -1;
++
++static int exc_log_max (void)
++{
++	if (g_exc_log_max < 0) {
++		const char *e = getenv ("SHEPHERD_DIAG_EXC_LOG");
++		g_exc_log_max = e && *e ? atoi (e) : 400;
++		if (g_exc_log_max < 0)
++			g_exc_log_max = 0;
++	}
++	return g_exc_log_max;
++}
++
++/* ---------------------------------------------------------------- names */
++
++static void typedef_name (MonoImage *image, unsigned token, char *out, size_t n)
++{
++	out [0] = 0;
++	if (!image || mono_metadata_token_table (token) != MONO_TABLE_TYPEDEF)
++		return;
++	guint32 idx = mono_metadata_token_index (token);
++	MonoTableInfo *t = &image->tables [MONO_TABLE_TYPEDEF];
++	if (idx < 1 || idx > table_info_get_rows (t))
++		return;
++	guint32 cols [MONO_TYPEDEF_SIZE];
++	mono_metadata_decode_row (t, idx - 1, cols, MONO_TYPEDEF_SIZE);
++	const char *ns = mono_metadata_string_heap (image, cols [MONO_TYPEDEF_NAMESPACE]);
++	const char *nm = mono_metadata_string_heap (image, cols [MONO_TYPEDEF_NAME]);
++	snprintf (out, n, "%s%s%s", ns && *ns ? ns : "", ns && *ns ? "." : "", nm ? nm : "?");
++}
++
++/* "<method> +0x<off>" for a code address (AOT/JIT jit info; trampolines and unknown code by address) */
++static void code_name (gpointer ip, MonoJitInfo *ji, char *out, size_t n)
++{
++	if (!ji)
++		ji = mono_jit_info_table_find_internal (ip, TRUE, TRUE);
++	if (!ji) {
++		snprintf (out, n, "%p (no managed code here: native or unknown)", ip);
++		return;
++	}
++	if (ji->is_trampoline || ji->async) {
++		snprintf (out, n, "%p (a runtime trampoline)", ip);
++		return;
++	}
++	MonoMethod *m = mono_jit_info_get_method (ji);
++	char *full = m ? mono_method_full_name (m, TRUE) : NULL;
++	snprintf (out, n, "%s +0x%x", full ? full : "?", (unsigned) ((guint8 *) ip - (guint8 *) ji->code_start));
++	g_free (full);
++}
++
++static const char *step_name (int step)
++{
++	return step == 1 ? "class-get (mono_class_get_checked)" : step == 2 ? "object-new (mono_object_new_handle)" :
++	       step == 3 ? "object-init (the .ctor() threw)" : "?";
++}
++
++/* ---------------------------------------------------------------- exception creation */
++
++void shepherd_vita_diag_throw_ctx (unsigned long pc, unsigned long sp, void *int_regs, void *fp_regs)
++{
++	DiagThread *t = me ();
++	t->pending.pc = pc & ~1ul;
++	t->pending.sp = sp & ~1ul;
++	memcpy (t->pending.regs, int_regs, sizeof (t->pending.regs));
++	memcpy (t->pending.fregs, fp_regs, sizeof (t->pending.fregs));
++	t->pending.valid = 1;
++}
++
++void shepherd_vita_diag_exc_begin (const char *where, void *image_, unsigned token, const char *name_space, const char *name)
++{
++	MonoImage *image = (MonoImage *) image_;
++	DiagThread *t = me ();
++	int depth = ++t->depth;
++	int seq = mono_atomic_inc_i32 (&g_exc_seq);
++	int by_token = token != 0;
++	DiagCtx *c = depth <= DIAG_DEPTHS ? &t->ctx [depth] : NULL;
++	if (c) {
++		*c = t->pending;          /* a by-token creation takes the context its throw just saved; by name: none */
++		c->valid = by_token && t->pending.valid;
++	}
++	t->pending.valid = 0;
++	int max = exc_log_max ();
++	int log = seq <= max || seq % 1000 == 0;
++	if (!log && depth >= 2 && mono_atomic_inc_i32 (&g_extra_logged) <= 400)
++		log = 1;
++	if (!log)
++		return;
++	char tname [160], site [400];
++	if (by_token)
++		typedef_name (image, token, tname, sizeof (tname));
++	else
++		snprintf (tname, sizeof (tname), "%s%s%s", name_space ? name_space : "", name_space && *name_space ? "." : "", name ? name : "?");
++	site [0] = 0;
++	if (c && c->valid) {
++		char cn [360];
++		code_name ((gpointer) (gsize) c->pc, NULL, cn, sizeof (cn));
++		snprintf (site, sizeof (site), " | thrown at %s", cn);
++	}
++	dlog ("EXC #%d %s depth %d thread 0x%x: %s %s%s token 0x%08x%s", seq, where, depth, (unsigned) t->tid, tname,
++	      image ? "in " : "", image ? mono_image_get_name (image) : "", token, site);
++}
++
++void shepherd_vita_diag_exc_end (void)
++{
++	DiagThread *t = me ();
++	if (t->depth > 0 && t->depth <= DIAG_DEPTHS)
++		t->ctx [t->depth].valid = 0;
++	if (t->depth > 0)
++		t->depth--;
++}
++
++typedef struct { int n; } WalkState;
++
++static gboolean walk_cb (StackFrameInfo *frame, MonoContext *ctx, gpointer data)
++{
++	WalkState *ws = (WalkState *) data;
++	if (++ws->n > 48) {
++		dlog ("EXC-FAIL   ... (more frames not shown)");
++		return TRUE;
++	}
++	const char *kind = frame->type == FRAME_TYPE_MANAGED ? "aot" : frame->type == FRAME_TYPE_INTERP ? "interp" :
++	                   frame->type == FRAME_TYPE_INTERP_TO_MANAGED ? "interp->managed" : frame->type == FRAME_TYPE_MANAGED_TO_NATIVE ? "managed->native" :
++	                   frame->type == FRAME_TYPE_TRAMPOLINE ? "trampoline" : frame->type == FRAME_TYPE_INTERP_ENTRY ? "interp-entry" : "other";
++	MonoMethod *m = frame->method ? frame->method : (frame->ji && !frame->ji->is_trampoline && !frame->ji->async ? mono_jit_info_get_method (frame->ji) : NULL);
++	char *full = m ? mono_method_full_name (m, TRUE) : NULL;
++	dlog ("EXC-FAIL   at [%s] %s +0x%x", kind, full ? full : "?", (unsigned) frame->native_offset);
++	g_free (full);
++	return FALSE;
++}
++
++static void log_exception_object (const char *tag, MonoObject *obj, int level)
++{
++	if (!obj || level > 4)
++		return;
++	MonoClass *k = mono_object_class (obj);
++	char msg [300];
++	msg [0] = 0;
++	if (mono_class_has_parent_fast (k, mono_defaults.exception_class)) {
++		MonoException *ex = (MonoException *) obj;
++		if (ex->message) {
++			ERROR_DECL (e2);
++			char *s = mono_string_to_utf8_checked_internal (ex->message, e2);
++			if (s)
++				snprintf (msg, sizeof (msg), "%s", s);
++			g_free (s);
++			mono_error_cleanup (e2);
++		} else
++			snprintf (msg, sizeof (msg), "(message not set: the ctor did not get that far)");
++		dlog ("EXC-FAIL %s %s.%s: %s", tag, m_class_get_name_space (k), m_class_get_name (k), msg);
++		MonoArray *ta = ex->trace_ips;
++		if (ta) {
++			int words = (int) (sizeof (gpointer) * 3 / sizeof (gpointer));   /* ExceptionTraceIp: ip, generic_info, ji */
++			int len = (int) mono_array_length_internal (ta) / words;
++			for (int i = 0; i < len && i < 24; ++i) {
++				gpointer ip = mono_array_get_internal (ta, gpointer, i * words);
++				MonoJitInfo *ji = mono_array_get_internal (ta, MonoJitInfo *, i * words + 2);
++				char cn [400];
++				code_name (ip, ji, cn, sizeof (cn));
++				dlog ("EXC-FAIL %s   trace %d: %s", tag, i, cn);
++			}
++			if (len > 24)
++				dlog ("EXC-FAIL %s   trace: %d more frames", tag, len - 24);
++		} else
++			dlog ("EXC-FAIL %s   (no trace_ips: not thrown yet, or caught before any frame was recorded)", tag);
++		if (ex->inner_ex)
++			log_exception_object ("  inner:", ex->inner_ex, level + 1);
++	} else
++		dlog ("EXC-FAIL %s object of class %s.%s (not an Exception)", tag, m_class_get_name_space (k), m_class_get_name (k));
++}
++
++void shepherd_vita_diag_exc_fail (const char *where, int step, void *image_, unsigned token, void *klass_, void *error_)
++{
++	MonoImage *image = (MonoImage *) image_;
++	MonoClass *klass = (MonoClass *) klass_;
++	MonoError *error = (MonoError *) error_;
++	MonoErrorInternal *ei = (MonoErrorInternal *) error;
++	DiagThread *t = me ();
++	char tname [160];
++	if (klass)
++		snprintf (tname, sizeof (tname), "%s%s%s", m_class_get_name_space (klass), *m_class_get_name_space (klass) ? "." : "", m_class_get_name (klass));
++	else
++		typedef_name (image, token, tname, sizeof (tname));
++	dlog ("EXC-FAIL %s step %d = %s | image %s | token 0x%08x | class %s | thread 0x%x depth %d", where, step, step_name (step),
++	      image ? mono_image_get_name (image) : "(none)", token, tname [0] ? tname : "?", (unsigned) t->tid, t->depth);
++	const char *m = mono_error_get_message (error);
++	dlog ("EXC-FAIL   MonoError code %d (%s) | message: %.400s", (int) ei->error_code,
++	      ei->error_code == MONO_ERROR_EXCEPTION_INSTANCE ? "EXCEPTION_INSTANCE: a managed exception escaped" :
++	      ei->error_code == MONO_ERROR_TYPE_LOAD ? "TYPE_LOAD" : ei->error_code == MONO_ERROR_OUT_OF_MEMORY ? "OUT_OF_MEMORY" :
++	      ei->error_code == MONO_ERROR_GENERIC ? "GENERIC (by exception name, e.g. NotImplementedException)" : "other", m ? m : "(null)");
++	dlog ("EXC-FAIL   error fields: type %s | assembly %s | member %s | exception %s.%s | first argument %s",
++	      ei->type_name ? ei->type_name : "(null)", ei->assembly_name ? ei->assembly_name : "(null)", ei->member_name ? ei->member_name : "(null)",
++	      ei->exception_name_space ? ei->exception_name_space : "", ei->exception_name ? ei->exception_name : "(null)",
++	      ei->first_argument ? ei->first_argument : "(null)");
++	if (ei->error_code == MONO_ERROR_EXCEPTION_INSTANCE && ei->exn.instance_handle) {
++		MonoObject *obj = mono_gchandle_get_target_internal (ei->exn.instance_handle);
++		log_exception_object ("escaped:", obj, 0);
++	}
++	DiagCtx *c = t->depth >= 1 && t->depth <= DIAG_DEPTHS ? &t->ctx [t->depth] : NULL;
++	if (c && c->valid) {
++		/* the managed stack from the by-token throw site of THIS creation (the context mono_arm_throw_exception would build) */
++		MonoContext ctx;
++		memset (&ctx, 0, sizeof (ctx));
++		MONO_CONTEXT_SET_BP (&ctx, c->regs [ARMREG_FP - 4]);
++		MONO_CONTEXT_SET_SP (&ctx, c->sp);
++		MONO_CONTEXT_SET_IP (&ctx, c->pc - 4);
++		memcpy (((guint8 *) &ctx.regs) + (ARMREG_R4 * sizeof (host_mgreg_t)), c->regs, 8 * sizeof (host_mgreg_t));
++		memcpy (&ctx.fregs, c->fregs, sizeof (double) * 16);
++		dlog ("EXC-FAIL   managed stack from the throw site (innermost first):");
++		WalkState ws = { 0 };
++		mono_walk_stack_with_ctx (walk_cb, &ctx, MONO_UNWIND_NONE, &ws);
++		dlog ("EXC-FAIL   (%d frames)", ws.n);
++	} else
++		dlog ("EXC-FAIL   (no throw-site context for this creation: it was created by name -- by the interpreter, an icall or a runtime helper)");
++	dlog ("EXC-FAIL   the runtime's own assert follows (exception.c: mono_error_assert_ok)");
++}
++
++/* ---------------------------------------------------------------- coop stop-the-world handshake */
++
++static volatile gint32 g_semcheck_logged;
++static unsigned g_semcheck_hits, g_semcheck_calls;
++
++void shepherd_vita_diag_sem_check (void *sem, int waited, int suspend_posts, int resume_posts, int abort_posts, int waits_done)
++{
++	int v = 0;
++	g_semcheck_calls++;
++	if (sem_getvalue ((sem_t *) sem, &v) != 0 || v <= 0)
++		return;
++	g_semcheck_hits++;
++	if (mono_atomic_inc_i32 (&g_semcheck_logged) <= 20)
++		dlog ("SEMCHECK after waiting for %d park(s): suspend_semaphore still holds %d (posts: suspend %d resume %d abort %d; initiator waits %d; hit %u of %u stop-the-worlds)",
++		      waited, v, suspend_posts, resume_posts, abort_posts, waits_done, g_semcheck_hits, g_semcheck_calls);
++}
++
++void shepherd_vita_diag_suspend_state (void *info_, int cur_state, void *sem, int suspend_posts, int resume_posts, int abort_posts, int waits_done, int pending)
++{
++	MonoThreadInfo *info = (MonoThreadInfo *) info_;
++	int v = -999;
++	sem_getvalue ((sem_t *) sem, &v);
++	dlog ("SUSPEND-STATE fatal next: target info %p tid %p is %s (raw 0x%x); handshake: suspend posts %d, resume posts %d, abort posts %d, initiator waits %d, pending now %d; suspend_semaphore value %d; earlier SEMCHECK hits %u of %u",
++	      (void *) info, (void *) mono_thread_info_get_tid (info), mono_thread_state_name (cur_state), (unsigned) info->thread_state.raw,
++	      suspend_posts, resume_posts, abort_posts, waits_done, pending, v, g_semcheck_hits, g_semcheck_calls);
++	MonoThreadInfo *cur = mono_thread_info_current_unchecked ();
++	FOREACH_THREAD_SAFE_ALL (t) {
++		int st = mono_thread_info_current_state (t);
++		dlog ("SUSPEND-STATE   thread info %p tid (pthread) %p state %s (raw 0x%x)%s%s", (void *) t, (void *) mono_thread_info_get_tid (t),
++		      mono_thread_state_name (st), (unsigned) t->thread_state.raw, t == cur ? " [GC INITIATOR]" : "", t == info ? " [TARGET]" : "");
++	} FOREACH_THREAD_SAFE_END
++}
++
++#endif /* SHEPHERD_VITA_DIAG */
+diff -ruN a/src/mono/mono/utils/mono-compiler.h b/src/mono/mono/utils/mono-compiler.h
+--- a/src/mono/mono/utils/mono-compiler.h
++++ b/src/mono/mono/utils/mono-compiler.h
+@@ -172,3 +172,5 @@
+ #endif
+ 
+ #endif /* __UTILS_MONO_COMPILER_H__*/
++/* SHEPHERD-VITA DIAG: line-neutral diagnostic hooks (empty unless SHEPHERD_VITA_DIAG) */
++#include <mono/utils/shepherd-vita-diag.h>
+diff -ruN a/src/mono/mono/utils/mono-threads.c b/src/mono/mono/utils/mono-threads.c
+--- a/src/mono/mono/utils/mono-threads.c
++++ b/src/mono/mono/utils/mono-threads.c
+@@ -334,7 +334,7 @@
+ 
+ 	}
+ 
+-	pending_suspends = 0;
++	SHP_DIAG_SEM_CHECK (&suspend_semaphore, c, suspend_posts, resume_posts, abort_posts, waits_done) pending_suspends = 0;
+ 
+ 	return c > 0;
+ }
+@@ -1552,7 +1552,7 @@
+ STATE_BLOCKING: All those are invalid suspend states.
+ STATE_BLOCKING_SUSPEND_REQUESTED: Invalid if we're preemptively suspending blocking threads.
+ */
+-	g_error ("Cannot read suspend state when target %p is in the %s state", mono_thread_info_get_tid (info), mono_thread_state_name (cur_state));
++	SHP_DIAG_SUSPEND_STATE (info, cur_state, &suspend_semaphore, suspend_posts, resume_posts, abort_posts, waits_done, pending_suspends) g_error ("Cannot read suspend state when target %p is in the %s state", mono_thread_info_get_tid (info), mono_thread_state_name (cur_state));
+ }
+ 
+ /*
+diff -ruN a/src/mono/mono/utils/shepherd-vita-diag.h b/src/mono/mono/utils/shepherd-vita-diag.h
+--- a/src/mono/mono/utils/shepherd-vita-diag.h
++++ b/src/mono/mono/utils/shepherd-vita-diag.h
+@@ -0,0 +1,39 @@
++/* SHEPHERD-VITA DIAG (devfail1, 2026-10-07): diagnostic hooks for the PS Vita runtime. DIAG-ONLY.
++ *
++ * Every hook sits at the START of an existing source line (exception.c, exceptions-arm.c, mono-threads.c), and this header is
++ * pulled in from the end of mono-compiler.h, so no line moves: __LINE__ in every assert message stays what it is upstream.
++ * Without SHEPHERD_VITA_DIAG every hook expands to NOTHING and the objects are byte-for-byte the normal ones (proved by
++ * vita/toolchain/build-runtime-diag.sh --prove). With it, the hooks call vita/... mono/mini/shepherd-vita-diag.c, which logs
++ * through the host's shepherd_vita_native_log ("N> " lines in the app's log):
++ *   EXC ...       every runtime-created exception (from_token / by name), its nesting depth and the managed throw site
++ *   EXC-FAIL ...  a creation step that failed (1 class-get, 2 object-new, 3 object-init), the full MonoError, the inner
++ *                 exception (type, message, its trace) and the managed stack from the throw site -- then the original assert
++ *   SEMCHECK ...  the coop stop-the-world handshake left extra counts in suspend_semaphore (posts vs waits)
++ *   SUSPEND-STATE the "Cannot read suspend state" fatal: the handshake counters and every thread's state, before the g_error
++ */
++#ifndef __SHEPHERD_VITA_DIAG_H__
++#define __SHEPHERD_VITA_DIAG_H__
++
++#ifdef SHEPHERD_VITA_DIAG
++void shepherd_vita_diag_exc_begin (const char *where, void *image, unsigned token, const char *name_space, const char *name);
++void shepherd_vita_diag_exc_fail (const char *where, int step, void *image, unsigned token, void *klass, void *error);
++void shepherd_vita_diag_exc_end (void);
++void shepherd_vita_diag_throw_ctx (unsigned long pc, unsigned long sp, void *int_regs, void *fp_regs);
++void shepherd_vita_diag_sem_check (void *sem, int waited, int suspend_posts, int resume_posts, int abort_posts, int waits_done);
++void shepherd_vita_diag_suspend_state (void *info, int cur_state, void *sem, int suspend_posts, int resume_posts, int abort_posts, int waits_done, int pending);
++#define SHP_DIAG_EXC_BEGIN(w, i, t, ns, n) shepherd_vita_diag_exc_begin ((w), (void *) (i), (unsigned) (t), (ns), (n));
++#define SHP_DIAG_EXC_CHECK(w, s, i, t, k, e) do { if (!is_ok (e)) shepherd_vita_diag_exc_fail ((w), (s), (void *) (i), (unsigned) (t), (void *) (k), (void *) (e)); } while (0);
++#define SHP_DIAG_EXC_END() shepherd_vita_diag_exc_end ();
++#define SHP_DIAG_THROW_CTX(pc, sp, r, f) shepherd_vita_diag_throw_ctx ((unsigned long) (pc), (unsigned long) (sp), (void *) (r), (void *) (f));
++#define SHP_DIAG_SEM_CHECK(sem, n, sp, rp, ap, wd) shepherd_vita_diag_sem_check ((void *) (sem), (int) (n), (sp), (rp), (ap), (wd));
++#define SHP_DIAG_SUSPEND_STATE(info, st, sem, sp, rp, ap, wd, pend) shepherd_vita_diag_suspend_state ((void *) (info), (st), (void *) (sem), (sp), (rp), (ap), (wd), (int) (pend));
++#else
++#define SHP_DIAG_EXC_BEGIN(w, i, t, ns, n)
++#define SHP_DIAG_EXC_CHECK(w, s, i, t, k, e)
++#define SHP_DIAG_EXC_END()
++#define SHP_DIAG_THROW_CTX(pc, sp, r, f)
++#define SHP_DIAG_SEM_CHECK(sem, n, sp, rp, ap, wd)
++#define SHP_DIAG_SUSPEND_STATE(info, st, sem, sp, rp, ap, wd, pend)
++#endif
++
++#endif /* __SHEPHERD_VITA_DIAG_H__ */

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SHEPHERD-VITA DIAG (devfail1): "Shepherd Hello Diag" (SHPD00015) - vita/hello/build.sh with SHEPHERD_DIAG=1. Fine-grained
+       exception / resource / GC tests (AOT-compiled), then the unchanged V5 hello (Hello.dll, M1-M99). Never part of the normal hello. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>HelloDiag</AssemblyName>
+    <RootNamespace>ShepherdVita.Diag</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Optimize>true</Optimize>
+    <DebugType>none</DebugType>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseAppHost>false</UseAppHost>
+    <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="HelloDiag.cs" />
+    <ProjectReference Include="../managed/Hello.csproj" />
+    <ProjectReference Include="HelloDiagInterp/HelloDiagInterp.csproj" />
+  </ItemGroup>
+</Project>

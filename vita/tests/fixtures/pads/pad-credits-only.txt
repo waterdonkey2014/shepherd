@@ -1,0 +1,9 @@
+# kit3 kit build (vlx memory check): a fresh start straight into Credits (the README's second launch of the play app): open it, let it
+# scroll, close it, then one move in the Main Menu (it still answers). m+N = frames after the Main Menu scene's arrival.
+m+244:cross     # engage "Press Any Button to Start"
+m+494:down      # Play -> DLC
+m+524:down      # DLC -> Settings
+m+554:down      # Settings -> Credits
+m+584:cross     # open Credits (it scrolls by itself)
+m+884:circle    # close Credits
+m+984:down      # Credits -> Roadmap: the menu still answers

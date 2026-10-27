@@ -1,0 +1,277 @@
+--- a/src/mono/mono/mini/interp/interp-internals.h
++++ b/src/mono/mono/mini/interp/interp-internals.h
+@@ -137,7 +137,14 @@
+ 	guint32 *clause_data_offsets;
+ 	gpointer jit_call_info;
+ 	gpointer jit_entry;
+-	gpointer llvmonly_unbox_entry;
++	/* SHEPHERD (device kit #5, lever 20): entry_call_info = the CallInfo interp_entry_from_trampoline keeps for this method
++	 * (NULL = not computed yet). It shares the slot with llvmonly_unbox_entry, which only the llvm-only mode writes; that mode never
++	 * takes the trampoline entry (interp_create_method_pointer returns before it), so the two never meet, and InterpMethod keeps its
++	 * size (120 bytes on armv7: a new field would cost 8 bytes of mempool per interpreted method). */
++	union {
++		gpointer llvmonly_unbox_entry;
++		gpointer entry_call_info;
++	};
+ 	MonoType *rtype;
+ 	MonoType **param_types;
+ 	MonoJitInfo *jinfo;
+--- a/src/mono/mono/mini/interp/interp.c
++++ b/src/mono/mono/mini/interp/interp.c
+@@ -3020,7 +3020,200 @@
+ }
+ 
+ #ifdef MONO_ARCH_HAVE_INTERP_ENTRY_TRAMPOLINE
++
++/*
++ * SHEPHERD (device kit #5, lever 20): the call-info cache of the AOT -> interpreter entry.
++ * Every call from AOT code into an interpreted method comes through here (armv7 defines MONO_ARCH_HAVE_FTNPTR_ARG_TRAMPOLINE, so no
++ * interp_in wrapper is used), and the entry computed the method's calling convention on EVERY call:
++ * mono_arch_get_interp_native_call_info (NULL, sig) runs get_call_info and returns a fresh g_malloc0'd CallInfo, g_free'd at the end.
++ * A CallInfo depends on the signature only (it holds no pointers), so it is now computed on a method's first entry and kept in
++ * InterpMethod.entry_call_info. Methods whose CallInfos are byte-identical share one copy through shp_cicache_table (permanent
++ * g_malloc'd copies, never freed), so the memory cost is one CallInfo per distinct calling convention. Dynamic methods (freed at run
++ * time: reflection's InvokeStub_* and other DynamicMethods) point into that table too, so freeing one frees nothing of the cache; where
++ * the CallInfo layout is not known (not armv7) they keep the per-call path.
++ * SHEPHERD_INTERP_CICACHE (environment, read once in mono_ee_interp_init; blanks around the value ignored): unset, 1 or on = on;
++ * 0 or off = the per-call path for every method (the stock behaviour, kit #4); count = on, plus the counters below (statistics only:
++ * racy increments, never used for decisions). Kit #5 integration (review, low): ANY other value -- a typo, an empty value -- is the
++ * stock per-call path too (fail-safe: only a documented value turns the cache on), reported as mode 3 so the host's H8 line names it.
++ */
++static int shp_cicache_mode = 1;
++static mono_mutex_t shp_cicache_mutex;
++static GHashTable *shp_cicache_table;
++int mono_shepherd_interp_cicache_mode = -1;          /* what mono_ee_interp_init chose (0 off / 1 on / 2 count / 3 off: unrecognized value): the host logs it */
++guint32 mono_shepherd_interp_entries;                /* =count: entries through the trampoline (every method) */
++guint32 mono_shepherd_interp_entries_dynamic;        /* =count: of which into dynamic methods (reflection's InvokeStub_* ...) */
++guint32 mono_shepherd_interp_entry_methods;          /* =count: methods whose CallInfo was computed and kept */
++guint32 mono_shepherd_interp_entry_infos;            /* =count: distinct CallInfos kept (the table) */
++guint32 mono_shepherd_interp_entry_info_bytes;       /* =count: their bytes */
++
++/* The bytes of a CallInfo as get_call_info allocates it (call_info_size in mini-arm.c: the header incl. args [1], plus one ArgInfo
++ * per argument; all zeroed first). 0 = this architecture's layout is not known here: no sharing, each method keeps its own copy
++ * (and dynamic methods are not cached: SHP_CI_SHAREABLE 0). */
++#if defined(TARGET_ARM)
++#define SHP_CI_SHAREABLE 1
++#else
++#define SHP_CI_SHAREABLE 0
++#endif
++static gsize
++shp_call_info_size (gconstpointer ci)
++{
++#if defined(TARGET_ARM)
++	return sizeof (CallInfo) + sizeof (ArgInfo) * ((const CallInfo*)ci)->nargs;
++#else
++	return 0;
++#endif
++}
++
++static guint
++shp_call_info_hash (gconstpointer key)
++{
++	const guint8 *p = (const guint8*)key;
++	gsize n = shp_call_info_size (key);
++	guint32 h = 2166136261u;
++	for (gsize i = 0; i < n; i++)
++		h = (h ^ p [i]) * 16777619u;
++	return h;
++}
++
++static gboolean
++shp_call_info_equal (gconstpointer a, gconstpointer b)
++{
++	gsize n = shp_call_info_size (a);
++	return n == shp_call_info_size (b) && memcmp (a, b, n) == 0;
++}
+ 
++/* =count only: entries per method, written out by mono_shepherd_interp_entry_dump (the host, at the end). The name is taken on a method's
++ * first entry (a dynamic method may be freed later; a later InterpMethod at the same address then adds to that row: diagnostics only). */
++typedef struct { gsize n; char *name; int dynamic; } ShpHist;
++static GHashTable *shp_entry_hist;
++
++static MONO_NEVER_INLINE void
++shp_entry_count (InterpMethod *rmethod)
++{
++	mono_os_mutex_lock (&shp_cicache_mutex);
++	ShpHist *h = shp_entry_hist ? (ShpHist*)g_hash_table_lookup (shp_entry_hist, rmethod) : NULL;
++	if (h)
++		h->n++;
++	mono_os_mutex_unlock (&shp_cicache_mutex);
++	if (h)
++		return;
++	/* a method's first entry: its name outside the lock (naming may take runtime locks) */
++	ShpHist *nh = g_new0 (ShpHist, 1);
++	nh->name = mono_method_full_name (rmethod->method, TRUE);
++	nh->dynamic = rmethod->method->dynamic ? 1 : 0;
++	mono_os_mutex_lock (&shp_cicache_mutex);
++	if (!shp_entry_hist)
++		shp_entry_hist = g_hash_table_new (NULL, NULL);
++	h = (ShpHist*)g_hash_table_lookup (shp_entry_hist, rmethod);
++	if (!h) {
++		g_hash_table_insert (shp_entry_hist, rmethod, nh);
++		h = nh; nh = NULL;
++	}
++	h->n++;
++	mono_os_mutex_unlock (&shp_cicache_mutex);
++	if (nh) {
++		g_free (nh->name);
++		g_free (nh);
++	}
++}
++
++static gint
++shp_hist_cmp (gconstpointer a, gconstpointer b)
++{
++	gsize x = (*(ShpHist* const*)a)->n, y = (*(ShpHist* const*)b)->n;
++	return x < y ? 1 : x > y ? -1 : 0;
++}
++
++/* =count: write "entries <TAB> dynamic <TAB> method" for every method entered through the trampoline, most entered first (diagnostics).
++ * Returns the number of methods written, -1 if not counting. (The Vita host calls it at the end: vita/shepherd/host.c.) */
++int mono_shepherd_interp_entry_dump (const char *path);
++int
++mono_shepherd_interp_entry_dump (const char *path)
++{
++	if (shp_cicache_mode != 2 || !shp_entry_hist)
++		return -1;
++	FILE *f = fopen (path, "w");
++	if (!f)
++		return -1;
++	mono_os_mutex_lock (&shp_cicache_mutex);
++	guint n = g_hash_table_size (shp_entry_hist), k = 0;
++	ShpHist **a = g_new0 (ShpHist*, n + 1);
++	GHashTableIter it;
++	gpointer key, val;
++	g_hash_table_iter_init (&it, shp_entry_hist);
++	while (g_hash_table_iter_next (&it, &key, &val))
++		a [k++] = (ShpHist*)val;
++	qsort (a, k, sizeof (ShpHist*), shp_hist_cmp);
++	for (guint i = 0; i < k; i++)
++		fprintf (f, "%lu\t%d\t%s\n", (unsigned long) a [i]->n, a [i]->dynamic, a [i]->name);
++	mono_os_mutex_unlock (&shp_cicache_mutex);
++	fclose (f);
++	g_free (a);
++	return (int) k;
++}
++
++static void
++shp_cicache_init (void)
++{
++	char *e = g_getenv ("SHEPHERD_INTERP_CICACHE");
++	int reported;
++	if (!e) {
++		shp_cicache_mode = reported = 1;   /* unset: on (the kit #5 default) */
++	} else {
++		char *v = g_strstrip (e);          /* (in place: e is our copy) */
++		if (!strcmp (v, "1") || !strcmp (v, "on"))
++			shp_cicache_mode = reported = 1;
++		else if (!strcmp (v, "0") || !strcmp (v, "off"))
++			shp_cicache_mode = reported = 0;
++		else if (!strcmp (v, "count"))
++			shp_cicache_mode = reported = 2;
++		else {
++			shp_cicache_mode = 0;          /* unrecognized: the stock per-call path (kit #4), never the cache by accident */
++			reported = 3;
++		}
++	}
++	g_free (e);
++	mono_os_mutex_init (&shp_cicache_mutex);
++	shp_cicache_table = g_hash_table_new (shp_call_info_hash, shp_call_info_equal);
++	mono_shepherd_interp_cicache_mode = reported;
++}
++
++/* RMETHOD's first entry: compute its CallInfo exactly as the per-call path does, keep it (or the identical shared copy) */
++static MONO_NEVER_INLINE gpointer
++shp_entry_call_info (InterpMethod *rmethod, MonoMethodSignature *sig)
++{
++	gpointer ci = mono_arch_get_interp_native_call_info (NULL, sig);
++	gsize size = shp_call_info_size (ci);
++	if (size) {
++		mono_os_mutex_lock (&shp_cicache_mutex);
++		gpointer shared = g_hash_table_lookup (shp_cicache_table, ci);
++		if (!shared) {
++			g_hash_table_insert (shp_cicache_table, ci, ci);
++			if (shp_cicache_mode == 2) {
++				mono_shepherd_interp_entry_infos++;
++				mono_shepherd_interp_entry_info_bytes += (guint32) size;
++			}
++		}
++		mono_os_mutex_unlock (&shp_cicache_mutex);
++		if (shared) {
++			mono_arch_free_interp_native_call_info (ci);
++			ci = shared;
++		}
++	} else {
++		/* unknown layout (never a dynamic method: SHP_CI_SHAREABLE): this method's own copy, in its memory manager
++		 * (mono_arch_get_interp_native_call_info copies it there) */
++		mono_arch_free_interp_native_call_info (ci);
++		ci = mono_arch_get_interp_native_call_info (m_method_get_mem_manager (rmethod->method), sig);
++	}
++	mono_memory_barrier ();
++	gpointer prev = mono_atomic_cas_ptr (&rmethod->entry_call_info, ci, NULL);
++	if (prev)
++		return prev;   /* another thread kept one first: the same contents (ours stays in the table / the memory manager) */
++	if (shp_cicache_mode == 2)
++		mono_shepherd_interp_entry_methods++;
++	return ci;
++}
++
+ // Do not inline in case order of frame addresses matters.
+ static MONO_NEVER_INLINE void
+ interp_entry_from_trampoline (gpointer ccontext_untyped, gpointer rmethod_untyped)
+@@ -3054,7 +3247,23 @@
+ 	frame.stack = sp;
+ 	frame.retval = sp;
+ 
+-	gpointer call_info = mono_arch_get_interp_native_call_info (NULL, sig);
++	/* SHEPHERD k5 lever 20: the kept CallInfo (see shp_cicache_mode), else computed for this call and freed at its end */
++	gpointer call_info;
++	int cimode = shp_cicache_mode;
++	gboolean ci_kept = cimode != 0 && (!method->dynamic || SHP_CI_SHAREABLE);
++	if (ci_kept) {
++		call_info = rmethod->entry_call_info;
++		if (G_UNLIKELY (!call_info))
++			call_info = shp_entry_call_info (rmethod, sig);
++		if (G_UNLIKELY (cimode == 2)) {
++			mono_shepherd_interp_entries++;
++			if (method->dynamic)
++				mono_shepherd_interp_entries_dynamic++;
++			shp_entry_count (rmethod);
++		}
++	} else {
++		call_info = mono_arch_get_interp_native_call_info (NULL, sig);
++	}
+ 
+ 	/* Copy the args saved in the trampoline to the frame stack */
+ 	gpointer retp = mono_arch_get_native_call_context_args (ccontext, &frame, sig, call_info);
+@@ -3100,7 +3309,8 @@
+ 	/* 'frame' is still valid */
+ 	mono_arch_set_native_call_context_ret (ccontext, &frame, sig, call_info, retp);
+ 
+-	mono_arch_free_interp_native_call_info (call_info);
++	if (!ci_kept)
++		mono_arch_free_interp_native_call_info (call_info);
+ }
+ 
+ #else
+@@ -3445,7 +3655,8 @@
+ 	if (imethod && jit_mm->interp_method_pointer_hash) {
+ 		if (imethod->jit_entry)
+ 			g_hash_table_remove (jit_mm->interp_method_pointer_hash, imethod->jit_entry);
+-		if (imethod->llvmonly_unbox_entry)
++		/* SHEPHERD k5: outside llvm-only mode the slot is entry_call_info, a pointer into the permanent call-info table: not a key of this hash */
++		if (mono_llvm_only && imethod->llvmonly_unbox_entry)
+ 			g_hash_table_remove (jit_mm->interp_method_pointer_hash, imethod->llvmonly_unbox_entry);
+ 	}
+ 	jit_mm_unlock (jit_mm);
+@@ -8727,6 +8938,10 @@
+ 	mono_native_tls_alloc (&thread_context_id, NULL);
+ 	set_context (NULL);
+ 
++#ifdef MONO_ARCH_HAVE_INTERP_ENTRY_TRAMPOLINE
++	shp_cicache_init ();   /* SHEPHERD k5 lever 20 */
++#endif
++
+ 	interp_parse_options (opts);
+ 	/* Don't do any optimizations if running under debugger */
+ 	if (mini_get_debug_options ()->mdb_optimizations)

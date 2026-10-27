@@ -1,0 +1,31 @@
+# build outputs
+**/bin/
+**/obj/
+**/out/
+*.log
+.DS_Store
+._*
+*.orig
+*.nettrace
+# your game's data and everything built from it -- never commit
+/runtime
+decomp/
+tools/*/out/
+tools/*/lib/
+engine/Shepherd.Assets/out/
+vita/probe/out/
+vita/*/runs/
+vita/*/native/
+vita/*/pubmono/
+vita/*/art-*/
+vita/*/clrrel/
+vita/*/out/
+vita/*/tools/*/out/
+*.vpk
+*.suprx
+*.self
+*.pack
+# local-only ports of decompiled game / third-party code -- never commit (vita/shepherd/derived_leaks.py)
+engine/**/Derived
+# third-party checkout (see THIRD-PARTY-NOTICES.md)
+engine/Shepherd.Assets/native/crunch-unity

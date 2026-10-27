@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SHEPHERD-VITA DIAG (devfail1): deliberately NOT AOT-compiled: the interpreter's own exception paths (null deref, bounds,
+       casts, division, overflow, throw null) and interpreter <-> AOT exception crossings, for HelloDiag. -->
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>HelloDiagInterp</AssemblyName>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Optimize>true</Optimize>
+    <DebugType>none</DebugType>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="InterpTests.cs" />
+  </ItemGroup>
+</Project>

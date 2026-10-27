@@ -1,0 +1,6 @@
+# V6 stage-2 vita-sim pad script, relative to the Main Menu scene's arrival (Diag/MenuClock.cs: m+N = N frames after the first
+# frame that ended with the Main Menu scene present). The same events as pad-menu-dlc.txt for a boot whose menu lands at frame
+# 814 (the pre-stage-2 interpreter): 1050 = m+236, 1400 = m+586. Faster frames land the menu later (the boot's scene loads wait
+# on wall time), so absolute frames would press on another screen.
+m+236:cross   # engage "Press Any Button to Start"
+m+586:down    # Main Menu: Play -> DLC

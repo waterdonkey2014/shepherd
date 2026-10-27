@@ -1,0 +1,7 @@
+# V6 stage 1 save check (vita/notes/engine-pass-memory.md): open Settings and close it, which makes the game write its
+# settings file (saves/settings.json + backup rotation) into the run's sandbox persistent/ copy.
+1050:cross    # engage "Press Any Button to Start"
+1300:down     # Play -> DLC
+1330:down     # DLC -> Settings
+1360:cross    # open Settings
+1450:circle   # close Settings: the game saves its settings

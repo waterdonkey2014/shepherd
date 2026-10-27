@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Shepherd.Assets</RootNamespace>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <!-- kit #7 tests track: the eboot build (vita/shepherd/build.sh -p:ShepherdEboot=1, a global property that reaches this project too)
+       leaves out the Mac-only test hooks (Sched.cs; VitaPack's read-ahead uses the plain primitives) as Shepherd.Engine does. -->
+  <PropertyGroup Condition="'$(ShepherdEboot)' == '1'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_EBOOT</DefineConstants>
+  </PropertyGroup>
+  <!-- device kit #8 boot track: -p:ShepherdK8=0 (a global property, as ShepherdEboot) leaves out VitaPack's preload hooks (Shepherd.Engine's
+       Runtime/K8Preload.cs) as Shepherd.Engine does. -->
+  <PropertyGroup Condition="'$(ShepherdK8)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_NO_K8</DefineConstants>
+  </PropertyGroup>
+</Project>

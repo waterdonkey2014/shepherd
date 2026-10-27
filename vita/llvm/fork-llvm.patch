@@ -1,0 +1,29 @@
+--- a/src/mono/mono/mini/aot-compiler.c
++++ b/src/mono/mono/mini/aot-compiler.c
+@@ -2514,7 +2514,7 @@
+ 
+ 	if (acfg->thumb_mixed && cfg->compile_llvm) {
+ 		fprintf (acfg->fp, "add r0, r0, #%d\n", (int)MONO_ABI_SIZEOF (MonoObject));
+-		fprintf (acfg->fp, "b %s\n", call_target);
++		fprintf (acfg->fp, MONO_ARM_THUMB_UNBOX_TAIL_BRANCH, call_target); /* SHEPHERD-VITA LLVM: see mini-arm.h */
+ 		fprintf (acfg->fp, ".arm\n");
+ 		fprintf (acfg->fp, ".align 2\n");
+ 		return;
+--- a/src/mono/mono/mini/mini-arm.h
++++ b/src/mono/mono/mini/mini-arm.h
+@@ -452,4 +452,15 @@
+ CallInfo*
+ mono_arch_get_call_info (MonoMemPool *mp, MonoMethodSignature *sig);
+ 
++/* SHEPHERD-VITA LLVM (vita/notes/llvm-aot.md): the tail branch of a Thumb-2 unbox trampoline (thumb_mixed LLVM AOT) to its
++ * LLVM-compiled method. GNU as (vitasdk) reads Mono's divided-syntax Thumb "b sym" as the 16-bit B (R_ARM_THM_JUMP11, +-2 KiB:
++ * "relocation truncated to fit" at link time); clang's assembler (iOS, where this path came from) picked the 32-bit form.
++ * Only an LLVM-enabled Vita cross compiler uses the wide form; every other build keeps the original string, so the
++ * non-LLVM cross compiler is byte-identical. */
++#if defined(TARGET_VITA) && defined(ENABLE_LLVM)
++#define MONO_ARM_THUMB_UNBOX_TAIL_BRANCH ".syntax unified\n\tb.w %s\n\t.syntax divided\n"
++#else
++#define MONO_ARM_THUMB_UNBOX_TAIL_BRANCH "b %s\n"
++#endif
++
+ #endif /* __MONO_MINI_ARM_H__ */

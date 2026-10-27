@@ -1,0 +1,2 @@
+# kit4 intro-plan: idle Main Menu (press any button at 1050, then nothing)
+1050:cross

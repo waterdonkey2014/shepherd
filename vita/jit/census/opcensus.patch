@@ -1,0 +1,66 @@
+diff --git a/src/mono/mono/mini/interp/interp.c b/src/mono/mono/mini/interp/interp.c
+index 37c1e7b..ae2485c 100644
+--- a/src/mono/mono/mini/interp/interp.c
++++ b/src/mono/mono/mini/interp/interp.c
+@@ -353,7 +353,9 @@ int mono_interp_traceopt = 0;
+ 
+ #if USE_COMPUTED_GOTO
+ 
+-#define MINT_IN_DISPATCH(op) goto *in_labels [opcode = (MintOpcode)(op)]
++/* SHEPHERD kit #8 jit track: OPCODE CENSUS build only (vita/jit/census/opcensus.patch; never shipped) -- every dispatched opcode counted */
++extern volatile guint64 shp_opcensus [];
++#define MINT_IN_DISPATCH(op) do { opcode = (MintOpcode)(op); shp_opcensus [opcode]++; goto *in_labels [opcode]; } while (0)
+ #define MINT_IN_SWITCH(op)   MINT_IN_DISPATCH (op);
+ #define MINT_IN_BREAK        MINT_IN_DISPATCH (*ip)
+ #define MINT_IN_CASE(x)      LAB_ ## x:
+@@ -8928,9 +8930,50 @@ static const MonoEECallbacks mono_interp_callbacks = {
+ 	MONO_EE_CALLBACKS
+ };
+ 
++/* SHEPHERD kit #8 jit track, OPCODE CENSUS build only: the counts of every dispatched interpreter opcode, written every 5 s (and
++ * overwritten) to $SHEPHERD_LOG_DIR/opcensus.tsv: "<count>\t<opcode>\t<name>" for every opcode executed at least once. Racy increments
++ * (several threads may dispatch): statistics only. */
++#include <pthread.h>
++volatile guint64 shp_opcensus [MINT_LASTOP + 1];
++static void *
++shp_opcensus_thread (void *arg)
++{
++	char path [512];
++	const char *d = g_getenv ("SHEPHERD_LOG_DIR");
++	if (d && d [0] == '/')
++		d++;   /* the host roots it ("/ux0:data/..."), as the engine's PAL wants; newlib wants "ux0:data/..." */
++	g_snprintf (path, sizeof (path), "%s/opcensus.tsv", d ? d : "ux0:data/shepherd/runtime/logs");
++	for (;;) {
++		g_usleep (5 * 1000 * 1000);
++		FILE *f = fopen (path, "w");
++		if (!f)
++			continue;
++		guint64 total = 0;
++		for (int i = 0; i < MINT_LASTOP; i++)
++			total += shp_opcensus [i];
++		fprintf (f, "#total\t%llu\n", (unsigned long long) total);
++		for (int i = 0; i < MINT_LASTOP; i++)
++			if (shp_opcensus [i])
++				fprintf (f, "%llu\t%d\t%s\n", (unsigned long long) shp_opcensus [i], i, mono_interp_opname (i));
++		fclose (f);
++	}
++	return NULL;
++}
++static void
++shp_opcensus_start (void)
++{
++	pthread_t t;
++	pthread_attr_t a;
++	pthread_attr_init (&a);
++	pthread_attr_setstacksize (&a, 64 * 1024);
++	pthread_create (&t, &a, shp_opcensus_thread, NULL);
++	pthread_attr_destroy (&a);
++}
++
+ void
+ mono_ee_interp_init (const char *opts)
+ {
++	shp_opcensus_start ();
+ 	g_assert (mono_ee_api_version () == MONO_EE_API_VERSION);
+ 	g_assert (!interp_init_done);
+ 	interp_init_done = TRUE;

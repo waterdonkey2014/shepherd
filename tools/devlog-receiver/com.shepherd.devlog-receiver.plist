@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  OPTIONAL LaunchAgent for the Shepherd devlog receiver. NOT installed by anything in this repo.
+  Installing it is the owner's decision (it starts the receiver at every login). See README.md "Run it at login".
+
+  Behaviour:
+  - Runs receiver.py serve with the defaults: the Mac's LAN IPv4 (default-route interface), TCP 47710, UDP 47711.
+  - Needs both drives: the script lives on "DATA" ($SHEPHERD_REPO is a link there), the inbox and the log on
+    $SHEPHERD_WORK. If either is missing it writes one line and exits 0 (no restart loop); StartOnMount starts it
+    again when a volume mounts.
+  - If the LAN address changes or there is no LAN yet, it exits 75 and KeepAlive restarts it (ThrottleInterval 30 s).
+  - A configuration error (no token, bad option, port taken) also exits 0 under launchd (SHPD_DEVLOG_UNDER_LAUNCHD),
+    after one line: no restart every 30 s. Fix it, then `launchctl kickstart gui/$(id -u)/com.shepherd.devlog-receiver`.
+  - The request log is $SHEPHERD_WORK/devlog/receiver.log (rotating, 3 x 5 MB at most). The file below in
+    ~/Library/Logs only gets startup lines (missing drive, configuration errors): a line per mount event at most.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.shepherd.devlog-receiver</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>S=/Users/YOU/src/shepherd/tools/devlog-receiver/receiver.py; if [ ! -f "$S" ]; then echo "$(date '+%F %T') devlog-receiver: $S not found (DATA not mounted?); waiting for a mount" &gt;&amp;2; exit 0; fi; exec /usr/bin/python3 "$S" --root $SHEPHERD_WORK/devlog serve --pidfile $SHEPHERD_WORK/devlog/receiver.pid --log-file $SHEPHERD_WORK/devlog/receiver.log</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>SHPD_DEVLOG_UNDER_LAUNCHD</key>
+		<string>1</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartOnMount</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/YOU/Library/Logs/shepherd-devlog-receiver.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/YOU/Library/Logs/shepherd-devlog-receiver.log</string>
+</dict>
+</plist>

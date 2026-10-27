@@ -1,0 +1,89 @@
+--- a/src/mono/mono/mini/exceptions-arm.c	2026-10-03 00:43:34
++++ b/src/mono/mono/mini/exceptions-arm.c	2026-10-14 16:21:21
+@@ -210,6 +210,28 @@
+ }
+ 
+ #ifndef DISABLE_JIT
++
++/*
++ * SHEPHERD-VITA kit #5 review fix A (vita/llvm/fork-eh-vfp.patch): the saved d0-d15 sit right above the WHOLE param area, at
++ * sp + param_size. Stock code passes sp + 8, which is right only when the param area is 8 bytes (corlib / resume_unwind); the
++ * managed throw / rethrow trampolines pad it to 16 bytes (cfa_offset + 12 aligned to 8), so ctx->fregs [i] read d(i-1) and
++ * restore_context handed the catching frame shifted d-registers. Only LLVM code keeps values in the callee-saved d8-d15 across
++ * calls (Mono's ARM backend never does), so only LLVM frames saw it. In a full-AOT build these trampolines are emitted by the AOT
++ * compiler into CoreLib's image (the runtime is DISABLE_JIT): CoreLib must be recompiled. SHEPHERD_EH_VFP_FIX=0 in the compiler's
++ * environment = the stock offset (the kit #4 compiler's output).
++ */
++static int shp_eh_vfp_fix_mode = -1;
++
++static int
++shp_eh_vfp_fp_regs_offset (int param_size)
++{
++	if (shp_eh_vfp_fix_mode < 0) {
++		char *v = g_getenv ("SHEPHERD_EH_VFP_FIX");
++		shp_eh_vfp_fix_mode = (v && !strcmp (v, "0")) ? 0 : 1;
++		g_free (v);
++	}
++	return shp_eh_vfp_fix_mode ? param_size : 8;
++}
+ 
+ /**
+  * get_throw_trampoline:
+@@ -286,16 +308,16 @@
+ 	/* int regs */
+ 	ARM_ADD_REG_IMM8 (code, ARMREG_R3, ARMREG_SP, (cfa_offset - (MONO_ARM_NUM_SAVED_REGS * sizeof (target_mgreg_t))));
+ 	if (resume_unwind || corlib) {
+-		/* fp regs */
+-		ARM_ADD_REG_IMM8 (code, ARMREG_LR, ARMREG_SP, 8);
++		/* fp regs (above the whole param area: SHEPHERD-VITA fix A) */
++		ARM_ADD_REG_IMM8 (code, ARMREG_LR, ARMREG_SP, shp_eh_vfp_fp_regs_offset (param_size));
+ 		ARM_STR_IMM (code, ARMREG_LR, ARMREG_SP, 0);
+ 	} else {
+ 		/* preserve_ips */
+ 		ARM_MOV_REG_IMM8 (code, ARMREG_R5, preserve_ips);
+ 		ARM_STR_IMM (code, ARMREG_R5, ARMREG_SP, 4);
+ 
+-		/* fp regs */
+-		ARM_ADD_REG_IMM8 (code, ARMREG_LR, ARMREG_SP, 8);
++		/* fp regs (above the whole param area: SHEPHERD-VITA fix A) */
++		ARM_ADD_REG_IMM8 (code, ARMREG_LR, ARMREG_SP, shp_eh_vfp_fp_regs_offset (param_size));
+ 		ARM_STR_IMM (code, ARMREG_LR, ARMREG_SP, 0);
+ 	}
+ 
+@@ -491,8 +513,10 @@
+ 
+ 		for (i = 0; i < 16; ++i)
+ 			regs [i] = new_ctx->regs [i];
+-#if defined (TARGET_IOS) || defined(TARGET_TVOS)
++#if defined (TARGET_IOS) || defined(TARGET_TVOS) || defined(HOST_VITA)
+ 		/* On IOS, d8..d15 are callee saved. They are mapped to 8..15 in unwind.c */
++		/* SHEPHERD-VITA kit #5 review fix B: AAPCS-VFP makes d8-d15 callee-saved on the Vita too, and LLVM frames save them (their
++		 * DWARF CFI names d8-d15): carry them through the unwind so a catching frame above an LLVM frame gets that frame's values back */
+ 		for (i = 0; i < 8; ++i)
+ 			regs [MONO_MAX_IREGS + i] = *(guint64*)&(new_ctx->fregs [8 + i]);
+ #endif
+@@ -509,7 +533,7 @@
+ 			new_ctx->regs [i] = regs [i];
+ 		new_ctx->pc = regs [ARMREG_LR];
+ 		new_ctx->regs [ARMREG_SP] = (gsize)cfa;
+-#if defined (TARGET_IOS) || defined(TARGET_TVOS)
++#if defined (TARGET_IOS) || defined(TARGET_TVOS) || defined(HOST_VITA)   /* SHEPHERD-VITA fix B */
+ 		for (i = 0; i < 8; ++i)
+ 			new_ctx->fregs [8 + i] = *(double*)&(regs [MONO_MAX_IREGS + i]);
+ #endif
+--- a/src/mono/mono/mini/unwind.c	2026-10-02 23:30:22
++++ b/src/mono/mono/mini/unwind.c	2026-10-14 16:21:21
+@@ -699,7 +699,13 @@
+ 				return FALSE;
+ 			}
+ 			if (IS_DOUBLE_REG (dwarfreg))
++#if defined(TARGET_ARM)
++				/* SHEPHERD-VITA kit #5 review fix C: mono_unwind_reg_t is guint64 on ARM (mini-arm.h) and holds a whole d-register;
++				 * GUINT64_TO_HMREG truncated it to the 32-bit host_mgreg_t */
++				regs [hwreg] = *(guint64*)(cfa_val + locations [hwreg].offset);
++#else
+ 				regs [hwreg] = GUINT64_TO_HMREG (*(guint64*)(cfa_val + locations [hwreg].offset));
++#endif
+ 			else
+ 				regs [hwreg] = *(host_mgreg_t*)(cfa_val + locations [hwreg].offset);
+ 			if (save_locations && hwreg < save_locations_len)

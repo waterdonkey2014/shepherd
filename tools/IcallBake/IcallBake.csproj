@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable><InvariantGlobalization>true</InvariantGlobalization></PropertyGroup>
+  <!-- the engine's own reader/writer: the bake is written by the same code that reads it at boot -->
+  <ItemGroup><Compile Include="../../engine/Shepherd.Engine/IcallManifest.cs" Link="IcallManifest.cs" /></ItemGroup>
+</Project>

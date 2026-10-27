@@ -1,0 +1,16 @@
+# menu-speed: polish round 1's menu tour ($SHEPHERD_WORK/polish1/pad-tour.txt: DLC, Credits, Roadmap, Achievements; open,
+# look, close) relative to the Main Menu scene's arrival (m+N; the absolute script assumed the menu at f806: 1050 = m+244)
+m+244:cross    # engage "Press Any Button to Start"
+m+494:down     # Play -> DLC
+m+524:cross    # open DLC
+m+694:circle   # close
+m+794:down     # DLC -> Settings
+m+824:down     # Settings -> Credits
+m+854:cross    # open Credits
+m+1094:circle
+m+1194:down    # Credits -> Roadmap
+m+1224:cross   # open Roadmap
+m+1394:circle
+m+1494:down    # Roadmap -> Achievements
+m+1524:cross   # open Achievements
+m+1694:circle

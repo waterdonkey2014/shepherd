@@ -1,0 +1,110 @@
+--- a/Box2D/Dynamics/b2Island.h
++++ b/Box2D/Dynamics/b2Island.h
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P2 (the speed clamps as runtime values, physics E1), behind the runtime values
++// b2_unityMaxTranslation / b2_unityMaxRotation (b2Island.h); with both 0 this file behaves exactly as stock Box2D 2.3.1.
++// Listed in vita/physics/box2d/PATCHES.md (row P2). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
+ *
+@@ -23,6 +26,13 @@
+ #include <Box2D/Dynamics/b2Body.h>
+ #include <Box2D/Dynamics/b2TimeStep.h>
+ 
++// Shepherd P2 (ALTERED): the per-step speed clamps as runtime values; 0 = stock Box2D 2.3.1's compiled b2_maxTranslation /
++// b2_maxRotation (the default). The Shepherd shim sets them around each b2World::Step from the world's own clamps
++// (sp_world_set_clamps, shim/shepphys.cpp) and resets them to 0 after: Unity 2022.3 applies Physics2DSettings' maxTranslationSpeed
++// (units) and maxRotationSpeed (here in radians) per step (the E1 oracle's MaxTransRot scene).
++extern float32 b2_unityMaxTranslation;   // > 0: the largest translation of a body in one step (else b2_maxTranslation)
++extern float32 b2_unityMaxRotation;      // > 0: the largest rotation of a body in one step, radians (else b2_maxRotation)
++
+ class b2Contact;
+ class b2Joint;
+ class b2StackAllocator;
+--- a/Box2D/Dynamics/b2Island.cpp
++++ b/Box2D/Dynamics/b2Island.cpp
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P2 (the speed clamps as runtime values, physics E1), behind the runtime values
++// b2_unityMaxTranslation / b2_unityMaxRotation (b2Island.h); with both 0 this file behaves exactly as stock Box2D 2.3.1.
++// Listed in vita/physics/box2d/PATCHES.md (row P2). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2011 Erin Catto http://www.box2d.org
+ *
+@@ -26,6 +29,9 @@
+ #include <Box2D/Dynamics/Joints/b2Joint.h>
+ #include <Box2D/Common/b2StackAllocator.h>
+ #include <Box2D/Common/b2Timer.h>
++
++float32 b2_unityMaxTranslation = 0.0f;   // Shepherd P2 (ALTERED): see b2Island.h
++float32 b2_unityMaxRotation = 0.0f;
+ 
+ /*
+ Position Correction Notes
+@@ -271,6 +277,12 @@
+ 	contactSolver.StoreImpulses();
+ 	profile->solveVelocity = timer.GetMilliseconds();
+ 
++	// Shepherd P2 (ALTERED): this step's clamps -- the world's (b2_unityMaxTranslation / b2_unityMaxRotation) or, at 0, stock's constants
++	float32 maxTranslation = b2_maxTranslation, maxTranslationSquared = b2_maxTranslationSquared;
++	float32 maxRotation = b2_maxRotation, maxRotationSquared = b2_maxRotationSquared;
++	if (b2_unityMaxTranslation > 0.0f) { maxTranslation = b2_unityMaxTranslation; maxTranslationSquared = maxTranslation * maxTranslation; }
++	if (b2_unityMaxRotation > 0.0f) { maxRotation = b2_unityMaxRotation; maxRotationSquared = maxRotation * maxRotation; }
++
+ 	// Integrate positions
+ 	for (int32 i = 0; i < m_bodyCount; ++i)
+ 	{
+@@ -281,16 +293,16 @@
+ 
+ 		// Check for large velocities
+ 		b2Vec2 translation = h * v;
+-		if (b2Dot(translation, translation) > b2_maxTranslationSquared)
++		if (b2Dot(translation, translation) > maxTranslationSquared)   // Shepherd P2 (ALTERED): the clamps below; stock values when 0
+ 		{
+-			float32 ratio = b2_maxTranslation / translation.Length();
++			float32 ratio = maxTranslation / translation.Length();
+ 			v *= ratio;
+ 		}
+ 
+ 		float32 rotation = h * w;
+-		if (rotation * rotation > b2_maxRotationSquared)
++		if (rotation * rotation > maxRotationSquared)
+ 		{
+-			float32 ratio = b2_maxRotation / b2Abs(rotation);
++			float32 ratio = maxRotation / b2Abs(rotation);
+ 			w *= ratio;
+ 		}
+ 
+@@ -469,6 +481,12 @@
+ 
+ 	float32 h = subStep.dt;
+ 
++	// Shepherd P2 (ALTERED): this step's clamps -- the world's (b2_unityMaxTranslation / b2_unityMaxRotation) or, at 0, stock's constants
++	float32 maxTranslation = b2_maxTranslation, maxTranslationSquared = b2_maxTranslationSquared;
++	float32 maxRotation = b2_maxRotation, maxRotationSquared = b2_maxRotationSquared;
++	if (b2_unityMaxTranslation > 0.0f) { maxTranslation = b2_unityMaxTranslation; maxTranslationSquared = maxTranslation * maxTranslation; }
++	if (b2_unityMaxRotation > 0.0f) { maxRotation = b2_unityMaxRotation; maxRotationSquared = maxRotation * maxRotation; }
++
+ 	// Integrate positions
+ 	for (int32 i = 0; i < m_bodyCount; ++i)
+ 	{
+@@ -479,16 +497,16 @@
+ 
+ 		// Check for large velocities
+ 		b2Vec2 translation = h * v;
+-		if (b2Dot(translation, translation) > b2_maxTranslationSquared)
++		if (b2Dot(translation, translation) > maxTranslationSquared)   // Shepherd P2 (ALTERED): the clamps below; stock values when 0
+ 		{
+-			float32 ratio = b2_maxTranslation / translation.Length();
++			float32 ratio = maxTranslation / translation.Length();
+ 			v *= ratio;
+ 		}
+ 
+ 		float32 rotation = h * w;
+-		if (rotation * rotation > b2_maxRotationSquared)
++		if (rotation * rotation > maxRotationSquared)
+ 		{
+-			float32 ratio = b2_maxRotation / b2Abs(rotation);
++			float32 ratio = maxRotation / b2Abs(rotation);
+ 			w *= ratio;
+ 		}
+ 

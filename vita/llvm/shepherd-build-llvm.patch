@@ -1,0 +1,175 @@
+--- a/vita/shepherd/build.sh
++++ b/vita/shepherd/build.sh
+@@ -22,6 +22,11 @@
+ #   there (over stage-owner.sh's). The eboot then CONTAINS derived code: work dir $B/shepherd-v6-engineaot-derived (GL:
+ #   shepherd-gl-engineaot-derived), TITLE_ID SHPD00090 / SHPD00091 (GL; SHPD0009x = owner-only builds, see check_vpk.py), logs
+ #   menu-aotd.txt / menu_gl-aotd.txt; check_vpk.py runs with --owner-derived. Install it only on the owner's own Vita; never share it.
++# SHEPHERD_AOT_LLVM=arm|thumb (vita/notes/llvm-aot.md; OPT-IN): AOT with Mono's LLVM backend instead of Mono's own A32 backend, via
++#   the LLVM-enabled cross compiler (vita/llvm/build-cross-llvm.sh -> obj/cross-vita-llvm, the official Mono LLVM 16 tools).
++#   thumb = Thumb-2 LLVM code (Mono's thumb_mixed mode: ~29% less text than today's A32, the recommended setting), arm = A32 LLVM
++#   code. Each module gets a second object (<M>-llvm.o: LLVM methods + the AOT data tables + the Mono EH table) next to <M>.dll.o.
++#   The runtime (libmonosgen) is unchanged: it loads LLVM AOT images without ENABLE_LLVM. Unset = today's build, byte for byte.
+ # SHEPHERD_GL=1 (Stage B, the milestone app; vita/notes/m1-gl-app.md): shepherd_menu_gl.vpk -- the same eboot recipe plus the GL
+ #   backend's host layer: host.c built with SHEPHERD_GL, vita/gltest/shepgl (shepgl_vita.c: vitaGL context/swap + the 51 GL entry
+ #   points, every shepgl_* export in the static P/Invoke table), vitaGL + vitaShaRK linked, SceCtrl/ScePower/SceGxm imports.
+@@ -43,6 +48,13 @@
+ R=${SHEPHERD_RUNTIME:-$B/runtime}
+ RT=${SHEPHERD_VITA_RUNTIME_OBJ:-$B/obj/vita-runtime}
+ X=${SHEPHERD_CROSS_OBJ:-$B/obj/cross-vita}/out/bin/mono-aot-cross
++AOT_LLVM=${SHEPHERD_AOT_LLVM:-}
++case "$AOT_LLVM" in ""|arm|thumb) ;; *) echo "SHEPHERD_AOT_LLVM must be arm or thumb"; exit 1 ;; esac
++if [ -n "$AOT_LLVM" ]; then
++  XL=${SHEPHERD_CROSS_LLVM_OBJ:-$B/obj/cross-vita-llvm}/out
++  X=$XL/bin/mono-aot-cross; LLVMBIN=$XL/llvm-bin/
++  [ -x "$X" ] && [ -x "$LLVMBIN/llc" ] || { echo "LLVM cross compiler missing: run vita/llvm/build-cross-llvm.sh"; exit 1; }
++fi
+ PACK=$B/packs/mono.linux-arm.8.0.31/runtimes/linux-arm
+ ENGINE_AOT=${SHEPHERD_AOT_ENGINE:-0}
+ DERIVED_AOT=${SHEPHERD_AOT_DERIVED:-0}
+@@ -117,19 +129,27 @@
+ 
+ echo "== 2. static AOT (full + interp entry wrappers, direct P/Invokes and icalls, no debug info)"
+ AOT_OPTS="full,interp,static,asmonly,direct-icalls,direct-pinvoke,nodebug,mtriple=armv7-vita-eabihf"
++# LLVM: the triple picks ARM vs Thumb-2 (thumbv7 -> thumb_mixed); the A9 has NEON + VFPv3-D32 (Mono adds -mattr=+vfp2,-neon,+d16
++# -float-abi=hard first; ours come last; -exception-model=dwarf drops the unused ARM EHABI tables). opt runs Mono's default "default<O2>,place-safepoints" (coop polls on every backedge).
++LLVM_TRIPLE=armv7-vita-eabihf; [ "$AOT_LLVM" = thumb ] && LLVM_TRIPLE=thumbv7-vita-eabihf
++[ -n "$AOT_LLVM" ] && AOT_OPTS="full,interp,static,asmonly,direct-icalls,direct-pinvoke,nodebug,llvm,llvm-path=$LLVMBIN,mtriple=$LLVM_TRIPLE,llvmllc=-mcpu=cortex-a9 -exception-model=dwarf,mattr=+neon,mattr=+d32"
+ # all runtime trampolines come from CoreLib's image; running out of a pool is fatal (see vita/notes/v5-runtime.md)
+ CORELIB_TRAMPS=",ntrampolines=8192,nrgctx-trampolines=8192,nimt-trampolines=2048,ngsharedvt-trampolines=4096,nftnptr-arg-trampolines=4096,nunbox-arbitrary-trampolines=1024"
+ # content stamps: the cross compiler + every DLL the module can depend on (CoreLib: itself; the BCL: the BCL; ours: all)
+ BCL_FILES=("$PACK"/lib/net8.0/*.dll "$PACK/native/System.Private.CoreLib.dll")
+-DEPS_CORELIB=$(cat "$W/bcl/System.Private.CoreLib.dll" "$X" | shasum -a 256 | cut -c1-16)
+-DEPS_BCL=$(cat $BCL_FILES "$X" | shasum -a 256 | cut -c1-16)
+-DEPS_ALL=$(cat "$W"/bcl/*.dll "$X" | shasum -a 256 | cut -c1-16)
+-[ "$ENGINE_AOT" = 1 ] && DEPS_ENGINE=$(cat "$W"/bcl/*.dll "$OWNER_MANAGED"/*.dll "$X" | shasum -a 256 | cut -c1-16)
+-[ "$DERIVED_AOT" = 1 ] && DEPS_DERIVED=$(cat "$W"/bcl/*.dll "$W/derived/Shepherd.Engine.Derived.dll" "$OWNER_MANAGED"/*.dll "$X" | shasum -a 256 | cut -c1-16)
++XTOOLS=("$X"); [ -n "$AOT_LLVM" ] && XTOOLS+=("$LLVMBIN/opt" "$LLVMBIN/llc")
++DEPS_CORELIB=$(cat "$W/bcl/System.Private.CoreLib.dll" $XTOOLS | shasum -a 256 | cut -c1-16)
++DEPS_BCL=$(cat $BCL_FILES $XTOOLS | shasum -a 256 | cut -c1-16)
++DEPS_ALL=$(cat "$W"/bcl/*.dll $XTOOLS | shasum -a 256 | cut -c1-16)
++[ "$ENGINE_AOT" = 1 ] && DEPS_ENGINE=$(cat "$W"/bcl/*.dll "$OWNER_MANAGED"/*.dll $XTOOLS | shasum -a 256 | cut -c1-16)
++[ "$DERIVED_AOT" = 1 ] && DEPS_DERIVED=$(cat "$W"/bcl/*.dll "$W/derived/Shepherd.Engine.Derived.dll" "$OWNER_MANAGED"/*.dll $XTOOLS | shasum -a 256 | cut -c1-16)
+ for f in "$W"/aot/*.dll.s(N); do a=${${f:t}%.dll.s}; (( ${AOT[(Ie)$a]} )) || { echo "   (dropping stale $a)"; rm -f "$W/aot/$a".*; }; done
+ for a in $AOT; do
+-  dll="$W/bcl/$a.dll"; s="$W/aot/$a.dll.s"; o="$W/aot/$a.dll.o"
++  dll="$W/bcl/$a.dll"; s="$W/aot/$a.dll.s"; o="$W/aot/$a.dll.o"; lo="$W/aot/$a-llvm.o"
+   [ "$a" = Shepherd.Engine.Derived ] && dll="$W/derived/$a.dll"
++  # LLVM: llc must write an object (llvm-outfile=*.o): the Mono LLVM 16 llc for osx-arm64 crashes in its asm streamer on the
++  # Mono EH table (vita/notes/llvm-aot.md)
++  LOUT=; [ -n "$AOT_LLVM" ] && LOUT=",llvm-outfile=$lo"
+   case $a in
+     System.Private.CoreLib) EXTRA=$CORELIB_TRAMPS DEPS=$DEPS_CORELIB ;;
+     Shepherd.Engine) EXTRA= DEPS=$DEPS_ENGINE ;;
+@@ -138,8 +158,8 @@
+     *) EXTRA= DEPS=$DEPS_BCL ;;
+   esac
+   stamp="$W/aot/$a.stamp"; want="$DEPS opts=$AOT_OPTS$EXTRA inl=$MONO_AGGRESSIVE_INLINELIMIT${GLW}"
+-  if [ -f "$o" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]; then echo "   $a: up to date"; continue; fi
+-  rm -f "$stamp"
++  if [ -f "$o" ] && { [ -z "$AOT_LLVM" ] || [ -f "$lo" ]; } && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]; then echo "   $a: up to date"; continue; fi
++  rm -f "$stamp" "$lo"
+   if [ "$a" = Shepherd.Engine ]; then
+     # the owner's managed folder resolves the engine's Unity / game types; nothing of theirs is inlined; only the engine's own
+     # __Internal export (the host checkpoint) is a direct P/Invoke (its Mac-only SDL / libc imports stay late-bound, never called)
+@@ -147,26 +167,34 @@
+     # reader) stay late-bound (never called there); the GL build links them all
+     DIRECT='direct-pinvokes=__Internal!shepherd_vita_engine_checkpoint'; [ "$GL" = 1 ] && DIRECT='direct-pinvokes=__Internal'
+     SHEPHERD_AOT_INLINE_IMAGES=$ENGINE_INLINE_IMAGES MONO_PATH="$W/bcl:$OWNER_MANAGED" \
+-      "$X" --aot=${AOT_OPTS/direct-pinvoke,/$DIRECT,},outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
++      "$X" --aot=${AOT_OPTS/direct-pinvoke,/$DIRECT,}$LOUT,outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
+   elif [ "$a" = Shepherd.Engine.Derived ]; then
+     # the owner-local derived module: resolves against the packaged set, its own folder and the owner's managed folder; inlines only
+     # itself, the engine and the BCL; declares no P/Invoke of its own (any it reaches stays late-bound, as in the engine image)
+     SHEPHERD_AOT_INLINE_IMAGES=$DERIVED_INLINE_IMAGES MONO_PATH="$W/bcl:$W/derived:$OWNER_MANAGED" \
+-      "$X" --aot=${AOT_OPTS/direct-pinvoke,/},outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
++      "$X" --aot=${AOT_OPTS/direct-pinvoke,/}$LOUT,outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
+   else
+-  MONO_PATH="$W/bcl" "$X" --aot=$AOT_OPTS$EXTRA,outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
++  MONO_PATH="$W/bcl" "$X" --aot=$AOT_OPTS$EXTRA$LOUT,outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
+   fi
+   arm-vita-eabi-as -mfpu=neon -mfloat-abi=hard -o "$o" "$s"
++  rm -f "$s.bc" "$s.opt.bc"                          # LLVM's intermediate bitcode (CoreLib: ~1 GB)
+   echo "$want" > "$stamp"
+   echo "   $a: $(grep -o 'Compiled: [0-9/]*' "$W/aot/$a.log" | tail -1)"
+ done
+ DER_DIR=; [ "$DERIVED_AOT" = 1 ] && DER_DIR=$W/derived   # (the derived module's own IL: an owner dir, it is not packaged)
++if [ -n "$AOT_LLVM" ]; then
++  # with LLVM the AOT data tables (assembly_guid, image_table) are in <M>-llvm.o, not in the .s
++  python3 "$V/llvm/check_aot_guids_llvm.py" "$W/bcl" "$W/aot" ${DER_DIR:+$DER_DIR} ${OWNER_MANAGED:+$OWNER_MANAGED} > "$OUT/aot-guids.txt" || true
++else
+ python3 "$V/hello/check_aot_guids.py" "$W/bcl" "$W/aot" ${DER_DIR:+$DER_DIR} ${OWNER_MANAGED:+$OWNER_MANAGED} > "$OUT/aot-guids.txt" || true
++fi
+ grep -qx 'TOTAL MISMATCHES 0' "$OUT/aot-guids.txt" || { cat "$OUT/aot-guids.txt"; echo "AOT images do not match the packaged DLLs (see aot-guids.txt)"; exit 1; }
+ echo "   AOT GUID gate: $(tail -1 "$OUT/aot-guids.txt")"
+ : > "$OUT/aot-sizes.txt"
+ for a in $AOT; do
+   t=$(arm-vita-eabi-size "$W/aot/$a.dll.o" | tail -1 | awk '{print $1}')
++  # LLVM: the module is both objects (Mono part + LLVM part); `size` text = .text + .rodata (+ .ARM.exidx/extab)
++  [ -f "$W/aot/$a-llvm.o" ] && t=$((t + $(arm-vita-eabi-size "$W/aot/$a-llvm.o" | tail -1 | awk '{print $1}')))
+   printf "%-36s text %10d (%6.2f MiB)\n" "$a" "$t" "$(echo "$t / 1048576" | bc -l)" >> "$OUT/aot-sizes.txt"
+   [ "$t" -lt $MAX_MODULE_TEXT ] || { echo "AOT module $a text $t >= 28 MiB (bl reach margin)"; exit 1; }
+ done
+@@ -174,6 +202,16 @@
+ if [ "$ENGINE_AOT" = 1 ]; then
+   # foreign-code gate: every method compiled into the engine image is the engine's, the BCL's (incl. its generics instantiated
+   # over Unity value types: BCL code), or a runtime wrapper / trampoline -- no Unity or game method body
++  if [ -n "$AOT_LLVM" ]; then
++  # LLVM: vita/llvm/foreign-gate.sh checks both objects: the Mono part with the regex below (+ the p_<n>_plt_<callee>_llvm call
++  # stubs it emits for LLVM callers); in the LLVM part every method is named "Shepherd_Engine_<name>" (static link:
++  # mono_aot_get_method_name), BCL code and wrappers included, so it strips that prefix before testing (else a Unity body would
++  # pass as Shepherd_*), and an unprefixed LLVM code symbol must be one of the module's own helpers. Its self-test also checks
++  # that the regex below is still the one it copies. Exit 1 = foreign symbols (listed below), 2 = the gate could not run
++  "$V/llvm/foreign-gate.sh" --self-test > "$OUT/engine-aot-gate.txt" || { cat "$OUT/engine-aot-gate.txt"; exit 1; }
++  "$V/llvm/foreign-gate.sh" Shepherd.Engine "$W/aot/Shepherd.Engine.dll.o" "$W/aot/Shepherd.Engine-llvm.o" "$W/obj/engine-aot" >> "$OUT/engine-aot-gate.txt" \
++    || [ $? = 1 ] || { cat "$OUT/engine-aot-gate.txt"; echo "Shepherd.Engine foreign-code gate could not run"; exit 1; }
++  else
+   arm-vita-eabi-nm "$W/aot/Shepherd.Engine.dll.o" | awk '$2 ~ /^[Tt]$/ {print $3}' | grep -v '^\.' > "$W/obj/engine-aot-methods.txt"
+   # allowed: the engine's and the BCL's namespaces, the BCL's primitive types as Mono mangles them, runtime wrappers / PLT / unbox
+   # trampolines, and the image's own data labels; anything else (a Unity / game namespace, a global-namespace game type) fails
+@@ -182,14 +220,20 @@
+   # fid1-fixup D1: the owner-local derived code has its own module (SHEPHERD_AOT_DERIVED=1) and never sits in the engine's image; its
+   # methods carry the Shepherd_Engine_Derived_ prefix, which the '^Shepherd_' test above lets through, so it is denied here
+   grep -E '^Shepherd_Engine_Derived_' "$W/obj/engine-aot-methods.txt" >> "$W/obj/engine-aot-foreign.txt" || true
++  fi
+   [ ! -s "$W/obj/engine-aot-foreign.txt" ] || { echo "Shepherd.Engine AOT image holds non-engine/BCL methods:"; head -20 "$W/obj/engine-aot-foreign.txt"; exit 1; }
+   echo "   Shepherd.Engine AOT: $(wc -l < "$W/obj/engine-aot-methods.txt" | tr -d ' ') text symbols, all engine/BCL/wrappers; $(grep -o '[0-9]* inline(s) of methods outside SHEPHERD_AOT_INLINE_IMAGES refused ([0-9]* distinct methods)' "$W/aot/Shepherd.Engine.log")" | tee "$OUT/engine-aot.txt"
+-  for a in $AOT; do   # the BCL / Hooks / Assets images hold no derived code either (only the derived module may)
++  for a in $AOT; do   # the BCL / Hooks / Assets images hold no derived code either (only the derived module may; LLVM part: <asm>_ prefix first)
+     [ "$a" = Shepherd.Engine.Derived ] && continue
+-    ! arm-vita-eabi-nm "$W/aot/$a.dll.o" | awk '$2 ~ /^[Tt]$/ {print $3}' | grep -qE '^Shepherd_Engine_Derived_' || { echo "$a AOT image holds Shepherd.Engine.Derived code"; exit 1; }
++    ! arm-vita-eabi-nm "$W/aot/$a.dll.o" ${AOT_LLVM:+$W/aot/$a-llvm.o} 2>/dev/null | awk '$2 ~ /^[TtWw]$/ {print $3}' | grep -q 'Shepherd_Engine_Derived_' || { echo "$a AOT image holds Shepherd.Engine.Derived code"; exit 1; }
+   done
+ fi
+-if [ "$DERIVED_AOT" = 1 ]; then
++if [ "$DERIVED_AOT" = 1 ] && [ -n "$AOT_LLVM" ]; then
++  # LLVM: the same gate as the engine image's, both parts (foreign-gate.sh accepts the Shepherd_Engine_Derived_ prefix only here)
++  "$V/llvm/foreign-gate.sh" Shepherd.Engine.Derived "$W/aot/Shepherd.Engine.Derived.dll.o" "$W/aot/Shepherd.Engine.Derived-llvm.o" "$W/obj/derived-aot" > "$OUT/derived-aot.txt" \
++    || { cat "$OUT/derived-aot.txt"; head -20 "$W/obj/derived-aot-foreign.txt" 2>/dev/null; echo "Shepherd.Engine.Derived foreign-code gate failed"; exit 1; }
++  cat "$OUT/derived-aot.txt"
++elif [ "$DERIVED_AOT" = 1 ]; then
+   # the derived module's foreign-code gate: the same allow-list (engine, BCL, wrappers, data labels -- its own methods are Shepherd_Engine_Derived_*,
+   # engine generics instantiated over its types are Shepherd_Engine_*), so no Unity / game method body is in it either
+   arm-vita-eabi-nm "$W/aot/Shepherd.Engine.Derived.dll.o" | awk '$2 ~ /^[Tt]$/ {print $3}' | grep -v '^\.' > "$W/obj/derived-aot-methods.txt"
+@@ -284,7 +328,7 @@
+ arm-vita-eabi-gcc -O2 -I"$COMMON" -c "$COMMON/debugScreen.c" -o "$W/obj/debugScreen.o"
+ 
+ echo "== 6. link"
+-AOT_OBJS=(); for a in $AOT; do AOT_OBJS+=("$W/aot/$a.dll.o"); done
++AOT_OBJS=(); for a in $AOT; do AOT_OBJS+=("$W/aot/$a.dll.o"); [ -n "$AOT_LLVM" ] && AOT_OBJS+=("$W/aot/$a-llvm.o"); done
+ MONO_LIBS=("$RT/mono/mini/libmonosgen-2.0.a" "$RT/mono/mini/libmono-component-marshal-ilgen-static.a"
+            "$RT/mono/mini/libmono-component-debugger-stub-static.a" "$RT/mono/mini/libmono-component-hot_reload-stub-static.a"
+            "$RT/mono/mini/libmono-component-diagnostics_tracing-stub-static.a")
+@@ -319,6 +363,13 @@
+ arm-vita-eabi-size "$W/obj/shepherd_menu.elf" | tee "$OUT/elf-size.txt"
+ 
+ echo "== 7. SELF + VPK"
++if [ -n "$AOT_LLVM" ]; then
++  # the runtime binary-searches each module's Mono EH table in table order and takes [first, last+len) as its LLVM code range:
++  # llc puts every method in its own retained section, so check (in the linked ELF) that ld kept them in table order, the
++  # Thumb bits, and that every CFA op/register is one Mono's unwinder decodes
++  python3 "$V/llvm/check_llvm_eh.py" "$W/aot" "$W/obj/shepherd_menu.elf" > "$OUT/llvm-eh.txt" || { grep -E "FAIL|TOTAL" "$OUT/llvm-eh.txt"; exit 1; }
++  echo "   LLVM EH tables: $(grep '^TOTAL' "$OUT/llvm-eh.txt")"
++fi
+ vita-elf-create -v "$W/obj/shepherd_menu.elf" "$W/obj/shepherd_menu.velf" > "$W/obj/velf.log" 2>&1 || { tail -20 "$W/obj/velf.log"; exit 1; }
+ vita-make-fself -c "$W/obj/shepherd_menu.velf" "$W/obj/eboot.bin"
+ vita-mksfoex -s TITLE_ID=$TITLE_ID -s APP_VER=01.00 -d ATTRIBUTE2=12 "$TITLE" "$W/obj/param.sfo"

@@ -1,0 +1,173 @@
+devlog integration for the V0 probe and the V5 hello -- NOT APPLIED (a later step; see vita/devlog/README.md and
+vita/notes/devlog.md). Revision-3 wiring, regenerated 2026-10-07 against main at afdb105 (vita/probe/main.c includes
+adb0e7a); vita/hello/host.c and vita/probe/main.c only. Both patched files compile warning-free with arm-vita-eabi-gcc
+(probe -Wall -Wextra, hello with build.sh's flags).
+  apply:  git apply vita/devlog/integrate.patch     (check first: git apply --check vita/devlog/integrate.patch)
+No build file changes: each app includes ../devlog/devlog_unity.c (the whole client, static except devlog_*) and
+../devlog/devlog_pad.h (the question's X / CIRCLE / START answer); arm-vita-eabi-gcc's default link libraries already
+carry the SceNet / SceNetCtl / SceSysmodule stubs, and both apps link SceCtrl already.
+Without ux0:data/shepherd/devlog.txt (enabled=1 + token) both apps behave exactly as before: no network, no files.
+Both set .defer_launch_send = 1, so no network runs during the probe's measurements or hello's start:
+  probe  runs kept from earlier launches go with devlog_end (auto) or the question; devlog_wait(5000) right after
+         devlog_begin lets the launch copies finish and the worker (32 KiB stack) go before test_memory measures.
+  hello  devlog_send_now(1) once the Mono arena and the Mono thread are in place, only when devlog_begin returned
+         DEVLOG_PENDING (mode=auto): in mode=ask a send_now(1) would be a yes the user never gave.
+mode=ask: after devlog_end both show the question (devlog_ask_console); the probe only while its debug screen is
+visible (not when vitaGL owns the display, vgl=1: the runs stay kept and the next app that asks covers them).
+hello reports DEVLOG_PENDING / DEVLOG_REJECTED / an unanswered question in hello.txt.
+
+diff --git a/vita/hello/host.c b/vita/hello/host.c
+index 30c9cde..6063428 100644
+--- a/vita/hello/host.c
++++ b/vita/hello/host.c
+@@ -36,6 +36,13 @@
+ #include <mono/utils/mono-vita.h>   /* from the forked runtime (src/mono/mono/utils) */
+ 
+ #include "debugScreen.h"
++/* devlog: sends hello.txt to the owner's Mac (the Archive Codex server, or the standalone receiver) over Wi-Fi when
++ * ux0:data/shepherd/devlog.txt enables it, in mode=ask only after the user's yes; without that file it does nothing
++ * (vita/devlog/README.md). The whole client is this one include: the sceNet, SceNetCtl and SceSysmodule stubs are in
++ * arm-vita-eabi-gcc's default link libraries, so build.sh is unchanged; devlog_pad.h is the X / CIRCLE / START answer
++ * for the question (SceCtrl is linked already). */
++#include "../devlog/devlog_unity.c"
++#include "../devlog/devlog_pad.h"
+ 
+ #ifndef HELLO_BUILD_ID
+ #define HELLO_BUILD_ID "unknown"
+@@ -162,6 +169,7 @@ static void mono_log_cb (const char *domain, const char *level, const char *mess
+ 	if (fatal) {
+ 		log_mem_ex ("fatal", 1);   /* try-lock: the error may come from inside an arena call */
+ 		LOG ("FAIL runtime fatal error (see the R> line above)");
++		devlog_note (DEVLOG_ABORT, "runtime fatal error (R> line in hello.txt)");   /* marker only, no network */
+ 		/* Mono requires a fatal log handler not to return (after it, g_error spins in for (;;) and g_assert calls
+ 		 * exit (0)). Leave the FAIL line on the debug screen long enough to read, then abort: on the Vita, newlib's
+ 		 * abort() traps, so the system error dialog and a core dump follow. Not a handler of any kind. */
+@@ -297,6 +305,7 @@ static void unhandled_exception (MonoObject *exc, void *user_data)
+ 	if (!g_unhandled_printed)
+ 		mono_print_unhandled_exception (exc);
+ 	LOG ("FAIL unhandled managed exception %s.%s (details in the R!> lines above)", mono_class_get_namespace (k), mono_class_get_name (k));
++	devlog_note (DEVLOG_FAIL, "unhandled managed exception");
+ }
+ 
+ static int g_exit_code = -1;
+@@ -422,6 +431,7 @@ static void log_exit (void)
+ 	if (!g_host_exiting) {
+ 		log_mem_ex ("exit", 1);
+ 		LOG ("FAIL process exit() called outside the host (e.g. sgen could not get arena memory: see the ARENA / R> lines above)");
++		devlog_note (DEVLOG_ABORT, "process exit() outside the host");
+ 	}
+ }
+ 
+@@ -447,6 +457,13 @@ int main (int argc, char *argv [])
+ 	atexit (log_exit);
+ 	LOG ("BEGIN shepherd-hello V5 build %s (.NET 8.0.31 Mono fork, interp + static AOT, coop GC)", HELLO_BUILD_ID);
+ 	log_mem ("start");
++	/* devlog: run marker + a "DEVLOG run=<id>" line in hello.txt. .defer_launch_send = 1: the runs kept from earlier
++	 * launches (crashes, no Wi-Fi) are only copied now, on the worker; they are sent below, once the Mono arena and
++	 * the Mono thread (8 MiB stack) are in place, so the sceNet pool (up to 1 MiB) is never taken during the start. */
++	static const devlog_app DL = { .app = "hello", .title_id = "SHPD00005", .build = HELLO_BUILD_ID,
++	                               .log_path = LOG_PATH, .prev_path = LOG_DIR "/hello.prev.txt", .log = log_line,
++	                               .defer_launch_send = 1 };
++	int dl_begin = devlog_begin (&DL, NULL);
+ 
+ 	apply_env_file ();
+ 	int stress = stress_seconds ();
+@@ -457,6 +474,7 @@ int main (int argc, char *argv [])
+ 	void *arena_base = NULL;
+ 	if (arena < 0 || sceKernelGetMemBlockBase (arena, &arena_base) < 0 || mono_vita_vm_arena_init (arena_base, HELLO_MONO_ARENA) != 0) {
+ 		LOG ("FAIL H2 cannot allocate the %u MiB Mono arena (0x%08x)", HELLO_MONO_ARENA / MiB, (unsigned) arena);
++		devlog_end (DEVLOG_FAIL, "FAIL H2 cannot allocate the Mono arena", NULL);
+ 		sceKernelDelayThread (10 * 1000 * 1000);
+ 		exit_process (1);
+ 		return 1;
+@@ -484,16 +502,39 @@ int main (int argc, char *argv [])
+ 	}
+ 	if (!created) {
+ 		LOG ("FAIL H3 cannot create the Mono thread");
++		devlog_end (DEVLOG_FAIL, "FAIL H3 cannot create the Mono thread", NULL);
+ 		sceKernelDelayThread (10 * 1000 * 1000);
+ 		exit_process (1);
+ 		return 1;
+ 	}
++	/* devlog: mode=auto (devlog_begin said PENDING): send the kept runs now, on the worker (low priority, core 2),
++	 * while managed Main runs. Never in mode=ask (begin said ASK): there devlog_send_now (1) would be a yes the user
++	 * never gave; the question after devlog_end below covers those runs too. */
++	if (dl_begin == DEVLOG_PENDING)
++		devlog_send_now (1, NULL);
+ 	sceKernelWaitSema (g_done_sema, 1, NULL);
+ 
+ 	if (g_exit_code == 0)
+ 		LOG ("PASS shepherd-hello: managed Main returned 0");
+ 	else
+ 		LOG ("FAIL shepherd-hello: exit code %d", g_exit_code);
++	/* devlog: mode=auto sends hello.txt (+ hello.prev.txt only if it has no devlog tag: written while devlog was off),
++	 * then the kept runs; if that fails, keeps it for the next launch. mode=ask: the question on the debug screen
++	 * first (X send, CIRCLE delete, START later). */
++	{
++		devlog_result dr;
++		char detail [64];
++		snprintf (detail, sizeof (detail), "%s shepherd-hello: exit code %d", g_exit_code == 0 ? "PASS" : "FAIL", g_exit_code);
++		int dl = devlog_end (g_exit_code == 0 ? DEVLOG_OK : DEVLOG_FAIL, detail, &dr);
++		if (dl == DEVLOG_ASK)
++			dl = devlog_ask_console (devlog_pad_answer, 30000, &dr);
++		if (dl == DEVLOG_ASK)
++			LOG ("devlog: kept, not sent (no answer): the next Shepherd app asks again");
++		else if (dl == DEVLOG_PENDING)
++			LOG ("devlog: not sent (%s): send " LOG_PATH " back by hand, or start any Shepherd app later", dr.why);
++		else if (dl == DEVLOG_REJECTED)
++			LOG ("devlog: the receiver refused this run (%s): send " LOG_PATH " back by hand", dr.why);
++	}
+ 	LOG ("(press START to exit, or wait 30 s)");
+ 	SceCtrlData pad;
+ 	for (int i = 0; i < 300; ++i) {
+diff --git a/vita/probe/main.c b/vita/probe/main.c
+index 79cd419..fb564eb 100644
+--- a/vita/probe/main.c
++++ b/vita/probe/main.c
+@@ -23,6 +23,12 @@
+ #include "bench.h"
+ #include "mac_ref.h"
+ #include <malloc.h>
++/* devlog: sends probe.txt to the owner's Mac (the Archive Codex server, or the standalone receiver) over Wi-Fi when
++ * ux0:data/shepherd/devlog.txt enables it, in mode=ask only after the user's yes; without that file it does nothing
++ * (vita/devlog/README.md). One include, no CMakeLists change (the sceNet stubs are in arm-vita-eabi-gcc's default link
++ * libraries); devlog_pad.h is the X / CIRCLE / START answer for the question (SceCtrl is linked already). */
++#include "../devlog/devlog_unity.c"
++#include "../devlog/devlog_pad.h"
+ #ifndef BENCH_SHA256
+ #define BENCH_SHA256 "unknown"
+ #endif
+@@ -471,6 +477,15 @@ int main(void) {
+   LOG("Shepherd Probe v2 -- measuring this Vita for the CotL port. Do not close the app; it ends on its own.");
+   LOG("Log: " LOG_PATH);
+   LOG("PSTV=%d", sceKernelIsPSVitaTV());
++  /* devlog: run marker + a "DEVLOG run=<id>" line here, before anything that can hang (the CDIALOG search did). No
++   * network during the measurements: .defer_launch_send = 1 leaves the runs kept from earlier launches to devlog_end
++   * below (no sceNet pool, no transfer while test_memory and the benchmarks run). The worker only copies their logs
++   * now; devlog_wait lets that finish and the worker thread (its 32 KiB stack) go before test_memory measures. */
++  static const devlog_app DL = { .app = "probe", .title_id = "SHPD00001", .build = PROBE_VERSION " bench " BENCH_SHA256,
++                                 .log_path = LOG_PATH, .prev_path = LOG_DIR "/probe.prev.txt", .log = bench_log,
++                                 .defer_launch_send = 1 };
++  devlog_begin(&DL, NULL);
++  devlog_wait(5000, NULL);   /* the copies: normally a few ms to a few hundred ms of card I/O, here at the start */
+   test_memory();
+   test_clocks();
+   test_presence();
+@@ -482,7 +497,16 @@ int main(void) {
+       g_summary_user_mib, NEWLIB_HEAP / MiB, g_summary_cdram_mib, g_summary_phy_mib, g_summary_arm, g_summary_shaccg, g_summary_seq_mbs,
+       g_cpu_valid, g_summary_sty_ratio, g_summary_chase_ratio, g_summary_draw_us, g_summary_sty_gpu_ms, g_gpu_fail);
+   LOG("NOTE negative ratios = that kernel's comparison was invalid (checksum mismatch or clock not 444/222)");
+-  LOG("DONE -- send " LOG_PATH " back. Press X, O or START to exit.");
++  /* devlog: mode=auto sends this run, then the runs kept from earlier launches (on the worker; devlog_end waits, at
++   * most 2 s without a receiver). mode=ask: the question on the debug screen first (X send, CIRCLE delete, START
++   * later); not while vitaGL owns the display (vgl), where it could not be read: the runs then stay kept and the next
++   * app that asks (the log-send test, hello) asks about them. */
++  devlog_result dr;
++  int dl = devlog_end(g_gpu_fail ? DEVLOG_FAIL : DEVLOG_OK, g_gpu_fail ? "FAIL gpu (see probe.txt)" : "DONE", &dr);
++  if (dl == DEVLOG_ASK && !vgl) dl = devlog_ask_console(devlog_pad_answer, 30000, &dr);
++  if (dl == DEVLOG_SENT && dr.runs_sent > 0) LOG("DONE -- probe.txt was sent to the Mac (%s). Press X, O or START to exit.", dr.server);
++  else LOG("DONE -- send " LOG_PATH " back by hand%s%s%s. Press X, O or START to exit.",
++           dr.enabled ? " (devlog: " : "", dr.enabled ? dr.why : "", dr.enabled ? ")" : "");
+   wait_button(vgl);
+   if (c_arm > 0) { scePowerSetArmClockFrequency(c_arm); scePowerSetBusClockFrequency(c_bus); scePowerSetGpuClockFrequency(c_gpu); scePowerSetGpuXbarClockFrequency(c_xbar); }
+   sceKernelExitProcess(0);

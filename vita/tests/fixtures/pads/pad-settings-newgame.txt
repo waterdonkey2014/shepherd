@@ -1,0 +1,54 @@
+# kit4 merge-check (vlx): route A's Play slots, DLC and every Settings tab, then Play -> slot 1 -> New Game in the same launch (ends at the scene stop)
+m+244:cross     # engage "Press Any Button to Start"
+m+494:cross     # Play -> save slots
+m+574:down
+m+604:down
+m+644:circle    # back
+m+744:down      # Play -> DLC
+m+774:cross     # open DLC (Cultist selected)
+m+854:down
+m+884:down
+m+914:down
+m+944:down
+m+974:down      # ... down to Back
+m+1034:circle   # close DLC
+m+1134:down     # DLC -> Settings
+m+1164:cross    # open Settings: Game tab (Vibration Intensity selected)
+m+1264:left     # Vibration Intensity down a step (the game rumbles: RumbleManager)
+m+1294:right    # ... and back up
+m+1334:down
+m+1354:down
+m+1374:down
+m+1394:down
+m+1414:down
+m+1434:down
+m+1454:down
+m+1474:down     # bottom of the Game tab
+m+1534:r        # Graphics tab
+m+1594:down
+m+1614:down
+m+1634:down
+m+1654:down
+m+1714:r        # Accessibility tab
+m+1774:down
+m+1794:down
+m+1814:down
+m+1834:down
+m+1894:r        # Audio tab
+m+1954:left     # Master Volume down a step
+m+1984:right    # ... and back up
+m+2014:down
+m+2034:down
+m+2054:down
+m+2114:r        # Controls tab
+m+2174:down
+m+2194:down
+m+2254:l        # back through the tabs
+m+2284:l
+m+2314:l
+m+2344:l
+m+2444:circle   # close Settings (the game saves its settings)
+m+2544:up       # Settings -> DLC
+m+2574:up       # DLC -> Play
+m+2634:cross    # Play -> save slots
+m+2834:cross    # slot 1 (empty) -> New Game

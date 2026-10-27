@@ -1,0 +1,5607 @@
+diff --git a/src/mono/mono/mini/interp/interp.c b/src/mono/mono/mini/interp/interp.c
+index 37c1e7b..33199ff 100644
+--- a/src/mono/mono/mini/interp/interp.c
++++ b/src/mono/mono/mini/interp/interp.c
+@@ -3884,7 +3884,7 @@ static long total_executed_opcodes;
+ #endif
+ 
+ #define LOCAL_VAR(offset,type) (*(type*)(locals + (offset)))
+-
++#include "shepjit-interp.h"   /* SHEPHERD kit #8: the baseline JIT tier shares these opcodes (vita/notes/kit8-jit.md) */
+ // The start of the stack has a reserved slot for a GC visible temp object pointer
+ #ifdef TARGET_WASM
+ #define SET_TEMP_POINTER(value) (*((volatile MonoObject * volatile *)context->stack_start) = value)
+@@ -4077,9 +4077,9 @@ main_loop:
+ 		DUMP_INSTR();
+ 		MINT_IN_SWITCH (*ip) {
+ 		MINT_IN_CASE(MINT_INITLOCAL)
+-		MINT_IN_CASE(MINT_INITLOCALS)
+-			memset (locals + ip [1], 0, ip [2]);
+-			ip += 3;
++		MINT_IN_CASE(MINT_INITLOCALS) SJOP_MINT_INITLOCALS;
++
++
+ 			MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_NIY)
+ 			g_printf ("MONO interpreter: NIY encountered in method %s\n", frame->imethod->method->name);
+@@ -4113,64 +4113,64 @@ main_loop:
+ 		}
+ 
+ #define LDC(n) do { LOCAL_VAR (ip [1], gint32) = (n); ip += 2; } while (0)
+-		MINT_IN_CASE(MINT_LDC_I4_M1)
+-			LDC(-1);
++		MINT_IN_CASE(MINT_LDC_I4_M1) SJOP_MINT_LDC_I4_M1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_0)
+-			LDC(0);
++		MINT_IN_CASE(MINT_LDC_I4_0) SJOP_MINT_LDC_I4_0;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_1)
+-			LDC(1);
++		MINT_IN_CASE(MINT_LDC_I4_1) SJOP_MINT_LDC_I4_1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_2)
+-			LDC(2);
++		MINT_IN_CASE(MINT_LDC_I4_2) SJOP_MINT_LDC_I4_2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_3)
+-			LDC(3);
++		MINT_IN_CASE(MINT_LDC_I4_3) SJOP_MINT_LDC_I4_3;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_4)
+-			LDC(4);
++		MINT_IN_CASE(MINT_LDC_I4_4) SJOP_MINT_LDC_I4_4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_5)
+-			LDC(5);
++		MINT_IN_CASE(MINT_LDC_I4_5) SJOP_MINT_LDC_I4_5;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_6)
+-			LDC(6);
++		MINT_IN_CASE(MINT_LDC_I4_6) SJOP_MINT_LDC_I4_6;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_7)
+-			LDC(7);
++		MINT_IN_CASE(MINT_LDC_I4_7) SJOP_MINT_LDC_I4_7;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_8)
+-			LDC(8);
++		MINT_IN_CASE(MINT_LDC_I4_8) SJOP_MINT_LDC_I4_8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4_S)
+-			LOCAL_VAR (ip [1], gint32) = (short)ip [2];
+-			ip += 3;
++		MINT_IN_CASE(MINT_LDC_I4_S) SJOP_MINT_LDC_I4_S;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I4)
+-			LOCAL_VAR (ip [1], gint32) = READ32 (ip + 2);
+-			ip += 4;
++		MINT_IN_CASE(MINT_LDC_I4) SJOP_MINT_LDC_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I8_0)
+-			LOCAL_VAR (ip [1], gint64) = 0;
+-			ip += 2;
++		MINT_IN_CASE(MINT_LDC_I8_0) SJOP_MINT_LDC_I8_0;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I8)
+-			LOCAL_VAR (ip [1], gint64) = READ64 (ip + 2);
+-			ip += 6;
++		MINT_IN_CASE(MINT_LDC_I8) SJOP_MINT_LDC_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_I8_S)
+-			LOCAL_VAR (ip [1], gint64) = (short)ip [2];
+-			ip += 3;
++		MINT_IN_CASE(MINT_LDC_I8_S) SJOP_MINT_LDC_I8_S;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDC_R4) {
+-			LOCAL_VAR (ip [1], gint32) = READ32(ip + 2); /* not union usage */
+-			ip += 4;
++		MINT_IN_CASE(MINT_LDC_R4) { SJOP_MINT_LDC_R4;
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_LDC_R8)
+-			LOCAL_VAR (ip [1], gint64) = READ64 (ip + 2); /* note union usage */
+-			ip += 6;
++		MINT_IN_CASE(MINT_LDC_R8) SJOP_MINT_LDC_R8;
++
++
+ 			MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_TAILCALL)
+ 		MINT_IN_CASE(MINT_TAILCALL_VIRT)
+@@ -4619,16 +4619,16 @@ call:
+ #define BACK_BRANCH_PROFILE(offset)
+ #endif
+ 
+-		MINT_IN_CASE(MINT_BR_S) {
+-			short br_offset = (short) *(ip + 1);
+-			BACK_BRANCH_PROFILE (br_offset);
+-			ip += br_offset;
++		MINT_IN_CASE(MINT_BR_S) { SJOP_MINT_BR_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BR) {
+-			gint32 br_offset = (gint32) READ32(ip + 1);
+-			BACK_BRANCH_PROFILE (br_offset);
+-			ip += br_offset;
++		MINT_IN_CASE(MINT_BR) { SJOP_MINT_BR;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 
+@@ -4648,29 +4648,29 @@ call:
+ 	} else \
+ 		ip += 4;
+ 
+-		MINT_IN_CASE(MINT_BRFALSE_I4_S)
+-			ZEROP_S(gint32, ==);
++		MINT_IN_CASE(MINT_BRFALSE_I4_S) SJOP_MINT_BRFALSE_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BRFALSE_I8_S)
+-			ZEROP_S(gint64, ==);
++		MINT_IN_CASE(MINT_BRFALSE_I8_S) SJOP_MINT_BRFALSE_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BRFALSE_I4)
+-			ZEROP(gint32, ==);
++		MINT_IN_CASE(MINT_BRFALSE_I4) SJOP_MINT_BRFALSE_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BRFALSE_I8)
+-			ZEROP(gint64, ==);
++		MINT_IN_CASE(MINT_BRFALSE_I8) SJOP_MINT_BRFALSE_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BRTRUE_I4_S)
+-			ZEROP_S(gint32, !=);
++		MINT_IN_CASE(MINT_BRTRUE_I4_S) SJOP_MINT_BRTRUE_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BRTRUE_I8_S)
+-			ZEROP_S(gint64, !=);
++		MINT_IN_CASE(MINT_BRTRUE_I8_S) SJOP_MINT_BRTRUE_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BRTRUE_I4)
+-			ZEROP(gint32, !=);
++		MINT_IN_CASE(MINT_BRTRUE_I4) SJOP_MINT_BRTRUE_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BRTRUE_I8)
+-			ZEROP(gint64, !=);
++		MINT_IN_CASE(MINT_BRTRUE_I8) SJOP_MINT_BRTRUE_I8;
++
+ 			MINT_IN_BREAK;
+ #define CONDBR_S(cond) \
+ 	if (cond) { \
+@@ -4693,220 +4693,220 @@ call:
+ #define BRELOP(datatype, op) \
+ 	CONDBR(LOCAL_VAR (ip [1], datatype) op LOCAL_VAR (ip [2], datatype))
+ 
+-		MINT_IN_CASE(MINT_BEQ_I4_S)
+-			BRELOP_S(gint32, ==)
++		MINT_IN_CASE(MINT_BEQ_I4_S) SJOP_MINT_BEQ_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BEQ_I8_S)
+-			BRELOP_S(gint64, ==)
++		MINT_IN_CASE(MINT_BEQ_I8_S) SJOP_MINT_BEQ_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BEQ_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(!isunordered (f1, f2) && f1 == f2)
++		MINT_IN_CASE(MINT_BEQ_R4_S) { SJOP_MINT_BEQ_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BEQ_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(!mono_isunordered (d1, d2) && d1 == d2)
++		MINT_IN_CASE(MINT_BEQ_R8_S) { SJOP_MINT_BEQ_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BEQ_I4)
+-			BRELOP(gint32, ==)
++		MINT_IN_CASE(MINT_BEQ_I4) SJOP_MINT_BEQ_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BEQ_I8)
+-			BRELOP(gint64, ==)
++		MINT_IN_CASE(MINT_BEQ_I8) SJOP_MINT_BEQ_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BEQ_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(!isunordered (f1, f2) && f1 == f2)
++		MINT_IN_CASE(MINT_BEQ_R4) { SJOP_MINT_BEQ_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BEQ_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(!mono_isunordered (d1, d2) && d1 == d2)
++		MINT_IN_CASE(MINT_BEQ_R8) { SJOP_MINT_BEQ_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGE_I4_S)
+-			BRELOP_S(gint32, >=)
++		MINT_IN_CASE(MINT_BGE_I4_S) SJOP_MINT_BGE_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_I8_S)
+-			BRELOP_S(gint64, >=)
++		MINT_IN_CASE(MINT_BGE_I8_S) SJOP_MINT_BGE_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(!isunordered (f1, f2) && f1 >= f2)
++		MINT_IN_CASE(MINT_BGE_R4_S) { SJOP_MINT_BGE_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGE_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(!mono_isunordered (d1, d2) && d1 >= d2)
++		MINT_IN_CASE(MINT_BGE_R8_S) { SJOP_MINT_BGE_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGE_I4)
+-			BRELOP(gint32, >=)
++		MINT_IN_CASE(MINT_BGE_I4) SJOP_MINT_BGE_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_I8)
+-			BRELOP(gint64, >=)
++		MINT_IN_CASE(MINT_BGE_I8) SJOP_MINT_BGE_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(!isunordered (f1, f2) && f1 >= f2)
++		MINT_IN_CASE(MINT_BGE_R4) { SJOP_MINT_BGE_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGE_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(!mono_isunordered (d1, d2) && d1 >= d2)
++		MINT_IN_CASE(MINT_BGE_R8) { SJOP_MINT_BGE_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGT_I4_S)
+-			BRELOP_S(gint32, >)
++		MINT_IN_CASE(MINT_BGT_I4_S) SJOP_MINT_BGT_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_I8_S)
+-			BRELOP_S(gint64, >)
++		MINT_IN_CASE(MINT_BGT_I8_S) SJOP_MINT_BGT_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(!isunordered (f1, f2) && f1 > f2)
++		MINT_IN_CASE(MINT_BGT_R4_S) { SJOP_MINT_BGT_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGT_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(!mono_isunordered (d1, d2) && d1 > d2)
++		MINT_IN_CASE(MINT_BGT_R8_S) { SJOP_MINT_BGT_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGT_I4)
+-			BRELOP(gint32, >)
++		MINT_IN_CASE(MINT_BGT_I4) SJOP_MINT_BGT_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_I8)
+-			BRELOP(gint64, >)
++		MINT_IN_CASE(MINT_BGT_I8) SJOP_MINT_BGT_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(!isunordered (f1, f2) && f1 > f2)
++		MINT_IN_CASE(MINT_BGT_R4) { SJOP_MINT_BGT_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGT_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(!mono_isunordered (d1, d2) && d1 > d2)
++		MINT_IN_CASE(MINT_BGT_R8) { SJOP_MINT_BGT_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLT_I4_S)
+-			BRELOP_S(gint32, <)
++		MINT_IN_CASE(MINT_BLT_I4_S) SJOP_MINT_BLT_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_I8_S)
+-			BRELOP_S(gint64, <)
++		MINT_IN_CASE(MINT_BLT_I8_S) SJOP_MINT_BLT_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(!isunordered (f1, f2) && f1 < f2)
++		MINT_IN_CASE(MINT_BLT_R4_S) { SJOP_MINT_BLT_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLT_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(!mono_isunordered (d1, d2) && d1 < d2)
++		MINT_IN_CASE(MINT_BLT_R8_S) { SJOP_MINT_BLT_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLT_I4)
+-			BRELOP(gint32, <)
++		MINT_IN_CASE(MINT_BLT_I4) SJOP_MINT_BLT_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_I8)
+-			BRELOP(gint64, <)
++		MINT_IN_CASE(MINT_BLT_I8) SJOP_MINT_BLT_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(!isunordered (f1, f2) && f1 < f2)
++		MINT_IN_CASE(MINT_BLT_R4) { SJOP_MINT_BLT_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLT_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(!mono_isunordered (d1, d2) && d1 < d2)
++		MINT_IN_CASE(MINT_BLT_R8) { SJOP_MINT_BLT_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLE_I4_S)
+-			BRELOP_S(gint32, <=)
++		MINT_IN_CASE(MINT_BLE_I4_S) SJOP_MINT_BLE_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_I8_S)
+-			BRELOP_S(gint64, <=)
++		MINT_IN_CASE(MINT_BLE_I8_S) SJOP_MINT_BLE_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(!isunordered (f1, f2) && f1 <= f2)
++		MINT_IN_CASE(MINT_BLE_R4_S) { SJOP_MINT_BLE_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLE_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(!mono_isunordered (d1, d2) && d1 <= d2)
++		MINT_IN_CASE(MINT_BLE_R8_S) { SJOP_MINT_BLE_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLE_I4)
+-			BRELOP(gint32, <=)
++		MINT_IN_CASE(MINT_BLE_I4) SJOP_MINT_BLE_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_I8)
+-			BRELOP(gint64, <=)
++		MINT_IN_CASE(MINT_BLE_I8) SJOP_MINT_BLE_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(!isunordered (f1, f2) && f1 <= f2)
++		MINT_IN_CASE(MINT_BLE_R4) { SJOP_MINT_BLE_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLE_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(!mono_isunordered (d1, d2) && d1 <= d2)
++		MINT_IN_CASE(MINT_BLE_R8) { SJOP_MINT_BLE_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BNE_UN_I4_S)
+-			BRELOP_S(gint32, !=)
++		MINT_IN_CASE(MINT_BNE_UN_I4_S) SJOP_MINT_BNE_UN_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BNE_UN_I8_S)
+-			BRELOP_S(gint64, !=)
++		MINT_IN_CASE(MINT_BNE_UN_I8_S) SJOP_MINT_BNE_UN_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BNE_UN_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(isunordered (f1, f2) || f1 != f2)
++		MINT_IN_CASE(MINT_BNE_UN_R4_S) { SJOP_MINT_BNE_UN_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BNE_UN_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(mono_isunordered (d1, d2) || d1 != d2)
++		MINT_IN_CASE(MINT_BNE_UN_R8_S) { SJOP_MINT_BNE_UN_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BNE_UN_I4)
+-			BRELOP(gint32, !=)
++		MINT_IN_CASE(MINT_BNE_UN_I4) SJOP_MINT_BNE_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BNE_UN_I8)
+-			BRELOP(gint64, !=)
++		MINT_IN_CASE(MINT_BNE_UN_I8) SJOP_MINT_BNE_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BNE_UN_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(isunordered (f1, f2) || f1 != f2)
++		MINT_IN_CASE(MINT_BNE_UN_R4) { SJOP_MINT_BNE_UN_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BNE_UN_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(mono_isunordered (d1, d2) || d1 != d2)
++		MINT_IN_CASE(MINT_BNE_UN_R8) { SJOP_MINT_BNE_UN_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 
+@@ -4926,148 +4926,148 @@ call:
+ 	} else \
+ 		ip += 5;
+ 
+-		MINT_IN_CASE(MINT_BGE_UN_I4_S)
+-			BRELOP_S_CAST(guint32, >=);
++		MINT_IN_CASE(MINT_BGE_UN_I4_S) SJOP_MINT_BGE_UN_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_UN_I8_S)
+-			BRELOP_S_CAST(guint64, >=);
++		MINT_IN_CASE(MINT_BGE_UN_I8_S) SJOP_MINT_BGE_UN_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_UN_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(isunordered (f1, f2) || f1 >= f2)
++		MINT_IN_CASE(MINT_BGE_UN_R4_S) { SJOP_MINT_BGE_UN_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGE_UN_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(mono_isunordered (d1, d2) || d1 >= d2)
++		MINT_IN_CASE(MINT_BGE_UN_R8_S) { SJOP_MINT_BGE_UN_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGE_UN_I4)
+-			BRELOP_CAST(guint32, >=);
++		MINT_IN_CASE(MINT_BGE_UN_I4) SJOP_MINT_BGE_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_UN_I8)
+-			BRELOP_CAST(guint64, >=);
++		MINT_IN_CASE(MINT_BGE_UN_I8) SJOP_MINT_BGE_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_UN_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(isunordered (f1, f2) || f1 >= f2)
++		MINT_IN_CASE(MINT_BGE_UN_R4) { SJOP_MINT_BGE_UN_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGE_UN_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(mono_isunordered (d1, d2) || d1 >= d2)
++		MINT_IN_CASE(MINT_BGE_UN_R8) { SJOP_MINT_BGE_UN_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGT_UN_I4_S)
+-			BRELOP_S_CAST(guint32, >);
++		MINT_IN_CASE(MINT_BGT_UN_I4_S) SJOP_MINT_BGT_UN_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_UN_I8_S)
+-			BRELOP_S_CAST(guint64, >);
++		MINT_IN_CASE(MINT_BGT_UN_I8_S) SJOP_MINT_BGT_UN_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_UN_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(isunordered (f1, f2) || f1 > f2)
++		MINT_IN_CASE(MINT_BGT_UN_R4_S) { SJOP_MINT_BGT_UN_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGT_UN_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(mono_isunordered (d1, d2) || d1 > d2)
++		MINT_IN_CASE(MINT_BGT_UN_R8_S) { SJOP_MINT_BGT_UN_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGT_UN_I4)
+-			BRELOP_CAST(guint32, >);
++		MINT_IN_CASE(MINT_BGT_UN_I4) SJOP_MINT_BGT_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_UN_I8)
+-			BRELOP_CAST(guint64, >);
++		MINT_IN_CASE(MINT_BGT_UN_I8) SJOP_MINT_BGT_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_UN_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(isunordered (f1, f2) || f1 > f2)
++		MINT_IN_CASE(MINT_BGT_UN_R4) { SJOP_MINT_BGT_UN_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BGT_UN_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(mono_isunordered (d1, d2) || d1 > d2)
++		MINT_IN_CASE(MINT_BGT_UN_R8) { SJOP_MINT_BGT_UN_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLE_UN_I4_S)
+-			BRELOP_S_CAST(guint32, <=);
++		MINT_IN_CASE(MINT_BLE_UN_I4_S) SJOP_MINT_BLE_UN_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_UN_I8_S)
+-			BRELOP_S_CAST(guint64, <=);
++		MINT_IN_CASE(MINT_BLE_UN_I8_S) SJOP_MINT_BLE_UN_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_UN_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(isunordered (f1, f2) || f1 <= f2)
++		MINT_IN_CASE(MINT_BLE_UN_R4_S) { SJOP_MINT_BLE_UN_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLE_UN_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(mono_isunordered (d1, d2) || d1 <= d2)
++		MINT_IN_CASE(MINT_BLE_UN_R8_S) { SJOP_MINT_BLE_UN_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLE_UN_I4)
+-			BRELOP_CAST(guint32, <=);
++		MINT_IN_CASE(MINT_BLE_UN_I4) SJOP_MINT_BLE_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_UN_I8)
+-			BRELOP_CAST(guint64, <=);
++		MINT_IN_CASE(MINT_BLE_UN_I8) SJOP_MINT_BLE_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_UN_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(isunordered (f1, f2) || f1 <= f2)
++		MINT_IN_CASE(MINT_BLE_UN_R4) { SJOP_MINT_BLE_UN_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLE_UN_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(mono_isunordered (d1, d2) || d1 <= d2)
++		MINT_IN_CASE(MINT_BLE_UN_R8) { SJOP_MINT_BLE_UN_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLT_UN_I4_S)
+-			BRELOP_S_CAST(guint32, <);
++		MINT_IN_CASE(MINT_BLT_UN_I4_S) SJOP_MINT_BLT_UN_I4_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_UN_I8_S)
+-			BRELOP_S_CAST(guint64, <);
++		MINT_IN_CASE(MINT_BLT_UN_I8_S) SJOP_MINT_BLT_UN_I8_S;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_UN_R4_S) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR_S(isunordered (f1, f2) || f1 < f2)
++		MINT_IN_CASE(MINT_BLT_UN_R4_S) { SJOP_MINT_BLT_UN_R4_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLT_UN_R8_S) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR_S(mono_isunordered (d1, d2) || d1 < d2)
++		MINT_IN_CASE(MINT_BLT_UN_R8_S) { SJOP_MINT_BLT_UN_R8_S;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLT_UN_I4)
+-			BRELOP_CAST(guint32, <);
++		MINT_IN_CASE(MINT_BLT_UN_I4) SJOP_MINT_BLT_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_UN_I8)
+-			BRELOP_CAST(guint64, <);
++		MINT_IN_CASE(MINT_BLT_UN_I8) SJOP_MINT_BLT_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_UN_R4) {
+-			float f1 = LOCAL_VAR (ip [1], float);
+-			float f2 = LOCAL_VAR (ip [2], float);
+-			CONDBR(isunordered (f1, f2) || f1 < f2)
++		MINT_IN_CASE(MINT_BLT_UN_R4) { SJOP_MINT_BLT_UN_R4;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_BLT_UN_R8) {
+-			double d1 = LOCAL_VAR (ip [1], double);
+-			double d2 = LOCAL_VAR (ip [2], double);
+-			CONDBR(mono_isunordered (d1, d2) || d1 < d2)
++		MINT_IN_CASE(MINT_BLT_UN_R8) { SJOP_MINT_BLT_UN_R8;
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 
+@@ -5080,10 +5080,10 @@ call:
+ 	} else \
+ 		ip += 3;
+ 
+-MINT_IN_CASE(MINT_BRFALSE_I4_SP) ZEROP_SP(gint32, ==); MINT_IN_BREAK;
+-MINT_IN_CASE(MINT_BRFALSE_I8_SP) ZEROP_SP(gint64, ==); MINT_IN_BREAK;
+-MINT_IN_CASE(MINT_BRTRUE_I4_SP) ZEROP_SP(gint32, !=); MINT_IN_BREAK;
+-MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
++MINT_IN_CASE(MINT_BRFALSE_I4_SP) SJOP_MINT_BRFALSE_I4_SP; MINT_IN_BREAK;
++MINT_IN_CASE(MINT_BRFALSE_I8_SP) SJOP_MINT_BRFALSE_I8_SP; MINT_IN_BREAK;
++MINT_IN_CASE(MINT_BRTRUE_I4_SP) SJOP_MINT_BRTRUE_I4_SP; MINT_IN_BREAK;
++MINT_IN_CASE(MINT_BRTRUE_I8_SP) SJOP_MINT_BRTRUE_I8_SP; MINT_IN_BREAK;
+ 
+ #define CONDBR_SP(cond) \
+ 	if (cond) { \
+@@ -5096,52 +5096,52 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ #define BRELOP_SP(datatype, op) \
+ 	CONDBR_SP(LOCAL_VAR (ip [1], datatype) op LOCAL_VAR (ip [2], datatype))
+ 
+-		MINT_IN_CASE(MINT_BEQ_I4_SP) BRELOP_SP(gint32, ==); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BEQ_I8_SP) BRELOP_SP(gint64, ==); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_I4_SP) BRELOP_SP(gint32, >=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_I8_SP) BRELOP_SP(gint64, >=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_I4_SP) BRELOP_SP(gint32, >); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_I8_SP) BRELOP_SP(gint64, >); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_I4_SP) BRELOP_SP(gint32, <); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_I8_SP) BRELOP_SP(gint64, <); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_I4_SP) BRELOP_SP(gint32, <=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_I8_SP) BRELOP_SP(gint64, <=); MINT_IN_BREAK;
+-
+-		MINT_IN_CASE(MINT_BNE_UN_I4_SP) BRELOP_SP(guint32, !=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BNE_UN_I8_SP) BRELOP_SP(guint64, !=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_UN_I4_SP) BRELOP_SP(guint32, >=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_UN_I8_SP) BRELOP_SP(guint64, >=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_UN_I4_SP) BRELOP_SP(guint32, >); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_UN_I8_SP) BRELOP_SP(guint64, >); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_UN_I4_SP) BRELOP_SP(guint32, <=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_UN_I8_SP) BRELOP_SP(guint64, <=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_UN_I4_SP) BRELOP_SP(guint32, <); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_UN_I8_SP) BRELOP_SP(guint64, <); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BEQ_I4_SP) SJOP_MINT_BEQ_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BEQ_I8_SP) SJOP_MINT_BEQ_I8_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGE_I4_SP) SJOP_MINT_BGE_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGE_I8_SP) SJOP_MINT_BGE_I8_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGT_I4_SP) SJOP_MINT_BGT_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGT_I8_SP) SJOP_MINT_BGT_I8_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLT_I4_SP) SJOP_MINT_BLT_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLT_I8_SP) SJOP_MINT_BLT_I8_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLE_I4_SP) SJOP_MINT_BLE_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLE_I8_SP) SJOP_MINT_BLE_I8_SP; MINT_IN_BREAK;
++
++		MINT_IN_CASE(MINT_BNE_UN_I4_SP) SJOP_MINT_BNE_UN_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BNE_UN_I8_SP) SJOP_MINT_BNE_UN_I8_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGE_UN_I4_SP) SJOP_MINT_BGE_UN_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGE_UN_I8_SP) SJOP_MINT_BGE_UN_I8_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGT_UN_I4_SP) SJOP_MINT_BGT_UN_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGT_UN_I8_SP) SJOP_MINT_BGT_UN_I8_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLE_UN_I4_SP) SJOP_MINT_BLE_UN_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLE_UN_I8_SP) SJOP_MINT_BLE_UN_I8_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLT_UN_I4_SP) SJOP_MINT_BLT_UN_I4_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLT_UN_I8_SP) SJOP_MINT_BLT_UN_I8_SP; MINT_IN_BREAK;
+ 
+ #define BRELOP_IMM_SP(datatype, op) \
+ 	CONDBR_SP(LOCAL_VAR (ip [1], datatype) op (datatype)(gint16)ip [2])
+ 
+-		MINT_IN_CASE(MINT_BEQ_I4_IMM_SP) BRELOP_IMM_SP(gint32, ==); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BEQ_I8_IMM_SP) BRELOP_IMM_SP(gint64, ==); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_I4_IMM_SP) BRELOP_IMM_SP(gint32, >=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_I8_IMM_SP) BRELOP_IMM_SP(gint64, >=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_I4_IMM_SP) BRELOP_IMM_SP(gint32, >); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_I8_IMM_SP) BRELOP_IMM_SP(gint64, >); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_I4_IMM_SP) BRELOP_IMM_SP(gint32, <); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_I8_IMM_SP) BRELOP_IMM_SP(gint64, <); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_I4_IMM_SP) BRELOP_IMM_SP(gint32, <=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_I8_IMM_SP) BRELOP_IMM_SP(gint64, <=); MINT_IN_BREAK;
+-
+-		MINT_IN_CASE(MINT_BNE_UN_I4_IMM_SP) BRELOP_IMM_SP(guint32, !=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BNE_UN_I8_IMM_SP) BRELOP_IMM_SP(guint64, !=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_UN_I4_IMM_SP) BRELOP_IMM_SP(guint32, >=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGE_UN_I8_IMM_SP) BRELOP_IMM_SP(guint64, >=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_UN_I4_IMM_SP) BRELOP_IMM_SP(guint32, >); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BGT_UN_I8_IMM_SP) BRELOP_IMM_SP(guint64, >); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_UN_I4_IMM_SP) BRELOP_IMM_SP(guint32, <=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLE_UN_I8_IMM_SP) BRELOP_IMM_SP(guint64, <=); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_UN_I4_IMM_SP) BRELOP_IMM_SP(guint32, <); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_BLT_UN_I8_IMM_SP) BRELOP_IMM_SP(guint64, <); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BEQ_I4_IMM_SP) SJOP_MINT_BEQ_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BEQ_I8_IMM_SP) SJOP_MINT_BEQ_I8_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGE_I4_IMM_SP) SJOP_MINT_BGE_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGE_I8_IMM_SP) SJOP_MINT_BGE_I8_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGT_I4_IMM_SP) SJOP_MINT_BGT_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGT_I8_IMM_SP) SJOP_MINT_BGT_I8_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLT_I4_IMM_SP) SJOP_MINT_BLT_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLT_I8_IMM_SP) SJOP_MINT_BLT_I8_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLE_I4_IMM_SP) SJOP_MINT_BLE_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLE_I8_IMM_SP) SJOP_MINT_BLE_I8_IMM_SP; MINT_IN_BREAK;
++
++		MINT_IN_CASE(MINT_BNE_UN_I4_IMM_SP) SJOP_MINT_BNE_UN_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BNE_UN_I8_IMM_SP) SJOP_MINT_BNE_UN_I8_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGE_UN_I4_IMM_SP) SJOP_MINT_BGE_UN_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGE_UN_I8_IMM_SP) SJOP_MINT_BGE_UN_I8_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGT_UN_I4_IMM_SP) SJOP_MINT_BGT_UN_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BGT_UN_I8_IMM_SP) SJOP_MINT_BGT_UN_I8_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLE_UN_I4_IMM_SP) SJOP_MINT_BLE_UN_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLE_UN_I8_IMM_SP) SJOP_MINT_BLE_UN_I8_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLT_UN_I4_IMM_SP) SJOP_MINT_BLT_UN_I4_IMM_SP; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_BLT_UN_I8_IMM_SP) SJOP_MINT_BLT_UN_I8_IMM_SP; MINT_IN_BREAK;
+ 
+ 		MINT_IN_CASE(MINT_SWITCH) {
+ 			guint32 val = LOCAL_VAR (ip [1], guint32);
+@@ -5167,38 +5167,38 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 3; \
+ 	MONO_RESTORE_WARNING \
+ } while (0)
+-		MINT_IN_CASE(MINT_LDIND_I1)
+-			LDIND(int, gint8, FALSE);
++		MINT_IN_CASE(MINT_LDIND_I1) SJOP_MINT_LDIND_I1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_U1)
+-			LDIND(int, guint8, FALSE);
++		MINT_IN_CASE(MINT_LDIND_U1) SJOP_MINT_LDIND_U1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_I2)
+-			LDIND(int, gint16, FALSE);
++		MINT_IN_CASE(MINT_LDIND_I2) SJOP_MINT_LDIND_I2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_U2)
+-			LDIND(int, guint16, FALSE);
++		MINT_IN_CASE(MINT_LDIND_U2) SJOP_MINT_LDIND_U2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_I4) {
+-			LDIND(int, gint32, FALSE);
++		MINT_IN_CASE(MINT_LDIND_I4) { SJOP_MINT_LDIND_I4;
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_LDIND_I8)
+-#ifdef NO_UNALIGNED_ACCESS
+-			LDIND(gint64, gint64, TRUE);
+-#else
+-			LDIND(gint64, gint64, FALSE);
+-#endif
++		MINT_IN_CASE(MINT_LDIND_I8) SJOP_MINT_LDIND_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_R4)
+-			LDIND(float, gfloat, FALSE);
++		MINT_IN_CASE(MINT_LDIND_R4) SJOP_MINT_LDIND_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_R8)
+-#ifdef NO_UNALIGNED_ACCESS
+-			LDIND(double, gdouble, TRUE);
+-#else
+-			LDIND(double, gdouble, FALSE);
+-#endif
++		MINT_IN_CASE(MINT_LDIND_R8) SJOP_MINT_LDIND_R8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 
+ #define LDIND_OFFSET(datatype,casttype,unaligned) do { \
+@@ -5213,27 +5213,27 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 4; \
+ 	MONO_RESTORE_WARNING \
+ } while (0)
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_I1)
+-			LDIND_OFFSET(int, gint8, FALSE);
++		MINT_IN_CASE(MINT_LDIND_OFFSET_I1) SJOP_MINT_LDIND_OFFSET_I1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_U1)
+-			LDIND_OFFSET(int, guint8, FALSE);
++		MINT_IN_CASE(MINT_LDIND_OFFSET_U1) SJOP_MINT_LDIND_OFFSET_U1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_I2)
+-			LDIND_OFFSET(int, gint16, FALSE);
++		MINT_IN_CASE(MINT_LDIND_OFFSET_I2) SJOP_MINT_LDIND_OFFSET_I2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_U2)
+-			LDIND_OFFSET(int, guint16, FALSE);
++		MINT_IN_CASE(MINT_LDIND_OFFSET_U2) SJOP_MINT_LDIND_OFFSET_U2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_I4)
+-			LDIND_OFFSET(int, gint32, FALSE);
++		MINT_IN_CASE(MINT_LDIND_OFFSET_I4) SJOP_MINT_LDIND_OFFSET_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_I8)
+-#ifdef NO_UNALIGNED_ACCESS
+-			LDIND_OFFSET(gint64, gint64, TRUE);
+-#else
+-			LDIND_OFFSET(gint64, gint64, FALSE);
+-#endif
++		MINT_IN_CASE(MINT_LDIND_OFFSET_I8) SJOP_MINT_LDIND_OFFSET_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 
+ #define LDIND_OFFSET_ADD_MUL(datatype,casttype,unaligned) do { \
+@@ -5283,35 +5283,35 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 4; \
+ 	MONO_RESTORE_WARNING \
+ } while (0)
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_I1)
+-			LDIND_OFFSET_IMM(int, gint8, FALSE);
+-			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_U1)
+-			LDIND_OFFSET_IMM(int, guint8, FALSE);
+-			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_I2)
+-			LDIND_OFFSET_IMM(int, gint16, FALSE);
++		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_I1) SJOP_MINT_LDIND_OFFSET_IMM_I1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_U2)
+-			LDIND_OFFSET_IMM(int, guint16, FALSE);
++		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_U1) SJOP_MINT_LDIND_OFFSET_IMM_U1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_I4)
+-			LDIND_OFFSET_IMM(int, gint32, FALSE);
++		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_I2) SJOP_MINT_LDIND_OFFSET_IMM_I2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_I8)
+-#ifdef NO_UNALIGNED_ACCESS
+-			LDIND_OFFSET_IMM(gint64, gint64, TRUE);
+-#else
+-			LDIND_OFFSET_IMM(gint64, gint64, FALSE);
+-#endif
++		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_U2) SJOP_MINT_LDIND_OFFSET_IMM_U2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_REF) {
+-			gpointer ptr = LOCAL_VAR (ip [1], gpointer);
+-			NULL_CHECK (ptr);
+-			mono_gc_wbarrier_generic_store_internal (ptr, LOCAL_VAR (ip [2], MonoObject*));
+-			ip += 3;
++		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_I4) SJOP_MINT_LDIND_OFFSET_IMM_I4;
++
+ 			MINT_IN_BREAK;
+-		}
++		MINT_IN_CASE(MINT_LDIND_OFFSET_IMM_I8) SJOP_MINT_LDIND_OFFSET_IMM_I8;
++
++
++
++
++
++			MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STIND_REF) { SJOP_MINT_STIND_REF;
++
++
++
++
++			MINT_IN_BREAK;
++		}
+ #define STIND(datatype,unaligned) do { \
+ 	MONO_DISABLE_WARNING(4127) \
+ 	gpointer ptr = LOCAL_VAR (ip [1], gpointer); \
+@@ -5323,31 +5323,31 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 3; \
+ 	MONO_RESTORE_WARNING \
+ } while (0)
+-		MINT_IN_CASE(MINT_STIND_I1)
+-			STIND(gint8, FALSE);
++		MINT_IN_CASE(MINT_STIND_I1) SJOP_MINT_STIND_I1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_I2)
+-			STIND(gint16, FALSE);
++		MINT_IN_CASE(MINT_STIND_I2) SJOP_MINT_STIND_I2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_I4)
+-			STIND(gint32, FALSE);
++		MINT_IN_CASE(MINT_STIND_I4) SJOP_MINT_STIND_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_I8)
+-#ifdef NO_UNALIGNED_ACCESS
+-			STIND(gint64, TRUE);
+-#else
+-			STIND(gint64, FALSE);
+-#endif
++		MINT_IN_CASE(MINT_STIND_I8) SJOP_MINT_STIND_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_R4)
+-			STIND(float, FALSE);
++		MINT_IN_CASE(MINT_STIND_R4) SJOP_MINT_STIND_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_R8)
+-#ifdef NO_UNALIGNED_ACCESS
+-			STIND(double, TRUE);
+-#else
+-			STIND(double, FALSE);
+-#endif
++		MINT_IN_CASE(MINT_STIND_R8) SJOP_MINT_STIND_R8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 
+ #define STIND_OFFSET(datatype,unaligned) do { \
+@@ -5362,21 +5362,21 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 4; \
+ 	MONO_RESTORE_WARNING \
+ } while (0)
+-		MINT_IN_CASE(MINT_STIND_OFFSET_I1)
+-			STIND_OFFSET(gint8, FALSE);
++		MINT_IN_CASE(MINT_STIND_OFFSET_I1) SJOP_MINT_STIND_OFFSET_I1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_OFFSET_I2)
+-			STIND_OFFSET(gint16, FALSE);
++		MINT_IN_CASE(MINT_STIND_OFFSET_I2) SJOP_MINT_STIND_OFFSET_I2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_OFFSET_I4)
+-			STIND_OFFSET(gint32, FALSE);
++		MINT_IN_CASE(MINT_STIND_OFFSET_I4) SJOP_MINT_STIND_OFFSET_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_OFFSET_I8)
+-#ifdef NO_UNALIGNED_ACCESS
+-			STIND_OFFSET(gint64, TRUE);
+-#else
+-			STIND_OFFSET(gint64, FALSE);
+-#endif
++		MINT_IN_CASE(MINT_STIND_OFFSET_I8) SJOP_MINT_STIND_OFFSET_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 
+ #define STIND_OFFSET_IMM(datatype,unaligned) do { \
+@@ -5391,255 +5391,255 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 4; \
+ 	MONO_RESTORE_WARNING \
+ } while (0)
+-		MINT_IN_CASE(MINT_STIND_OFFSET_IMM_I1)
+-			STIND_OFFSET_IMM(gint8, FALSE);
++		MINT_IN_CASE(MINT_STIND_OFFSET_IMM_I1) SJOP_MINT_STIND_OFFSET_IMM_I1;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_OFFSET_IMM_I2)
+-			STIND_OFFSET_IMM(gint16, FALSE);
++		MINT_IN_CASE(MINT_STIND_OFFSET_IMM_I2) SJOP_MINT_STIND_OFFSET_IMM_I2;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_OFFSET_IMM_I4)
+-			STIND_OFFSET_IMM(gint32, FALSE);
++		MINT_IN_CASE(MINT_STIND_OFFSET_IMM_I4) SJOP_MINT_STIND_OFFSET_IMM_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STIND_OFFSET_IMM_I8)
+-#ifdef NO_UNALIGNED_ACCESS
+-			STIND_OFFSET_IMM(gint64, TRUE);
+-#else
+-			STIND_OFFSET_IMM(gint64, FALSE);
+-#endif
++		MINT_IN_CASE(MINT_STIND_OFFSET_IMM_I8) SJOP_MINT_STIND_OFFSET_IMM_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ #define BINOP(datatype, op) \
+ 	LOCAL_VAR (ip [1], datatype) = LOCAL_VAR (ip [2], datatype) op LOCAL_VAR (ip [3], datatype); \
+ 	ip += 4;
+-		MINT_IN_CASE(MINT_ADD_I4)
+-			BINOP(gint32, +);
++		MINT_IN_CASE(MINT_ADD_I4) SJOP_MINT_ADD_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD_I8)
+-			BINOP(gint64, +);
++		MINT_IN_CASE(MINT_ADD_I8) SJOP_MINT_ADD_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD_R4)
+-			BINOP(float, +);
++		MINT_IN_CASE(MINT_ADD_R4) SJOP_MINT_ADD_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD_R8)
+-			BINOP(double, +);
++		MINT_IN_CASE(MINT_ADD_R8) SJOP_MINT_ADD_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD1_I4)
+-			LOCAL_VAR (ip [1], gint32) = LOCAL_VAR (ip [2], gint32) + 1;
+-			ip += 3;
++		MINT_IN_CASE(MINT_ADD1_I4) SJOP_MINT_ADD1_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD_I4_IMM)
+-			LOCAL_VAR (ip [1], gint32) = LOCAL_VAR (ip [2], gint32) + (gint16)ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_ADD_I4_IMM) SJOP_MINT_ADD_I4_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD1_I8)
+-			LOCAL_VAR (ip [1], gint64) = LOCAL_VAR (ip [2], gint64) + 1;
+-			ip += 3;
++		MINT_IN_CASE(MINT_ADD1_I8) SJOP_MINT_ADD1_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD_I8_IMM)
+-			LOCAL_VAR (ip [1], gint64) = LOCAL_VAR (ip [2], gint64) + (gint16)ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_ADD_I8_IMM) SJOP_MINT_ADD_I8_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SUB_I4)
+-			BINOP(gint32, -);
++		MINT_IN_CASE(MINT_SUB_I4) SJOP_MINT_SUB_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SUB_I8)
+-			BINOP(gint64, -);
++		MINT_IN_CASE(MINT_SUB_I8) SJOP_MINT_SUB_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SUB_R4)
+-			BINOP(float, -);
++		MINT_IN_CASE(MINT_SUB_R4) SJOP_MINT_SUB_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SUB_R8)
+-			BINOP(double, -);
++		MINT_IN_CASE(MINT_SUB_R8) SJOP_MINT_SUB_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SUB1_I4)
+-			LOCAL_VAR (ip [1], gint32) = LOCAL_VAR (ip [2], gint32) - 1;
+-			ip += 3;
++		MINT_IN_CASE(MINT_SUB1_I4) SJOP_MINT_SUB1_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SUB1_I8)
+-			LOCAL_VAR (ip [1], gint64) = LOCAL_VAR (ip [2], gint64) - 1;
+-			ip += 3;
++		MINT_IN_CASE(MINT_SUB1_I8) SJOP_MINT_SUB1_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MUL_I4)
+-			BINOP(gint32, *);
++		MINT_IN_CASE(MINT_MUL_I4) SJOP_MINT_MUL_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MUL_I8)
+-			BINOP(gint64, *);
++		MINT_IN_CASE(MINT_MUL_I8) SJOP_MINT_MUL_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MUL_I4_IMM)
+-			LOCAL_VAR (ip [1], gint32) = LOCAL_VAR (ip [2], gint32) * (gint16)ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_MUL_I4_IMM) SJOP_MINT_MUL_I4_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MUL_I8_IMM)
+-			LOCAL_VAR (ip [1], gint64) = LOCAL_VAR (ip [2], gint64) * (gint16)ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_MUL_I8_IMM) SJOP_MINT_MUL_I8_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD_MUL_I4_IMM)
+-			LOCAL_VAR (ip [1], gint32) = (LOCAL_VAR (ip [2], gint32) + (gint16)ip [3]) * (gint16)ip [4];
+-			ip += 5;
++		MINT_IN_CASE(MINT_ADD_MUL_I4_IMM) SJOP_MINT_ADD_MUL_I4_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_ADD_MUL_I8_IMM)
+-			LOCAL_VAR (ip [1], gint64) = (LOCAL_VAR (ip [2], gint64) + (gint16)ip [3]) * (gint16)ip [4];
+-			ip += 5;
++		MINT_IN_CASE(MINT_ADD_MUL_I8_IMM) SJOP_MINT_ADD_MUL_I8_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MUL_R4)
+-			BINOP(float, *);
++		MINT_IN_CASE(MINT_MUL_R4) SJOP_MINT_MUL_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MUL_R8)
+-			BINOP(double, *);
++		MINT_IN_CASE(MINT_MUL_R8) SJOP_MINT_MUL_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_DIV_I4) {
+-			gint32 i1 = LOCAL_VAR (ip [2], gint32);
+-			gint32 i2 = LOCAL_VAR (ip [3], gint32);
+-			if (i2 == 0)
+-				THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip);
+-			if (i2 == (-1) && i1 == G_MININT32)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = i1 / i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_DIV_I4) { SJOP_MINT_DIV_I4;
++
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_DIV_I8) {
+-			gint64 l1 = LOCAL_VAR (ip [2], gint64);
+-			gint64 l2 = LOCAL_VAR (ip [3], gint64);
+-			if (l2 == 0)
+-				THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip);
+-			if (l2 == (-1) && l1 == G_MININT64)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint64) = l1 / l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_DIV_I8) { SJOP_MINT_DIV_I8;
++
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 			}
+-		MINT_IN_CASE(MINT_DIV_R4)
+-			BINOP(float, /);
++		MINT_IN_CASE(MINT_DIV_R4) SJOP_MINT_DIV_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_DIV_R8)
+-			BINOP(double, /);
++		MINT_IN_CASE(MINT_DIV_R8) SJOP_MINT_DIV_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_DIV_UN_I4) {
+-			guint32 i2 = LOCAL_VAR (ip [3], guint32);
+-			if (i2 == 0)
+-				THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint32) = LOCAL_VAR (ip [2], guint32) / i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_DIV_UN_I4) { SJOP_MINT_DIV_UN_I4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_DIV_UN_I8) {
+-			guint64 l2 = LOCAL_VAR (ip [3], guint64);
+-			if (l2 == 0)
+-				THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint64) = LOCAL_VAR (ip [2], guint64) / l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_DIV_UN_I8) { SJOP_MINT_DIV_UN_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_REM_I4) {
+-			gint32 i1 = LOCAL_VAR (ip [2], gint32);
+-			gint32 i2 = LOCAL_VAR (ip [3], gint32);
+-			if (i2 == 0)
+-				THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip);
+-			if (i2 == (-1) && i1 == G_MININT32)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = i1 % i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_REM_I4) { SJOP_MINT_REM_I4;
++
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_REM_I8) {
+-			gint64 l1 = LOCAL_VAR (ip [2], gint64);
+-			gint64 l2 = LOCAL_VAR (ip [3], gint64);
+-			if (l2 == 0)
+-				THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip);
+-			if (l2 == (-1) && l1 == G_MININT64)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint64) = l1 % l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_REM_I8) { SJOP_MINT_REM_I8;
++
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_REM_R4)
+-			LOCAL_VAR (ip [1], float) = fmodf (LOCAL_VAR (ip [2], float), LOCAL_VAR (ip [3], float));
+-			ip += 4;
++		MINT_IN_CASE(MINT_REM_R4) SJOP_MINT_REM_R4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_REM_R8)
+-			LOCAL_VAR (ip [1], double) = fmod (LOCAL_VAR (ip [2], double), LOCAL_VAR (ip [3], double));
+-			ip += 4;
++		MINT_IN_CASE(MINT_REM_R8) SJOP_MINT_REM_R8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_REM_UN_I4) {
+-			guint32 i2 = LOCAL_VAR (ip [3], guint32);
+-			if (i2 == 0)
+-				THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint32) = LOCAL_VAR (ip [2], guint32) % i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_REM_UN_I4) { SJOP_MINT_REM_UN_I4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_REM_UN_I8) {
+-			guint64 l2 = LOCAL_VAR (ip [3], guint64);
+-			if (l2 == 0)
+-				THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint64) = LOCAL_VAR (ip [2], guint64) % l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_REM_UN_I8) { SJOP_MINT_REM_UN_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_AND_I4)
+-			BINOP(gint32, &);
++		MINT_IN_CASE(MINT_AND_I4) SJOP_MINT_AND_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_AND_I8)
+-			BINOP(gint64, &);
++		MINT_IN_CASE(MINT_AND_I8) SJOP_MINT_AND_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_OR_I4)
+-			BINOP(gint32, |);
++		MINT_IN_CASE(MINT_OR_I4) SJOP_MINT_OR_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_OR_I8)
+-			BINOP(gint64, |);
++		MINT_IN_CASE(MINT_OR_I8) SJOP_MINT_OR_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_XOR_I4)
+-			BINOP(gint32, ^);
++		MINT_IN_CASE(MINT_XOR_I4) SJOP_MINT_XOR_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_XOR_I8)
+-			BINOP(gint64, ^);
++		MINT_IN_CASE(MINT_XOR_I8) SJOP_MINT_XOR_I8;
++
+ 			MINT_IN_BREAK;
+ 
+ #define SHIFTOP(datatype, op) \
+ 	LOCAL_VAR (ip [1], datatype) = LOCAL_VAR (ip [2], datatype) op LOCAL_VAR (ip [3], gint32); \
+ 	ip += 4;
+ 
+-		MINT_IN_CASE(MINT_SHL_I4)
+-			SHIFTOP(gint32, <<);
++		MINT_IN_CASE(MINT_SHL_I4) SJOP_MINT_SHL_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHL_I8)
+-			SHIFTOP(gint64, <<);
++		MINT_IN_CASE(MINT_SHL_I8) SJOP_MINT_SHL_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHR_I4)
+-			SHIFTOP(gint32, >>);
++		MINT_IN_CASE(MINT_SHR_I4) SJOP_MINT_SHR_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHR_I8)
+-			SHIFTOP(gint64, >>);
++		MINT_IN_CASE(MINT_SHR_I8) SJOP_MINT_SHR_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHR_UN_I4)
+-			SHIFTOP(guint32, >>);
++		MINT_IN_CASE(MINT_SHR_UN_I4) SJOP_MINT_SHR_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHR_UN_I8)
+-			SHIFTOP(guint64, >>);
++		MINT_IN_CASE(MINT_SHR_UN_I8) SJOP_MINT_SHR_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHL_I4_IMM)
+-			LOCAL_VAR (ip [1], gint32) = LOCAL_VAR (ip [2], gint32) << ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_SHL_I4_IMM) SJOP_MINT_SHL_I4_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHL_I8_IMM)
+-			LOCAL_VAR (ip [1], gint64) = LOCAL_VAR (ip [2], gint64) << ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_SHL_I8_IMM) SJOP_MINT_SHL_I8_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHR_I4_IMM)
+-			LOCAL_VAR (ip [1], gint32) = LOCAL_VAR (ip [2], gint32) >> ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_SHR_I4_IMM) SJOP_MINT_SHR_I4_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHR_I8_IMM)
+-			LOCAL_VAR (ip [1], gint64) = LOCAL_VAR (ip [2], gint64) >> ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_SHR_I8_IMM) SJOP_MINT_SHR_I8_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHR_UN_I4_IMM)
+-			LOCAL_VAR (ip [1], guint32) = LOCAL_VAR (ip [2], guint32) >> ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_SHR_UN_I4_IMM) SJOP_MINT_SHR_UN_I4_IMM;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_SHR_UN_I8_IMM)
+-			LOCAL_VAR (ip [1], guint64) = LOCAL_VAR (ip [2], guint64) >> ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_SHR_UN_I8_IMM) SJOP_MINT_SHR_UN_I8_IMM;
++
++
+ 			MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_SHL_AND_I4)
+ 			LOCAL_VAR (ip [1], gint32) = LOCAL_VAR (ip [2], gint32) << (LOCAL_VAR (ip [3], gint32) & 31);
+@@ -5649,109 +5649,109 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			LOCAL_VAR (ip [1], gint64) = LOCAL_VAR (ip [2], gint64) << (LOCAL_VAR (ip [3], gint64) & 63);
+ 			ip += 4;
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_NEG_I4)
+-			LOCAL_VAR (ip [1], gint32) = - LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_NEG_I4) SJOP_MINT_NEG_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_NEG_I8)
+-			LOCAL_VAR (ip [1], gint64) = - LOCAL_VAR (ip [2], gint64);
+-			ip += 3;
++		MINT_IN_CASE(MINT_NEG_I8) SJOP_MINT_NEG_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_NEG_R4)
+-			LOCAL_VAR (ip [1], float) = - LOCAL_VAR (ip [2], float);
+-			ip += 3;
++		MINT_IN_CASE(MINT_NEG_R4) SJOP_MINT_NEG_R4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_NEG_R8)
+-			LOCAL_VAR (ip [1], double) = - LOCAL_VAR (ip [2], double);
+-			ip += 3;
++		MINT_IN_CASE(MINT_NEG_R8) SJOP_MINT_NEG_R8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_NOT_I4)
+-			LOCAL_VAR (ip [1], gint32) = ~ LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_NOT_I4) SJOP_MINT_NOT_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_NOT_I8)
+-			LOCAL_VAR (ip [1], gint64) = ~ LOCAL_VAR (ip [2], gint64);
+-			ip += 3;
++		MINT_IN_CASE(MINT_NOT_I8) SJOP_MINT_NOT_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I1_I4)
+-			// FIXME read casted var directly and remove redundant conv opcodes
+-			LOCAL_VAR (ip [1], gint32) = (gint8)LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I1_I4) SJOP_MINT_CONV_I1_I4;
++
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I1_I8)
+-			LOCAL_VAR (ip [1], gint32) = (gint8)LOCAL_VAR (ip [2], gint64);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I1_I8) SJOP_MINT_CONV_I1_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I1_R4)
+-			LOCAL_VAR (ip [1], gint32) = (gint8) (gint32) LOCAL_VAR (ip [2], float);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I1_R4) SJOP_MINT_CONV_I1_R4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I1_R8)
+-			/* without gint32 cast, C compiler is allowed to use undefined
+-			 * behaviour if data.f is bigger than >255. See conv.fpint section
+-			 * in C standard:
+-			 * > The conversion truncates; that is, the fractional  part
+-			 * > is discarded.  The behavior is undefined if the truncated
+-			 * > value cannot be represented in the destination type.
+-			 * */
+-			LOCAL_VAR (ip [1], gint32) = (gint8) (gint32) LOCAL_VAR (ip [2], double);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I1_R8) SJOP_MINT_CONV_I1_R8;
++
++
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_U1_I4)
+-			LOCAL_VAR (ip [1], gint32) = (guint8) LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_U1_I4) SJOP_MINT_CONV_U1_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_U1_I8)
+-			LOCAL_VAR (ip [1], gint32) = (guint8) LOCAL_VAR (ip [2], gint64);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_U1_I8) SJOP_MINT_CONV_U1_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_U1_R4)
+-			LOCAL_VAR (ip [1], gint32) = (guint8) (guint32) LOCAL_VAR (ip [2], float);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_U1_R4) SJOP_MINT_CONV_U1_R4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_U1_R8)
+-			LOCAL_VAR (ip [1], gint32) = (guint8) (guint32) LOCAL_VAR (ip [2], double);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_U1_R8) SJOP_MINT_CONV_U1_R8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I2_I4)
+-			LOCAL_VAR (ip [1], gint32) = (gint16) LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I2_I4) SJOP_MINT_CONV_I2_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I2_I8)
+-			LOCAL_VAR (ip [1], gint32) = (gint16) LOCAL_VAR (ip [2], gint64);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I2_I8) SJOP_MINT_CONV_I2_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I2_R4)
+-			LOCAL_VAR (ip [1], gint32) = (gint16) (gint32) LOCAL_VAR (ip [2], float);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I2_R4) SJOP_MINT_CONV_I2_R4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I2_R8)
+-			LOCAL_VAR (ip [1], gint32) = (gint16) (gint32) LOCAL_VAR (ip [2], double);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I2_R8) SJOP_MINT_CONV_I2_R8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_U2_I4)
+-			LOCAL_VAR (ip [1], gint32) = (guint16) LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_U2_I4) SJOP_MINT_CONV_U2_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_U2_I8)
+-			LOCAL_VAR (ip [1], gint32) = (guint16) LOCAL_VAR (ip [2], gint64);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_U2_I8) SJOP_MINT_CONV_U2_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_U2_R4)
+-			LOCAL_VAR (ip [1], gint32) = (guint16) (guint32) LOCAL_VAR (ip [2], float);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_U2_R4) SJOP_MINT_CONV_U2_R4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_U2_R8)
+-			LOCAL_VAR (ip [1], gint32) = (guint16) (guint32) LOCAL_VAR (ip [2], double);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_U2_R8) SJOP_MINT_CONV_U2_R8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I4_R4)
+-			LOCAL_VAR (ip [1], gint32) = (gint32) LOCAL_VAR (ip [2], float);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I4_R4) SJOP_MINT_CONV_I4_R4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I4_R8)
+-			LOCAL_VAR (ip [1], gint32) = (gint32) LOCAL_VAR (ip [2], double);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I4_R8) SJOP_MINT_CONV_I4_R8;
++
++
+ 			MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_CONV_U4_R4)
+ #ifdef MONO_ARCH_EMULATE_FCONV_TO_U4
+@@ -5769,45 +5769,45 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ #endif
+ 			ip += 3;
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I8_I4)
+-			LOCAL_VAR (ip [1], gint64) = LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I8_I4) SJOP_MINT_CONV_I8_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I8_U4)
+-			LOCAL_VAR (ip [1], gint64) = (guint32) LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I8_U4) SJOP_MINT_CONV_I8_U4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I8_R4)
+-			LOCAL_VAR (ip [1], gint64) = (gint64) LOCAL_VAR (ip [2], float);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I8_R4) SJOP_MINT_CONV_I8_R4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_I8_R8)
+-			LOCAL_VAR (ip [1], gint64) = (gint64) LOCAL_VAR (ip [2], double);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_I8_R8) SJOP_MINT_CONV_I8_R8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_R4_I4)
+-			LOCAL_VAR (ip [1], float) = (float) LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_R4_I4) SJOP_MINT_CONV_R4_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_R4_I8)
+-			LOCAL_VAR (ip [1], float) = (float) LOCAL_VAR (ip [2], gint64);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_R4_I8) SJOP_MINT_CONV_R4_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_R4_R8)
+-			LOCAL_VAR (ip [1], float) = (float) LOCAL_VAR (ip [2], double);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_R4_R8) SJOP_MINT_CONV_R4_R8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_R8_I4)
+-			LOCAL_VAR (ip [1], double) = (double) LOCAL_VAR (ip [2], gint32);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_R8_I4) SJOP_MINT_CONV_R8_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_R8_I8)
+-			LOCAL_VAR (ip [1], double) = (double) LOCAL_VAR (ip [2], gint64);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_R8_I8) SJOP_MINT_CONV_R8_I8;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CONV_R8_R4)
+-			LOCAL_VAR (ip [1], double) = (double) LOCAL_VAR (ip [2], float);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_R8_R4) SJOP_MINT_CONV_R8_R4;
++
++
+ 			MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_CONV_U8_R4)
+ #ifdef MONO_ARCH_EMULATE_FCONV_TO_U8
+@@ -5847,17 +5847,17 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			ip += 4;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_LDOBJ_VT) {
+-			guint16 size = ip [3];
+-			gpointer srcAddr = LOCAL_VAR (ip [2], gpointer);
+-			NULL_CHECK (srcAddr);
+-			memcpy (locals + ip [1], srcAddr, size);
+-			ip += 4;
++		MINT_IN_CASE(MINT_LDOBJ_VT) { SJOP_MINT_LDOBJ_VT;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_LDSTR)
+-			LOCAL_VAR (ip [1], gpointer) = frame->imethod->data_items [ip [2]];
+-			ip += 3;
++		MINT_IN_CASE(MINT_LDSTR) SJOP_MINT_LDSTR;
++
++
+ 			MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_LDSTR_DYNAMIC) {
+ 			MonoString *s = NULL;
+@@ -5978,13 +5978,13 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			goto call;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_NEWOBJ_VT_INLINED) {
+-			guint16 ret_size = ip [3];
+-			gpointer this_vt = locals + ip [2];
++		MINT_IN_CASE(MINT_NEWOBJ_VT_INLINED) { SJOP_MINT_NEWOBJ_VT_INLINED;
++
++
++
++
++
+ 
+-			memset (this_vt, 0, ret_size);
+-			LOCAL_VAR (ip [1], gpointer) = this_vt;
+-			ip += 4;
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_NEWOBJ_SLOW) {
+@@ -6110,15 +6110,15 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			MINT_IN_BREAK;
+ #endif
+ 
+-		MINT_IN_CASE(MINT_INTRINS_SPAN_CTOR) {
+-			gpointer ptr = LOCAL_VAR (ip [2], gpointer);
+-			int len = LOCAL_VAR (ip [3], gint32);
+-			if (len < 0)
+-				THROW_EX (interp_get_exception_argument_out_of_range ("length", frame, ip), ip);
+-			gpointer span = locals + ip [1];
+-			*(gpointer*)span = ptr;
+-			*(gint32*)((gpointer*)span + 1) = len;
+-			ip += 4;;
++		MINT_IN_CASE(MINT_INTRINS_SPAN_CTOR) { SJOP_MINT_INTRINS_SPAN_CTOR;
++
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_INTRINS_CLEAR_WITH_REFERENCES) {
+@@ -6138,11 +6138,11 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			ip += 3;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_INTRINS_MEMORYMARSHAL_GETARRAYDATAREF) {
+-			MonoObject *o = LOCAL_VAR (ip [2], MonoObject*);
+-			NULL_CHECK (o);
+-			LOCAL_VAR (ip [1], gpointer) = (guint8*)o + MONO_STRUCT_OFFSET (MonoArray, vector);
+-			ip += 3;
++		MINT_IN_CASE(MINT_INTRINS_MEMORYMARSHAL_GETARRAYDATAREF) { SJOP_MINT_INTRINS_MEMORYMARSHAL_GETARRAYDATAREF;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_INTRINS_ORDINAL_IGNORE_CASE_ASCII) {
+@@ -6268,27 +6268,27 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			THROW_EX (local_ex, ip);
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_SAFEPOINT)
+-			SAFEPOINT;
+-			++ip;
++		MINT_IN_CASE(MINT_SAFEPOINT) SJOP_MINT_SAFEPOINT;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLDA_UNSAFE) {
+-			LOCAL_VAR (ip [1], gpointer) = (char*)LOCAL_VAR (ip [2], gpointer) + ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_LDFLDA_UNSAFE) { SJOP_MINT_LDFLDA_UNSAFE;
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_LDFLDA) {
+-			MonoObject *o = LOCAL_VAR (ip [2], MonoObject*);
+-			NULL_CHECK (o);
+-			LOCAL_VAR (ip [1], gpointer) = (char *)o + ip [3];
+-			ip += 4;
++		MINT_IN_CASE(MINT_LDFLDA) { SJOP_MINT_LDFLDA;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CKNULL) {
+-			MonoObject *o = LOCAL_VAR (ip [2], MonoObject*);
+-			NULL_CHECK (o);
+-			LOCAL_VAR (ip [1], MonoObject*) = o;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CKNULL) { SJOP_MINT_CKNULL;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 
+@@ -6304,23 +6304,23 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 
+ #define LDFLD(datamem, fieldtype) LDFLD_UNALIGNED(datamem, fieldtype, FALSE)
+ 
+-		MINT_IN_CASE(MINT_LDFLD_I1) LDFLD(gint32, gint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLD_U1) LDFLD(gint32, guint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLD_I2) LDFLD(gint32, gint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLD_U2) LDFLD(gint32, guint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLD_I4) LDFLD(gint32, gint32); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLD_I8) LDFLD(gint64, gint64); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLD_R4) LDFLD(float, float); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLD_R8) LDFLD(double, double); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDFLD_O) LDFLD(gpointer, gpointer); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_I1) SJOP_MINT_LDFLD_I1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_U1) SJOP_MINT_LDFLD_U1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_I2) SJOP_MINT_LDFLD_I2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_U2) SJOP_MINT_LDFLD_U2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_I4) SJOP_MINT_LDFLD_I4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_I8) SJOP_MINT_LDFLD_I8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_R4) SJOP_MINT_LDFLD_R4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_R8) SJOP_MINT_LDFLD_R8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDFLD_O) SJOP_MINT_LDFLD_O; MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_LDFLD_I8_UNALIGNED) LDFLD_UNALIGNED(gint64, gint64, TRUE); MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_LDFLD_R8_UNALIGNED) LDFLD_UNALIGNED(double, double, TRUE); MINT_IN_BREAK;
+ 
+-		MINT_IN_CASE(MINT_LDFLD_VT) {
+-			MonoObject *o = LOCAL_VAR (ip [2], MonoObject*);
+-			NULL_CHECK (o);
+-			memcpy (locals + ip [1], (char *)o + ip [3], ip [4]);
+-			ip += 5;
++		MINT_IN_CASE(MINT_LDFLD_VT) { SJOP_MINT_LDFLD_VT;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 
+@@ -6336,29 +6336,29 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 
+ #define STFLD(datamem, fieldtype) STFLD_UNALIGNED(datamem, fieldtype, FALSE)
+ 
+-		MINT_IN_CASE(MINT_STFLD_I1) STFLD(gint32, gint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STFLD_U1) STFLD(gint32, guint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STFLD_I2) STFLD(gint32, gint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STFLD_U2) STFLD(gint32, guint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STFLD_I4) STFLD(gint32, gint32); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STFLD_I8) STFLD(gint64, gint64); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STFLD_R4) STFLD(float, float); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STFLD_R8) STFLD(double, double); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STFLD_O) {
+-			MonoObject *o = LOCAL_VAR (ip [1], MonoObject*);
+-			NULL_CHECK (o);
+-			mono_gc_wbarrier_set_field_internal (o, (char*)o + ip [3], LOCAL_VAR (ip [2], MonoObject*));
+-			ip += 4;
++		MINT_IN_CASE(MINT_STFLD_I1) SJOP_MINT_STFLD_I1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STFLD_U1) SJOP_MINT_STFLD_U1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STFLD_I2) SJOP_MINT_STFLD_I2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STFLD_U2) SJOP_MINT_STFLD_U2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STFLD_I4) SJOP_MINT_STFLD_I4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STFLD_I8) SJOP_MINT_STFLD_I8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STFLD_R4) SJOP_MINT_STFLD_R4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STFLD_R8) SJOP_MINT_STFLD_R8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STFLD_O) { SJOP_MINT_STFLD_O;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_STFLD_I8_UNALIGNED) STFLD_UNALIGNED(gint64, gint64, TRUE); MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_STFLD_R8_UNALIGNED) STFLD_UNALIGNED(double, double, TRUE); MINT_IN_BREAK;
+ 
+-		MINT_IN_CASE(MINT_STFLD_VT_NOREF) {
+-			MonoObject *o = LOCAL_VAR (ip [1], MonoObject*);
+-			NULL_CHECK (o);
+-			memcpy ((char*)o + ip [3], locals + ip [2], ip [4]);
+-			ip += 5;
++		MINT_IN_CASE(MINT_STFLD_VT_NOREF) { SJOP_MINT_STFLD_VT_NOREF;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 
+@@ -6371,11 +6371,11 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			MINT_IN_BREAK;
+ 		}
+ 
+-		MINT_IN_CASE(MINT_LDSFLDA) {
+-			MonoVTable *vtable = (MonoVTable*) frame->imethod->data_items [ip [2]];
+-			INIT_VTABLE (vtable);
+-			LOCAL_VAR (ip [1], gpointer) = frame->imethod->data_items [ip [3]];
+-			ip += 4;
++		MINT_IN_CASE(MINT_LDSFLDA) { SJOP_MINT_LDSFLDA;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 
+@@ -6395,15 +6395,15 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 4; \
+ 	}
+ 
+-		MINT_IN_CASE(MINT_LDSFLD_I1) LDSFLD(gint32, gint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDSFLD_U1) LDSFLD(gint32, guint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDSFLD_I2) LDSFLD(gint32, gint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDSFLD_U2) LDSFLD(gint32, guint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDSFLD_I4) LDSFLD(gint32, gint32); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDSFLD_I8) LDSFLD(gint64, gint64); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDSFLD_R4) LDSFLD(float, float); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDSFLD_R8) LDSFLD(double, double); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDSFLD_O) LDSFLD(gpointer, gpointer); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_I1) SJOP_MINT_LDSFLD_I1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_U1) SJOP_MINT_LDSFLD_U1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_I2) SJOP_MINT_LDSFLD_I2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_U2) SJOP_MINT_LDSFLD_U2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_I4) SJOP_MINT_LDSFLD_I4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_I8) SJOP_MINT_LDSFLD_I8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_R4) SJOP_MINT_LDSFLD_R4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_R8) SJOP_MINT_LDSFLD_R8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDSFLD_O) SJOP_MINT_LDSFLD_O; MINT_IN_BREAK;
+ 
+ 		MINT_IN_CASE(MINT_LDSFLD_VT) {
+ 			MonoVTable *vtable = (MonoVTable*) frame->imethod->data_items [ip [2]];
+@@ -6434,14 +6434,14 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 4; \
+ 	}
+ 
+-		MINT_IN_CASE(MINT_STSFLD_I1) STSFLD(gint32, gint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STSFLD_U1) STSFLD(gint32, guint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STSFLD_I2) STSFLD(gint32, gint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STSFLD_U2) STSFLD(gint32, guint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STSFLD_I4) STSFLD(gint32, gint32); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STSFLD_I8) STSFLD(gint64, gint64); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STSFLD_R4) STSFLD(float, float); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STSFLD_R8) STSFLD(double, double); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STSFLD_I1) SJOP_MINT_STSFLD_I1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STSFLD_U1) SJOP_MINT_STSFLD_U1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STSFLD_I2) SJOP_MINT_STSFLD_I2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STSFLD_U2) SJOP_MINT_STSFLD_U2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STSFLD_I4) SJOP_MINT_STSFLD_I4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STSFLD_I8) SJOP_MINT_STSFLD_I8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STSFLD_R4) SJOP_MINT_STSFLD_R4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STSFLD_R8) SJOP_MINT_STSFLD_R8; MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_STSFLD_O) STSFLD(gpointer, gpointer); MINT_IN_BREAK;
+ 
+ 		MINT_IN_CASE(MINT_STSFLD_VT) {
+@@ -6469,61 +6469,61 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			ip += 4;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_STOBJ_VT_NOREF) {
+-			memcpy (LOCAL_VAR (ip [1], gpointer), locals + ip [2], ip [3]);
+-			ip += 4;
++		MINT_IN_CASE(MINT_STOBJ_VT_NOREF) { SJOP_MINT_STOBJ_VT_NOREF;
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U8_I4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < 0)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint64) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U8_I4) { SJOP_MINT_CONV_OVF_U8_I4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U8_I8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < 0)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint64) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U8_I8) { SJOP_MINT_CONV_OVF_U8_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I8_U8) {
+-			guint64 val = LOCAL_VAR (ip [2], guint64);
+-			if (val > G_MAXINT64)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint64) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I8_U8) { SJOP_MINT_CONV_OVF_I8_U8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U8_R4) {
+-			float val = LOCAL_VAR (ip [2], float);
+-			if (!mono_try_trunc_u64 (val, (guint64*)(locals + ip [1])))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U8_R4) { SJOP_MINT_CONV_OVF_U8_R4;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U8_R8) {
+-			double val = LOCAL_VAR (ip [2], double);
+-			if (!mono_try_trunc_u64 (val, (guint64*)(locals + ip [1])))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U8_R8) { SJOP_MINT_CONV_OVF_U8_R8;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I8_R4) {
+-			float val = LOCAL_VAR (ip [2], float);
+-			if (!mono_try_trunc_i64 (val, (gint64*)(locals + ip [1])))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I8_R4) { SJOP_MINT_CONV_OVF_I8_R4;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I8_R8) {
+-			double val = LOCAL_VAR (ip [2], double);
+-			if (!mono_try_trunc_i64 (val, (gint64*)(locals + ip [1])))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I8_R8) { SJOP_MINT_CONV_OVF_I8_R8;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_BOX) {
+@@ -6600,21 +6600,21 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			ip += 3;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_LDLEN) {
+-			MonoObject *o = LOCAL_VAR (ip [2], MonoObject*);
+-			NULL_CHECK (o);
+-			LOCAL_VAR (ip [1], mono_u) = mono_array_length_internal ((MonoArray *)o);
+-			ip += 3;
++		MINT_IN_CASE(MINT_LDLEN) { SJOP_MINT_LDLEN;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_GETCHR) {
+-			MonoString *s = LOCAL_VAR (ip [2], MonoString*);
+-			NULL_CHECK (s);
+-			int i32 = LOCAL_VAR (ip [3], int);
+-			if (i32 < 0 || i32 >= mono_string_length_internal (s))
+-				THROW_EX (interp_get_exception_index_out_of_range (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = mono_string_chars_internal (s)[i32];
+-			ip += 4;
++		MINT_IN_CASE(MINT_GETCHR) { SJOP_MINT_GETCHR;
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_GETITEM_SPAN) {
+@@ -6632,26 +6632,26 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			ip += 5;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_GETITEM_LOCALSPAN) {
+-			// Same as getitem span but we know the offset of the span structure on the stack
+-			MonoSpanOfVoid *span = (MonoSpanOfVoid*)(locals + ip [2]);
+-			int index = LOCAL_VAR (ip [3], int);
++		MINT_IN_CASE(MINT_GETITEM_LOCALSPAN) { SJOP_MINT_GETITEM_LOCALSPAN;
++
++
++
++
++
++
++
++
++
+ 
+-			gint32 length = span->_length;
+-			if (index < 0 || index >= length)
+-				THROW_EX (interp_get_exception_index_out_of_range (frame, ip), ip);
+ 
+-			gsize element_size = (gsize)(gint16)ip [4];
+-			LOCAL_VAR (ip [1], gpointer) = (guint8*)span->_reference + index * element_size;
+ 
+-			ip += 5;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_STRLEN) {
+-			MonoObject *o = LOCAL_VAR (ip [2], MonoObject*);
+-			NULL_CHECK (o);
+-			LOCAL_VAR (ip [1], gint32) = mono_string_length_internal ((MonoString*) o);
+-			ip += 3;
++		MINT_IN_CASE(MINT_STRLEN) { SJOP_MINT_STRLEN;
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_ARRAY_RANK) {
+@@ -6669,16 +6669,16 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			ip += 3;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_LDELEMA1) {
+-			/* No bounds, one direction */
+-			MonoArray *ao = LOCAL_VAR (ip [2], MonoArray*);
+-			NULL_CHECK (ao);
+-			guint32 index = LOCAL_VAR (ip [3], guint32);
+-			if (index >= ao->max_length)
+-				THROW_EX (interp_get_exception_index_out_of_range (frame, ip), ip);
+-			guint16 size = ip [4];
+-			LOCAL_VAR (ip [1], gpointer) = mono_array_addr_with_size_fast (ao, size, index);
+-			ip += 5;
++		MINT_IN_CASE(MINT_LDELEMA1) { SJOP_MINT_LDELEMA1;
++
++
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_LDELEMA) {
+@@ -6728,28 +6728,28 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	LOCAL_VAR (ip [1], datatype) = mono_array_get_fast (o, elemtype, aindex); \
+ 	ip += 4; \
+ } while (0)
+-		MINT_IN_CASE(MINT_LDELEM_I1) LDELEM(gint32, gint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_U1) LDELEM(gint32, guint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_I2) LDELEM(gint32, gint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_U2) LDELEM(gint32, guint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_I4) LDELEM(gint32, gint32); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_U4) LDELEM(gint32, guint32); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_I8) LDELEM(gint64, guint64); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_R4) LDELEM(float, float); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_R8) LDELEM(double, double); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_REF) LDELEM(gpointer, gpointer); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_LDELEM_VT) {
+-			MonoArray *o = LOCAL_VAR (ip [2], MonoArray*);
+-			NULL_CHECK (o);
+-			mono_u aindex = LOCAL_VAR (ip [3], gint32);
+-			if (aindex >= mono_array_length_internal (o))
+-				THROW_EX (interp_get_exception_index_out_of_range (frame, ip), ip);
++		MINT_IN_CASE(MINT_LDELEM_I1) SJOP_MINT_LDELEM_I1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_U1) SJOP_MINT_LDELEM_U1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_I2) SJOP_MINT_LDELEM_I2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_U2) SJOP_MINT_LDELEM_U2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_I4) SJOP_MINT_LDELEM_I4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_U4) SJOP_MINT_LDELEM_U4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_I8) SJOP_MINT_LDELEM_I8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_R4) SJOP_MINT_LDELEM_R4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_R8) SJOP_MINT_LDELEM_R8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_REF) SJOP_MINT_LDELEM_REF; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_LDELEM_VT) { SJOP_MINT_LDELEM_VT;
++
++
++
++
++
++
++
++
++
+ 
+-			guint16 size = ip [4];
+-			char *src_addr = mono_array_addr_with_size_fast ((MonoArray *) o, size, aindex);
+-			memcpy (locals + ip [1], src_addr, size);
+ 
+-			ip += 5;
+ 			MINT_IN_BREAK;
+ 		}
+ #define STELEM_PROLOG(o, aindex) do { \
+@@ -6767,14 +6767,14 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	mono_array_set_fast (o, elemtype, aindex, LOCAL_VAR (ip [3], datatype)); \
+ 	ip += 4; \
+ } while (0)
+-		MINT_IN_CASE(MINT_STELEM_I1) STELEM(gint32, gint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STELEM_U1) STELEM(gint32, guint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STELEM_I2) STELEM(gint32, gint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STELEM_U2) STELEM(gint32, guint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STELEM_I4) STELEM(gint32, gint32); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STELEM_I8) STELEM(gint64, gint64); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STELEM_R4) STELEM(float, float); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_STELEM_R8) STELEM(double, double); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STELEM_I1) SJOP_MINT_STELEM_I1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STELEM_U1) SJOP_MINT_STELEM_U1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STELEM_I2) SJOP_MINT_STELEM_I2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STELEM_U2) SJOP_MINT_STELEM_U2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STELEM_I4) SJOP_MINT_STELEM_I4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STELEM_I8) SJOP_MINT_STELEM_I8; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STELEM_R4) SJOP_MINT_STELEM_R4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_STELEM_R8) SJOP_MINT_STELEM_R8; MINT_IN_BREAK;
+ 		MINT_IN_CASE(MINT_STELEM_REF) {
+ 			MonoArray *o;
+ 			guint32 aindex;
+@@ -6806,263 +6806,263 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			ip += 6;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_STELEM_VT_NOREF) {
+-			MonoArray *o = LOCAL_VAR (ip [1], MonoArray*);
+-			NULL_CHECK (o);
+-			guint32 aindex = LOCAL_VAR (ip [2], guint32);
+-			if (aindex >= mono_array_length_internal (o))
+-				THROW_EX (interp_get_exception_index_out_of_range (frame, ip), ip);
++		MINT_IN_CASE(MINT_STELEM_VT_NOREF) { SJOP_MINT_STELEM_VT_NOREF;
++
++
++
++
++
++
++
++
++
+ 
+-			guint16 size = ip [5];
+-			char *dst_addr = mono_array_addr_with_size_fast ((MonoArray *) o, size, aindex);
+-			memcpy (dst_addr, locals + ip [3], size);
+-			ip += 6;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I4_U4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < 0)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I4_U4) { SJOP_MINT_CONV_OVF_I4_U4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I4_I8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < G_MININT32 || val > G_MAXINT32)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (gint32) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I4_I8) { SJOP_MINT_CONV_OVF_I4_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I4_U8) {
+-			guint64 val = LOCAL_VAR (ip [2], guint64);
+-			if (val > G_MAXINT32)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (gint32) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I4_U8) { SJOP_MINT_CONV_OVF_I4_U8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I4_R4) {
+-			float val = LOCAL_VAR (ip [2], float);
+-			double val_r8 = (double)val;
+-			if (val_r8 > ((double)G_MININT32 - 1) && val_r8 < ((double)G_MAXINT32 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (gint32) val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I4_R4) { SJOP_MINT_CONV_OVF_I4_R4;
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I4_R8) {
+-			double val = LOCAL_VAR (ip [2], double);
+-			if (val > ((double)G_MININT32 - 1) && val < ((double)G_MAXINT32 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (gint32) val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I4_R8) { SJOP_MINT_CONV_OVF_I4_R8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U4_I4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < 0)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U4_I4) { SJOP_MINT_CONV_OVF_U4_I4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U4_I8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < 0 || val > G_MAXUINT32)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (guint32) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U4_I8) { SJOP_MINT_CONV_OVF_U4_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U4_R4) {
+-			float val = LOCAL_VAR (ip [2], float);
+-			double val_r8 = val;
+-			if (val_r8 > -1.0 && val_r8 < ((double)G_MAXUINT32 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (guint32)val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U4_R4) { SJOP_MINT_CONV_OVF_U4_R4;
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U4_R8) {
+-			double val = LOCAL_VAR (ip [2], double);
+-			if (val > -1.0 && val < ((double)G_MAXUINT32 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (guint32)val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U4_R8) { SJOP_MINT_CONV_OVF_U4_R8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I2_I4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < G_MININT16 || val > G_MAXINT16)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (gint16)val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I2_I4) { SJOP_MINT_CONV_OVF_I2_I4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I2_U4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < 0 || val > G_MAXINT16)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (gint16)val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I2_U4) { SJOP_MINT_CONV_OVF_I2_U4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I2_I8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < G_MININT16 || val > G_MAXINT16)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (gint16) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I2_I8) { SJOP_MINT_CONV_OVF_I2_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I2_U8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < 0 || val > G_MAXINT16)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (gint16) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I2_U8) { SJOP_MINT_CONV_OVF_I2_U8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I2_R4) {
+-			float val = LOCAL_VAR (ip [2], float);
+-			if (val > (G_MININT16 - 1) && val < (G_MAXINT16 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (gint16) val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I2_R4) { SJOP_MINT_CONV_OVF_I2_R4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I2_R8) {
+-			double val = LOCAL_VAR (ip [2], double);
+-			if (val > (G_MININT16 - 1) && val < (G_MAXINT16 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (gint16) val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I2_R8) { SJOP_MINT_CONV_OVF_I2_R8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U2_I4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < 0 || val > G_MAXUINT16)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U2_I4) { SJOP_MINT_CONV_OVF_U2_I4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U2_I8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < 0 || val > G_MAXUINT16)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (guint16) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U2_I8) { SJOP_MINT_CONV_OVF_U2_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U2_R4) {
+-			float val = LOCAL_VAR (ip [2], float);
+-			if (val > -1.0f && val < (G_MAXUINT16 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (guint16) val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U2_R4) { SJOP_MINT_CONV_OVF_U2_R4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U2_R8) {
+-			double val = LOCAL_VAR (ip [2], double);
+-			if (val > -1.0 && val < (G_MAXUINT16 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (guint16) val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U2_R8) { SJOP_MINT_CONV_OVF_U2_R8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I1_I4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < G_MININT8 || val > G_MAXINT8)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I1_I4) { SJOP_MINT_CONV_OVF_I1_I4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I1_U4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < 0 || val > G_MAXINT8)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I1_U4) { SJOP_MINT_CONV_OVF_I1_U4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I1_I8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < G_MININT8 || val > G_MAXINT8)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (gint8) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I1_I8) { SJOP_MINT_CONV_OVF_I1_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I1_U8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < 0 || val > G_MAXINT8)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (gint8) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I1_U8) { SJOP_MINT_CONV_OVF_I1_U8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I1_R4) {
+-			float val = LOCAL_VAR (ip [2], float);
+-			if (val > (G_MININT8 - 1) && val < (G_MAXINT8 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (gint8) val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I1_R4) { SJOP_MINT_CONV_OVF_I1_R4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_I1_R8) {
+-			double val = LOCAL_VAR (ip [2], double);
+-			if (val > (G_MININT8 - 1) && val < (G_MAXINT8 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (gint8) val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_I1_R8) { SJOP_MINT_CONV_OVF_I1_R8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U1_I4) {
+-			gint32 val = LOCAL_VAR (ip [2], gint32);
+-			if (val < 0 || val > G_MAXUINT8)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U1_I4) { SJOP_MINT_CONV_OVF_U1_I4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U1_I8) {
+-			gint64 val = LOCAL_VAR (ip [2], gint64);
+-			if (val < 0 || val > G_MAXUINT8)
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = (guint8) val;
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U1_I8) { SJOP_MINT_CONV_OVF_U1_I8;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U1_R4) {
+-			float val = LOCAL_VAR (ip [2], float);
+-			if (val > -1.0f && val < (G_MAXUINT8 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (guint8)val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U1_R4) { SJOP_MINT_CONV_OVF_U1_R4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_CONV_OVF_U1_R8) {
+-			double val = LOCAL_VAR (ip [2], double);
+-			if (val > -1.0 && val < (G_MAXUINT8 + 1))
+-				LOCAL_VAR (ip [1], gint32) = (guint8)val;
+-			else
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CONV_OVF_U1_R8) { SJOP_MINT_CONV_OVF_U1_R8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_CKFINITE_R4) {
+@@ -7112,112 +7112,112 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			ip += 4;
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_ADD_OVF_I4) {
+-			gint32 i1 = LOCAL_VAR (ip [2], gint32);
+-			gint32 i2 = LOCAL_VAR (ip [3], gint32);
+-			if (CHECK_ADD_OVERFLOW (i1, i2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = i1 + i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_ADD_OVF_I4) { SJOP_MINT_ADD_OVF_I4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_ADD_OVF_I8) {
+-			gint64 l1 = LOCAL_VAR (ip [2], gint64);
+-			gint64 l2 = LOCAL_VAR (ip [3], gint64);
+-			if (CHECK_ADD_OVERFLOW64 (l1, l2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint64) = l1 + l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_ADD_OVF_I8) { SJOP_MINT_ADD_OVF_I8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_ADD_OVF_UN_I4) {
+-			guint32 i1 = LOCAL_VAR (ip [2], guint32);
+-			guint32 i2 = LOCAL_VAR (ip [3], guint32);
+-			if (CHECK_ADD_OVERFLOW_UN (i1, i2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint32) = i1 + i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_ADD_OVF_UN_I4) { SJOP_MINT_ADD_OVF_UN_I4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_ADD_OVF_UN_I8) {
+-			guint64 l1 = LOCAL_VAR (ip [2], guint64);
+-			guint64 l2 = LOCAL_VAR (ip [3], guint64);
+-			if (CHECK_ADD_OVERFLOW64_UN (l1, l2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint64) = l1 + l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_ADD_OVF_UN_I8) { SJOP_MINT_ADD_OVF_UN_I8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_MUL_OVF_I4) {
+-			gint32 i1 = LOCAL_VAR (ip [2], gint32);
+-			gint32 i2 = LOCAL_VAR (ip [3], gint32);
+-			if (CHECK_MUL_OVERFLOW (i1, i2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = i1 * i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_MUL_OVF_I4) { SJOP_MINT_MUL_OVF_I4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_MUL_OVF_I8) {
+-			gint64 l1 = LOCAL_VAR (ip [2], gint64);
+-			gint64 l2 = LOCAL_VAR (ip [3], gint64);
+-			if (CHECK_MUL_OVERFLOW64 (l1, l2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint64) = l1 * l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_MUL_OVF_I8) { SJOP_MINT_MUL_OVF_I8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_MUL_OVF_UN_I4) {
+-			guint32 i1 = LOCAL_VAR (ip [2], guint32);
+-			guint32 i2 = LOCAL_VAR (ip [3], guint32);
+-			if (CHECK_MUL_OVERFLOW_UN (i1, i2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint32) = i1 * i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_MUL_OVF_UN_I4) { SJOP_MINT_MUL_OVF_UN_I4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_MUL_OVF_UN_I8) {
+-			guint64 l1 = LOCAL_VAR (ip [2], guint64);
+-			guint64 l2 = LOCAL_VAR (ip [3], guint64);
+-			if (CHECK_MUL_OVERFLOW64_UN (l1, l2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint64) = l1 * l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_MUL_OVF_UN_I8) { SJOP_MINT_MUL_OVF_UN_I8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_SUB_OVF_I4) {
+-			gint32 i1 = LOCAL_VAR (ip [2], gint32);
+-			gint32 i2 = LOCAL_VAR (ip [3], gint32);
+-			if (CHECK_SUB_OVERFLOW (i1, i2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint32) = i1 - i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_SUB_OVF_I4) { SJOP_MINT_SUB_OVF_I4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_SUB_OVF_I8) {
+-			gint64 l1 = LOCAL_VAR (ip [2], gint64);
+-			gint64 l2 = LOCAL_VAR (ip [3], gint64);
+-			if (CHECK_SUB_OVERFLOW64 (l1, l2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint64) = l1 - l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_SUB_OVF_I8) { SJOP_MINT_SUB_OVF_I8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_SUB_OVF_UN_I4) {
+-			guint32 i1 = LOCAL_VAR (ip [2], guint32);
+-			guint32 i2 = LOCAL_VAR (ip [3], guint32);
+-			if (CHECK_SUB_OVERFLOW_UN (i1, i2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], guint32) = i1 - i2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_SUB_OVF_UN_I4) { SJOP_MINT_SUB_OVF_UN_I4;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_SUB_OVF_UN_I8) {
+-			guint64 l1 = LOCAL_VAR (ip [2], guint64);
+-			guint64 l2 = LOCAL_VAR (ip [3], guint64);
+-			if (CHECK_SUB_OVERFLOW64_UN (l1, l2))
+-				THROW_EX (interp_get_exception_overflow (frame, ip), ip);
+-			LOCAL_VAR (ip [1], gint64) = l1 - l2;
+-			ip += 4;
++		MINT_IN_CASE(MINT_SUB_OVF_UN_I8) { SJOP_MINT_SUB_OVF_UN_I8;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_ENDFINALLY) {
+@@ -7430,122 +7430,122 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 	ip += 4; \
+ } while (0)
+ 
+-		MINT_IN_CASE(MINT_CEQ_I4)
+-			RELOP(gint32, ==);
++		MINT_IN_CASE(MINT_CEQ_I4) SJOP_MINT_CEQ_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CEQ0_I4)
+-			LOCAL_VAR (ip [1], gint32) = (LOCAL_VAR (ip [2], gint32) == 0);
+-			ip += 3;
++		MINT_IN_CASE(MINT_CEQ0_I4) SJOP_MINT_CEQ0_I4;
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CEQ_I8)
+-			RELOP(gint64, ==);
++		MINT_IN_CASE(MINT_CEQ_I8) SJOP_MINT_CEQ_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CEQ_R4)
+-			RELOP_FP(float, ==, 0);
++		MINT_IN_CASE(MINT_CEQ_R4) SJOP_MINT_CEQ_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CEQ_R8)
+-			RELOP_FP(double, ==, 0);
++		MINT_IN_CASE(MINT_CEQ_R8) SJOP_MINT_CEQ_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CNE_I4)
+-			RELOP(gint32, !=);
++		MINT_IN_CASE(MINT_CNE_I4) SJOP_MINT_CNE_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CNE_I8)
+-			RELOP(gint64, !=);
++		MINT_IN_CASE(MINT_CNE_I8) SJOP_MINT_CNE_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CNE_R4)
+-			RELOP_FP(float, !=, 1);
++		MINT_IN_CASE(MINT_CNE_R4) SJOP_MINT_CNE_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CNE_R8)
+-			RELOP_FP(double, !=, 1);
++		MINT_IN_CASE(MINT_CNE_R8) SJOP_MINT_CNE_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGT_I4)
+-			RELOP(gint32, >);
++		MINT_IN_CASE(MINT_CGT_I4) SJOP_MINT_CGT_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGT_I8)
+-			RELOP(gint64, >);
++		MINT_IN_CASE(MINT_CGT_I8) SJOP_MINT_CGT_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGT_R4)
+-			RELOP_FP(float, >, 0);
++		MINT_IN_CASE(MINT_CGT_R4) SJOP_MINT_CGT_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGT_R8)
+-			RELOP_FP(double, >, 0);
++		MINT_IN_CASE(MINT_CGT_R8) SJOP_MINT_CGT_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGE_I4)
+-			RELOP(gint32, >=);
++		MINT_IN_CASE(MINT_CGE_I4) SJOP_MINT_CGE_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGE_I8)
+-			RELOP(gint64, >=);
++		MINT_IN_CASE(MINT_CGE_I8) SJOP_MINT_CGE_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGE_R4)
+-			RELOP_FP(float, >=, 0);
++		MINT_IN_CASE(MINT_CGE_R4) SJOP_MINT_CGE_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGE_R8)
+-			RELOP_FP(double, >=, 0);
++		MINT_IN_CASE(MINT_CGE_R8) SJOP_MINT_CGE_R8;
++
+ 			MINT_IN_BREAK;
+ 
+ #define RELOP_CAST(datatype, op) \
+ 	LOCAL_VAR (ip [1], gint32) = LOCAL_VAR (ip [2], datatype) op LOCAL_VAR (ip [3], datatype); \
+ 	ip += 4;
+ 
+-		MINT_IN_CASE(MINT_CGE_UN_I4)
+-			RELOP_CAST(guint32, >=);
++		MINT_IN_CASE(MINT_CGE_UN_I4) SJOP_MINT_CGE_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGE_UN_I8)
+-			RELOP_CAST(guint64, >=);
++		MINT_IN_CASE(MINT_CGE_UN_I8) SJOP_MINT_CGE_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGT_UN_I4)
+-			RELOP_CAST(guint32, >);
++		MINT_IN_CASE(MINT_CGT_UN_I4) SJOP_MINT_CGT_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGT_UN_I8)
+-			RELOP_CAST(guint64, >);
++		MINT_IN_CASE(MINT_CGT_UN_I8) SJOP_MINT_CGT_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGT_UN_R4)
+-			RELOP_FP(float, >, 1);
++		MINT_IN_CASE(MINT_CGT_UN_R4) SJOP_MINT_CGT_UN_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CGT_UN_R8)
+-			RELOP_FP(double, >, 1);
++		MINT_IN_CASE(MINT_CGT_UN_R8) SJOP_MINT_CGT_UN_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLT_I4)
+-			RELOP(gint32, <);
++		MINT_IN_CASE(MINT_CLT_I4) SJOP_MINT_CLT_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLT_I8)
+-			RELOP(gint64, <);
++		MINT_IN_CASE(MINT_CLT_I8) SJOP_MINT_CLT_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLT_R4)
+-			RELOP_FP(float, <, 0);
++		MINT_IN_CASE(MINT_CLT_R4) SJOP_MINT_CLT_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLT_R8)
+-			RELOP_FP(double, <, 0);
++		MINT_IN_CASE(MINT_CLT_R8) SJOP_MINT_CLT_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLT_UN_I4)
+-			RELOP_CAST(guint32, <);
++		MINT_IN_CASE(MINT_CLT_UN_I4) SJOP_MINT_CLT_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLT_UN_I8)
+-			RELOP_CAST(guint64, <);
++		MINT_IN_CASE(MINT_CLT_UN_I8) SJOP_MINT_CLT_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLT_UN_R4)
+-			RELOP_FP(float, <, 1);
++		MINT_IN_CASE(MINT_CLT_UN_R4) SJOP_MINT_CLT_UN_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLT_UN_R8)
+-			RELOP_FP(double, <, 1);
++		MINT_IN_CASE(MINT_CLT_UN_R8) SJOP_MINT_CLT_UN_R8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLE_I4)
+-			RELOP(gint32, <=);
++		MINT_IN_CASE(MINT_CLE_I4) SJOP_MINT_CLE_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLE_I8)
+-			RELOP(gint64, <=);
++		MINT_IN_CASE(MINT_CLE_I8) SJOP_MINT_CLE_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLE_UN_I4)
+-			RELOP_CAST(guint32, <=);
++		MINT_IN_CASE(MINT_CLE_UN_I4) SJOP_MINT_CLE_UN_I4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLE_UN_I8)
+-			RELOP_CAST(guint64, <=);
++		MINT_IN_CASE(MINT_CLE_UN_I8) SJOP_MINT_CLE_UN_I8;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLE_R4)
+-			RELOP_FP(float, <=, 0);
++		MINT_IN_CASE(MINT_CLE_R4) SJOP_MINT_CLE_R4;
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CLE_R8)
+-			RELOP_FP(double, <=, 0);
++		MINT_IN_CASE(MINT_CLE_R8) SJOP_MINT_CLE_R8;
++
+ 			MINT_IN_BREAK;
+ 
+ #undef RELOP
+@@ -7674,9 +7674,9 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			MINT_IN_BREAK;
+ 		}
+ 
+-		MINT_IN_CASE(MINT_LDLOCA_S)
+-			LOCAL_VAR (ip [1], gpointer) = locals + ip [2];
+-			ip += 3;
++		MINT_IN_CASE(MINT_LDLOCA_S) SJOP_MINT_LDLOCA_S;
++
++
+ 			MINT_IN_BREAK;
+ 
+ #define MOV(argtype1,argtype2) \
+@@ -7686,43 +7686,43 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 		// which is our minimum "register" size in interp. They are only needed when
+ 		// the address of the local is taken and we should try to optimize them out
+ 		// because the local can't be propagated.
+-		MINT_IN_CASE(MINT_MOV_I4_I1) MOV(gint32, gint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MOV_I4_U1) MOV(gint32, guint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MOV_I4_I2) MOV(gint32, gint16); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MOV_I4_U2) MOV(gint32, guint16); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_MOV_I4_I1) SJOP_MINT_MOV_I4_I1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_MOV_I4_U1) SJOP_MINT_MOV_I4_U1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_MOV_I4_I2) SJOP_MINT_MOV_I4_I2; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_MOV_I4_U2) SJOP_MINT_MOV_I4_U2; MINT_IN_BREAK;
+ 		// These moves are used to store into the field of a local valuetype
+ 		// No sign extension is needed, we just move bytes from the execution
+ 		// stack, no additional conversion is needed.
+-		MINT_IN_CASE(MINT_MOV_1) MOV(gint8, gint8); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MOV_2) MOV(gint16, gint16); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_MOV_1) SJOP_MINT_MOV_1; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_MOV_2) SJOP_MINT_MOV_2; MINT_IN_BREAK;
+ 		// Normal moves between locals
+-		MINT_IN_CASE(MINT_MOV_4) MOV(guint32, guint32); MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MOV_8) MOV(guint64, guint64); MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_MOV_4) SJOP_MINT_MOV_4; MINT_IN_BREAK;
++		MINT_IN_CASE(MINT_MOV_8) SJOP_MINT_MOV_8; MINT_IN_BREAK;
++
++		MINT_IN_CASE(MINT_MOV_VT) { SJOP_MINT_MOV_VT;
++
++
+ 
+-		MINT_IN_CASE(MINT_MOV_VT) {
+-			guint16 size = ip [3];
+-			memmove (locals + ip [1], locals + ip [2], size);
+-			ip += 4;
+ 			MINT_IN_BREAK;
+ 		}
+ 
+-		MINT_IN_CASE(MINT_MOV_8_2)
+-			LOCAL_VAR (ip [1], guint64) = LOCAL_VAR (ip [2], guint64);
+-			LOCAL_VAR (ip [3], guint64) = LOCAL_VAR (ip [4], guint64);
+-			ip += 5;
++		MINT_IN_CASE(MINT_MOV_8_2) SJOP_MINT_MOV_8_2;
++
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MOV_8_3)
+-			LOCAL_VAR (ip [1], guint64) = LOCAL_VAR (ip [2], guint64);
+-			LOCAL_VAR (ip [3], guint64) = LOCAL_VAR (ip [4], guint64);
+-			LOCAL_VAR (ip [5], guint64) = LOCAL_VAR (ip [6], guint64);
+-			ip += 7;
++		MINT_IN_CASE(MINT_MOV_8_3) SJOP_MINT_MOV_8_3;
++
++
++
++
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_MOV_8_4)
+-			LOCAL_VAR (ip [1], guint64) = LOCAL_VAR (ip [2], guint64);
+-			LOCAL_VAR (ip [3], guint64) = LOCAL_VAR (ip [4], guint64);
+-			LOCAL_VAR (ip [5], guint64) = LOCAL_VAR (ip [6], guint64);
+-			LOCAL_VAR (ip [7], guint64) = LOCAL_VAR (ip [8], guint64);
+-			ip += 9;
++		MINT_IN_CASE(MINT_MOV_8_4) SJOP_MINT_MOV_8_4;
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 
+ 		MINT_IN_CASE(MINT_LOCALLOC) {
+@@ -7749,24 +7749,24 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) ZEROP_SP(gint64, !=); MINT_IN_BREAK;
+ 			memset (LOCAL_VAR (ip [1], gpointer), 0, ip [2]);
+ 			ip += 3;
+ 			MINT_IN_BREAK;
+-		MINT_IN_CASE(MINT_CPBLK) {
+-			gpointer dest = LOCAL_VAR (ip [1], gpointer);
+-			gpointer src = LOCAL_VAR (ip [2], gpointer);
+-			guint32 size = LOCAL_VAR (ip [3], guint32);
+-			if (size && (!dest || !src))
+-				THROW_EX (interp_get_exception_null_reference(frame, ip), ip);
+-			else
+-				memcpy (dest, src, size);
+-			ip += 4;
++		MINT_IN_CASE(MINT_CPBLK) { SJOP_MINT_CPBLK;
++
++
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+-		MINT_IN_CASE(MINT_INITBLK) {
+-			gpointer dest = LOCAL_VAR (ip [1], gpointer);
+-			guint32 size = LOCAL_VAR (ip [3], guint32);
+-			if (size)
+-				NULL_CHECK (dest);
+-			memset (dest, LOCAL_VAR (ip [2], gint32), size);
+-			ip += 4;
++		MINT_IN_CASE(MINT_INITBLK) { SJOP_MINT_INITBLK;
++
++
++
++
++
++
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_RETHROW) {
+diff --git a/src/mono/mono/mini/interp/shepjit-interp.h b/src/mono/mono/mini/interp/shepjit-interp.h
+new file mode 100644
+index 0000000..65105a7
+--- /dev/null
++++ b/src/mono/mono/mini/interp/shepjit-interp.h
+@@ -0,0 +1,18 @@
++/* shepjit-interp.h: SHEPHERD-VITA device kit #8 (vita/notes/kit8-jit.md). interp.c's primitives for shepjit-ops.h, the one definition of
++ * the opcodes the baseline JIT tier compiles: here they are exactly the code the interpreter had (ip [n], ip += len, THROW_EX (...)),
++ * so the interpreter's main loop is the same token for token (and its object code byte for byte: vita/toolchain/build-runtime-k8.sh
++ * ops). Included once, inside mono_interp_exec_method's file scope, right after LOCAL_VAR. */
++/* SHEPHERD kit #8 (vita/notes/kit8-jit.md): the bodies of the opcodes the baseline JIT tier compiles live in shepjit-ops.h, written once
++ * for both tiers. Here the primitives they use are the interpreter's own code, so this loop is the same token for token. */
++#define SJ_IP(n) ip [n]
++#define SJ_IP32(n) READ32 (ip + n)
++#define SJ_IP64(n) READ64 (ip + n)
++#define SJ_DATA(n) frame->imethod->data_items [ip [n]]
++#define SJ_NEXT(len) ip += len
++#define SJ_BRANCH(off) ip += off
++#define SJ_THROW_DIVIDE_BY_ZERO() THROW_EX (interp_get_exception_divide_by_zero (frame, ip), ip)
++#define SJ_THROW_OVERFLOW() THROW_EX (interp_get_exception_overflow (frame, ip), ip)
++#define SJ_THROW_INDEX_OUT_OF_RANGE() THROW_EX (interp_get_exception_index_out_of_range (frame, ip), ip)
++#define SJ_THROW_ARGUMENT_OUT_OF_RANGE_LENGTH() THROW_EX (interp_get_exception_argument_out_of_range ("length", frame, ip), ip)
++#define SJ_THROW_NULL_REFERENCE() THROW_EX (interp_get_exception_null_reference(frame, ip), ip)
++#include "shepjit-ops.h"
+diff --git a/src/mono/mono/mini/interp/shepjit-ops.h b/src/mono/mono/mini/interp/shepjit-ops.h
+new file mode 100644
+index 0000000..1187423
+--- /dev/null
++++ b/src/mono/mono/mini/interp/shepjit-ops.h
+@@ -0,0 +1,2156 @@
++/*
++ * shepjit-ops.h: SHEPHERD-VITA device kit #8 (vita/notes/kit8-jit.md) -- ONE DEFINITION of the opcodes the baseline JIT tier compiles,
++ * included by interp.c (the interpreter: primitives = its own code, so its object code is unchanged), shepjit-stencils.c (the
++ * copy-and-patch stencils: operands are holes, branches tail calls, every check that would throw an exit back to the interpreter AT
++ * the instruction) and shepjit.c (the lockstep walker: the interpreter's primitives on a copy of the locals).
++ * GENERATED from interp.c by vita/jit/stencils/make-ops.py (the bodies are interp.c's, converted mechanically); edit the bodies
++ * here, never in two places. The includer defines: SJ_IP SJ_IP32 SJ_IP64 SJ_DATA SJ_NEXT SJ_BRANCH SJ_THROW_* NULL_CHECK INIT_VTABLE
++ * SAFEPOINT BACK_BRANCH_PROFILE LOCAL_VAR (and has frame, locals in scope).
++ */
++#ifndef __SHEPJIT_OPS_H__
++#define __SHEPJIT_OPS_H__
++
++/* the families (interp.c's macros of the same names without SJM_) */
++#define SJM_MOV(argtype1,argtype2) \
++	LOCAL_VAR (SJ_IP (1), argtype1) = LOCAL_VAR (SJ_IP (2), argtype2); \
++	SJ_NEXT (3);
++#define SJM_LDC(n) do { LOCAL_VAR (SJ_IP (1), gint32) = (n); SJ_NEXT (2); } while (0)
++#define SJM_BINOP(datatype, op) \
++	LOCAL_VAR (SJ_IP (1), datatype) = LOCAL_VAR (SJ_IP (2), datatype) op LOCAL_VAR (SJ_IP (3), datatype); \
++	SJ_NEXT (4);
++#define SJM_SHIFTOP(datatype, op) \
++	LOCAL_VAR (SJ_IP (1), datatype) = LOCAL_VAR (SJ_IP (2), datatype) op LOCAL_VAR (SJ_IP (3), gint32); \
++	SJ_NEXT (4);
++#define SJM_RELOP(datatype, op) \
++	LOCAL_VAR (SJ_IP (1), gint32) = LOCAL_VAR (SJ_IP (2), datatype) op LOCAL_VAR (SJ_IP (3), datatype); \
++	SJ_NEXT (4);
++#define SJM_RELOP_FP(datatype, op, noorder) \
++	do { \
++	datatype a1 = LOCAL_VAR (SJ_IP (2), datatype); \
++	datatype a2 = LOCAL_VAR (SJ_IP (3), datatype); \
++	if (mono_isunordered (a1, a2)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = noorder; \
++	else \
++	LOCAL_VAR (SJ_IP (1), gint32) = a1 op a2; \
++	SJ_NEXT (4); \
++	} while (0)
++#define SJM_RELOP_CAST(datatype, op) \
++	LOCAL_VAR (SJ_IP (1), gint32) = LOCAL_VAR (SJ_IP (2), datatype) op LOCAL_VAR (SJ_IP (3), datatype); \
++	SJ_NEXT (4);
++#define SJM_ZEROP_S(datatype, op) \
++	if (LOCAL_VAR (SJ_IP (1), datatype) op 0) { \
++	gint16 br_offset = (gint16) SJ_IP (2); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SJ_BRANCH (br_offset); \
++	} else \
++	SJ_NEXT (3);
++#define SJM_ZEROP(datatype, op) \
++	if (LOCAL_VAR (SJ_IP (1), datatype) op 0) { \
++	gint32 br_offset = (gint32)SJ_IP32 (2); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SJ_BRANCH (br_offset); \
++	} else \
++	SJ_NEXT (4);
++#define SJM_ZEROP_SP(datatype, op) \
++	if (LOCAL_VAR (SJ_IP (1), datatype) op 0) { \
++	gint16 br_offset = (gint16) SJ_IP (2); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SAFEPOINT; \
++	SJ_BRANCH (br_offset); \
++	} else \
++	SJ_NEXT (3);
++#define SJM_CONDBR_S(cond) \
++	if (cond) { \
++	gint16 br_offset = (gint16) SJ_IP (3); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SJ_BRANCH (br_offset); \
++	} else \
++	SJ_NEXT (4);
++#define SJM_BRELOP_S(datatype, op) SJM_CONDBR_S(LOCAL_VAR (SJ_IP (1), datatype) op LOCAL_VAR (SJ_IP (2), datatype))
++#define SJM_CONDBR(cond) \
++	if (cond) { \
++	gint32 br_offset = (gint32) SJ_IP32 (3); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SJ_BRANCH (br_offset); \
++	} else \
++	SJ_NEXT (5);
++#define SJM_BRELOP(datatype, op) SJM_CONDBR(LOCAL_VAR (SJ_IP (1), datatype) op LOCAL_VAR (SJ_IP (2), datatype))
++#define SJM_BRELOP_S_CAST(datatype, op) \
++	if (LOCAL_VAR (SJ_IP (1), datatype) op LOCAL_VAR (SJ_IP (2), datatype)) { \
++	gint16 br_offset = (gint16) SJ_IP (3); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SJ_BRANCH (br_offset); \
++	} else \
++	SJ_NEXT (4);
++#define SJM_BRELOP_CAST(datatype, op) \
++	if (LOCAL_VAR (SJ_IP (1), datatype) op LOCAL_VAR (SJ_IP (2), datatype)) { \
++	gint32 br_offset = (gint32)SJ_IP32 (3); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SJ_BRANCH (br_offset); \
++	} else \
++	SJ_NEXT (5);
++#define SJM_CONDBR_SP(cond) \
++	if (cond) { \
++	gint16 br_offset = (gint16) SJ_IP (3); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SAFEPOINT; \
++	SJ_BRANCH (br_offset); \
++	} else \
++	SJ_NEXT (4);
++#define SJM_BRELOP_SP(datatype, op) SJM_CONDBR_SP(LOCAL_VAR (SJ_IP (1), datatype) op LOCAL_VAR (SJ_IP (2), datatype))
++#define SJM_BRELOP_IMM_SP(datatype, op) SJM_CONDBR_SP(LOCAL_VAR (SJ_IP (1), datatype) op (datatype)(gint16)SJ_IP (2))
++#define SJM_LDFLD_UNALIGNED(datatype, fieldtype, unaligned) \
++	do { \
++	MonoObject *o = LOCAL_VAR (SJ_IP (2), MonoObject*); \
++	NULL_CHECK (o); \
++	if (unaligned) \
++	memcpy (locals + SJ_IP (1), (char *)o + SJ_IP (3), sizeof (fieldtype)); \
++	else \
++	LOCAL_VAR (SJ_IP (1), datatype) = * (fieldtype *)((char *)o + SJ_IP (3)) ; \
++	SJ_NEXT (4); \
++	} while (0)
++#define SJM_LDFLD(datamem, fieldtype) SJM_LDFLD_UNALIGNED(datamem, fieldtype, FALSE)
++#define SJM_STFLD_UNALIGNED(datatype, fieldtype, unaligned) \
++	do { \
++	MonoObject *o = LOCAL_VAR (SJ_IP (1), MonoObject*); \
++	NULL_CHECK (o); \
++	if (unaligned) \
++	memcpy ((char *)o + SJ_IP (3), locals + SJ_IP (2), sizeof (fieldtype)); \
++	else \
++	* (fieldtype *)((char *)o + SJ_IP (3)) = (fieldtype)(LOCAL_VAR (SJ_IP (2), datatype)); \
++	SJ_NEXT (4); \
++	} while (0)
++#define SJM_STFLD(datamem, fieldtype) SJM_STFLD_UNALIGNED(datamem, fieldtype, FALSE)
++#define SJM_LDSFLD(datatype, fieldtype) \
++	{ \
++	MonoVTable *vtable = (MonoVTable*) SJ_DATA (2); \
++	INIT_VTABLE (vtable); \
++	LOCAL_VAR (SJ_IP (1), datatype) = * (fieldtype *)(SJ_DATA (3)) ; \
++	SJ_NEXT (4); \
++	}
++#define SJM_STSFLD(datatype, fieldtype) \
++	{ \
++	MonoVTable *vtable = (MonoVTable*) SJ_DATA (2); \
++	INIT_VTABLE (vtable); \
++	* (fieldtype *)(SJ_DATA (3)) = (fieldtype)(LOCAL_VAR (SJ_IP (1), datatype)); \
++	SJ_NEXT (4); \
++	}
++#define SJM_LDELEM(datatype,elemtype) \
++	do { \
++	MonoArray *o = LOCAL_VAR (SJ_IP (2), MonoArray*); \
++	NULL_CHECK (o); \
++	guint32 aindex = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (aindex >= mono_array_length_internal (o)) \
++	SJ_THROW_INDEX_OUT_OF_RANGE (); \
++	LOCAL_VAR (SJ_IP (1), datatype) = mono_array_get_fast (o, elemtype, aindex); \
++	SJ_NEXT (4); \
++	} while (0)
++#define SJM_STELEM_PROLOG(o, aindex) \
++	do { \
++	o = LOCAL_VAR (SJ_IP (1), MonoArray*); \
++	NULL_CHECK (o); \
++	aindex = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (aindex >= mono_array_length_internal (o)) \
++	SJ_THROW_INDEX_OUT_OF_RANGE (); \
++	} while (0)
++#define SJM_STELEM(datatype, elemtype) \
++	do { \
++	MonoArray *o; \
++	guint32 aindex; \
++	SJM_STELEM_PROLOG(o, aindex); \
++	mono_array_set_fast (o, elemtype, aindex, LOCAL_VAR (SJ_IP (3), datatype)); \
++	SJ_NEXT (4); \
++	} while (0)
++#define SJM_LDIND(datatype,casttype,unaligned) \
++	do { \
++	MONO_DISABLE_WARNING(4127) \
++	gpointer ptr = LOCAL_VAR (SJ_IP (2), gpointer); \
++	NULL_CHECK (ptr); \
++	if (unaligned && ((gsize)ptr % SIZEOF_VOID_P)) \
++	memcpy (locals + SJ_IP (1), ptr, sizeof (datatype)); \
++	else \
++	LOCAL_VAR (SJ_IP (1), datatype) = *(casttype*)ptr; \
++	SJ_NEXT (3); \
++	MONO_RESTORE_WARNING \
++	} while (0)
++#define SJM_LDIND_OFFSET(datatype,casttype,unaligned) \
++	do { \
++	MONO_DISABLE_WARNING(4127) \
++	gpointer ptr = LOCAL_VAR (SJ_IP (2), gpointer); \
++	NULL_CHECK (ptr); \
++	ptr = (char*)ptr + LOCAL_VAR (SJ_IP (3), mono_i); \
++	if (unaligned && ((gsize)ptr % SIZEOF_VOID_P)) \
++	memcpy (locals + SJ_IP (1), ptr, sizeof (datatype)); \
++	else \
++	LOCAL_VAR (SJ_IP (1), datatype) = *(casttype*)ptr; \
++	SJ_NEXT (4); \
++	MONO_RESTORE_WARNING \
++	} while (0)
++#define SJM_LDIND_OFFSET_IMM(datatype,casttype,unaligned) \
++	do { \
++	MONO_DISABLE_WARNING(4127) \
++	gpointer ptr = LOCAL_VAR (SJ_IP (2), gpointer); \
++	NULL_CHECK (ptr); \
++	ptr = (char*)ptr + (gint16)SJ_IP (3); \
++	if (unaligned && ((gsize)ptr % SIZEOF_VOID_P)) \
++	memcpy (locals + SJ_IP (1), ptr, sizeof (datatype)); \
++	else \
++	LOCAL_VAR (SJ_IP (1), datatype) = *(casttype*)ptr; \
++	SJ_NEXT (4); \
++	MONO_RESTORE_WARNING \
++	} while (0)
++#define SJM_STIND(datatype,unaligned) \
++	do { \
++	MONO_DISABLE_WARNING(4127) \
++	gpointer ptr = LOCAL_VAR (SJ_IP (1), gpointer); \
++	NULL_CHECK (ptr); \
++	if (unaligned && ((gsize)ptr % SIZEOF_VOID_P)) \
++	memcpy (ptr, locals + SJ_IP (2), sizeof (datatype)); \
++	else \
++	*(datatype*)ptr = LOCAL_VAR (SJ_IP (2), datatype); \
++	SJ_NEXT (3); \
++	MONO_RESTORE_WARNING \
++	} while (0)
++#define SJM_STIND_OFFSET(datatype,unaligned) \
++	do { \
++	MONO_DISABLE_WARNING(4127) \
++	gpointer ptr = LOCAL_VAR (SJ_IP (1), gpointer); \
++	NULL_CHECK (ptr); \
++	ptr = (char*)ptr + LOCAL_VAR (SJ_IP (2), mono_i); \
++	if (unaligned && ((gsize)ptr % SIZEOF_VOID_P)) \
++	memcpy (ptr, locals + SJ_IP (3), sizeof (datatype)); \
++	else \
++	*(datatype*)ptr = LOCAL_VAR (SJ_IP (3), datatype); \
++	SJ_NEXT (4); \
++	MONO_RESTORE_WARNING \
++	} while (0)
++#define SJM_STIND_OFFSET_IMM(datatype,unaligned) \
++	do { \
++	MONO_DISABLE_WARNING(4127) \
++	gpointer ptr = LOCAL_VAR (SJ_IP (1), gpointer); \
++	NULL_CHECK (ptr); \
++	ptr = (char*)ptr + (gint16)SJ_IP (3); \
++	if (unaligned && ((gsize)ptr % SIZEOF_VOID_P)) \
++	memcpy (ptr, locals + SJ_IP (2), sizeof (datatype)); \
++	else \
++	*(datatype*)ptr = LOCAL_VAR (SJ_IP (2), datatype); \
++	SJ_NEXT (4); \
++	MONO_RESTORE_WARNING \
++	} while (0)
++#define SJM_CHECK_ADD_OVERFLOW(a,b) \
++	(gint32)(b) >= 0 ? (gint32)(G_MAXINT32) - (gint32)(b) < (gint32)(a) ? -1 : 0 \
++	: (gint32)(G_MININT32) - (gint32)(b) > (gint32)(a) ? +1 : 0
++#define SJM_CHECK_ADD_OVERFLOW64(a,b) \
++	(gint64)(b) >= 0 ? (gint64)(G_MAXINT64) - (gint64)(b) < (gint64)(a) ? -1 : 0 \
++	: (gint64)(G_MININT64) - (gint64)(b) > (gint64)(a) ? +1 : 0
++#define SJM_CHECK_ADD_OVERFLOW_UN(a,b) (guint32)(G_MAXUINT32) - (guint32)(b) < (guint32)(a) ? -1 : 0
++#define SJM_CHECK_ADD_OVERFLOW64_UN(a,b) (guint64)(G_MAXUINT64) - (guint64)(b) < (guint64)(a) ? -1 : 0
++#define SJM_CHECK_MUL_OVERFLOW(a,b) \
++	((gint32)(a) == 0) || ((gint32)(b) == 0) ? 0 : \
++	(((gint32)(a) > 0) && ((gint32)(b) == -1)) ? FALSE : \
++	(((gint32)(a) < 0) && ((gint32)(b) == -1)) ? (a == G_MININT32) : \
++	(((gint32)(a) > 0) && ((gint32)(b) > 0)) ? (gint32)(a) > ((G_MAXINT32) / (gint32)(b)) : \
++	(((gint32)(a) > 0) && ((gint32)(b) < 0)) ? (gint32)(a) > ((G_MININT32) / (gint32)(b)) : \
++	(((gint32)(a) < 0) && ((gint32)(b) > 0)) ? (gint32)(a) < ((G_MININT32) / (gint32)(b)) : \
++	(gint32)(a) < ((G_MAXINT32) / (gint32)(b))
++#define SJM_CHECK_MUL_OVERFLOW64(a,b) \
++	((gint64)(a) == 0) || ((gint64)(b) == 0) ? 0 : \
++	(((gint64)(a) > 0) && ((gint64)(b) == -1)) ? FALSE : \
++	(((gint64)(a) < 0) && ((gint64)(b) == -1)) ? (a == G_MININT64) : \
++	(((gint64)(a) > 0) && ((gint64)(b) > 0)) ? (gint64)(a) > ((G_MAXINT64) / (gint64)(b)) : \
++	(((gint64)(a) > 0) && ((gint64)(b) < 0)) ? (gint64)(a) > ((G_MININT64) / (gint64)(b)) : \
++	(((gint64)(a) < 0) && ((gint64)(b) > 0)) ? (gint64)(a) < ((G_MININT64) / (gint64)(b)) : \
++	(gint64)(a) < ((G_MAXINT64) / (gint64)(b))
++#define SJM_CHECK_MUL_OVERFLOW_UN(a,b) \
++	((guint32)(a) == 0) || ((guint32)(b) == 0) ? 0 : \
++	(guint32)(b) > ((G_MAXUINT32) / (guint32)(a))
++#define SJM_CHECK_MUL_OVERFLOW64_UN(a,b) \
++	((guint64)(a) == 0) || ((guint64)(b) == 0) ? 0 : \
++	(guint64)(b) > ((G_MAXUINT64) / (guint64)(a))
++#define SJM_CHECK_SUB_OVERFLOW(a,b) \
++	(gint32)(b) < 0 ? (gint32)(G_MAXINT32) + (gint32)(b) < (gint32)(a) ? -1 : 0 \
++	: (gint32)(G_MININT32) + (gint32)(b) > (gint32)(a) ? +1 : 0
++#define SJM_CHECK_SUB_OVERFLOW64(a,b) \
++	(gint64)(b) < 0 ? (gint64)(G_MAXINT64) + (gint64)(b) < (gint64)(a) ? -1 : 0 \
++	: (gint64)(G_MININT64) + (gint64)(b) > (gint64)(a) ? +1 : 0
++#define SJM_CHECK_SUB_OVERFLOW_UN(a,b) (guint32)(a) < (guint32)(b) ? -1 : 0
++#define SJM_CHECK_SUB_OVERFLOW64_UN(a,b) (guint64)(a) < (guint64)(b) ? -1 : 0
++
++/* the opcodes */
++#define SJOP_MINT_MOV_4 SJM_MOV(guint32, guint32);
++#define SJOP_MINT_MOV_8 SJM_MOV(guint64, guint64);
++#define SJOP_MINT_MOV_1 SJM_MOV(gint8, gint8);
++#define SJOP_MINT_MOV_2 SJM_MOV(gint16, gint16);
++#define SJOP_MINT_MOV_I4_I1 SJM_MOV(gint32, gint8);
++#define SJOP_MINT_MOV_I4_U1 SJM_MOV(gint32, guint8);
++#define SJOP_MINT_MOV_I4_I2 SJM_MOV(gint32, gint16);
++#define SJOP_MINT_MOV_I4_U2 SJM_MOV(gint32, guint16);
++#define SJOP_MINT_MOV_8_2 \
++	LOCAL_VAR (SJ_IP (1), guint64) = LOCAL_VAR (SJ_IP (2), guint64); \
++	LOCAL_VAR (SJ_IP (3), guint64) = LOCAL_VAR (SJ_IP (4), guint64); \
++	SJ_NEXT (5);
++#define SJOP_MINT_MOV_8_3 \
++	LOCAL_VAR (SJ_IP (1), guint64) = LOCAL_VAR (SJ_IP (2), guint64); \
++	LOCAL_VAR (SJ_IP (3), guint64) = LOCAL_VAR (SJ_IP (4), guint64); \
++	LOCAL_VAR (SJ_IP (5), guint64) = LOCAL_VAR (SJ_IP (6), guint64); \
++	SJ_NEXT (7);
++#define SJOP_MINT_MOV_8_4 \
++	LOCAL_VAR (SJ_IP (1), guint64) = LOCAL_VAR (SJ_IP (2), guint64); \
++	LOCAL_VAR (SJ_IP (3), guint64) = LOCAL_VAR (SJ_IP (4), guint64); \
++	LOCAL_VAR (SJ_IP (5), guint64) = LOCAL_VAR (SJ_IP (6), guint64); \
++	LOCAL_VAR (SJ_IP (7), guint64) = LOCAL_VAR (SJ_IP (8), guint64); \
++	SJ_NEXT (9);
++#define SJOP_MINT_MOV_VT \
++	{ \
++	guint16 size = SJ_IP (3); \
++	memmove (locals + SJ_IP (1), locals + SJ_IP (2), size); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_LDC_I4_M1 SJM_LDC(-1);
++#define SJOP_MINT_LDC_I4_0 SJM_LDC(0);
++#define SJOP_MINT_LDC_I4_1 SJM_LDC(1);
++#define SJOP_MINT_LDC_I4_2 SJM_LDC(2);
++#define SJOP_MINT_LDC_I4_3 SJM_LDC(3);
++#define SJOP_MINT_LDC_I4_4 SJM_LDC(4);
++#define SJOP_MINT_LDC_I4_5 SJM_LDC(5);
++#define SJOP_MINT_LDC_I4_6 SJM_LDC(6);
++#define SJOP_MINT_LDC_I4_7 SJM_LDC(7);
++#define SJOP_MINT_LDC_I4_8 SJM_LDC(8);
++#define SJOP_MINT_LDC_I4_S \
++	LOCAL_VAR (SJ_IP (1), gint32) = (short)SJ_IP (2); \
++	SJ_NEXT (3);
++#define SJOP_MINT_LDC_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = SJ_IP32 (2); \
++	SJ_NEXT (4);
++#define SJOP_MINT_LDC_I8_0 \
++	LOCAL_VAR (SJ_IP (1), gint64) = 0; \
++	SJ_NEXT (2);
++#define SJOP_MINT_LDC_I8 \
++	LOCAL_VAR (SJ_IP (1), gint64) = SJ_IP64 (2); \
++	SJ_NEXT (6);
++#define SJOP_MINT_LDC_I8_S \
++	LOCAL_VAR (SJ_IP (1), gint64) = (short)SJ_IP (2); \
++	SJ_NEXT (3);
++#define SJOP_MINT_LDC_R4 \
++	{ \
++	LOCAL_VAR (SJ_IP (1), gint32) = SJ_IP32 (2); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_LDC_R8 \
++	LOCAL_VAR (SJ_IP (1), gint64) = SJ_IP64 (2); \
++	SJ_NEXT (6);
++#define SJOP_MINT_LDLOCA_S \
++	LOCAL_VAR (SJ_IP (1), gpointer) = locals + SJ_IP (2); \
++	SJ_NEXT (3);
++#define SJOP_MINT_INITLOCALS \
++	memset (locals + SJ_IP (1), 0, SJ_IP (2)); \
++	SJ_NEXT (3);
++#define SJOP_MINT_ADD_I4 SJM_BINOP(gint32, +);
++#define SJOP_MINT_ADD_I8 SJM_BINOP(gint64, +);
++#define SJOP_MINT_ADD_R4 SJM_BINOP(float, +);
++#define SJOP_MINT_ADD_R8 SJM_BINOP(double, +);
++#define SJOP_MINT_ADD1_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = LOCAL_VAR (SJ_IP (2), gint32) + 1; \
++	SJ_NEXT (3);
++#define SJOP_MINT_ADD_I4_IMM \
++	LOCAL_VAR (SJ_IP (1), gint32) = LOCAL_VAR (SJ_IP (2), gint32) + (gint16)SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_ADD1_I8 \
++	LOCAL_VAR (SJ_IP (1), gint64) = LOCAL_VAR (SJ_IP (2), gint64) + 1; \
++	SJ_NEXT (3);
++#define SJOP_MINT_ADD_I8_IMM \
++	LOCAL_VAR (SJ_IP (1), gint64) = LOCAL_VAR (SJ_IP (2), gint64) + (gint16)SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_SUB_I4 SJM_BINOP(gint32, -);
++#define SJOP_MINT_SUB_I8 SJM_BINOP(gint64, -);
++#define SJOP_MINT_SUB_R4 SJM_BINOP(float, -);
++#define SJOP_MINT_SUB_R8 SJM_BINOP(double, -);
++#define SJOP_MINT_SUB1_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = LOCAL_VAR (SJ_IP (2), gint32) - 1; \
++	SJ_NEXT (3);
++#define SJOP_MINT_SUB1_I8 \
++	LOCAL_VAR (SJ_IP (1), gint64) = LOCAL_VAR (SJ_IP (2), gint64) - 1; \
++	SJ_NEXT (3);
++#define SJOP_MINT_MUL_I4 SJM_BINOP(gint32, *);
++#define SJOP_MINT_MUL_I8 SJM_BINOP(gint64, *);
++#define SJOP_MINT_MUL_I4_IMM \
++	LOCAL_VAR (SJ_IP (1), gint32) = LOCAL_VAR (SJ_IP (2), gint32) * (gint16)SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_MUL_I8_IMM \
++	LOCAL_VAR (SJ_IP (1), gint64) = LOCAL_VAR (SJ_IP (2), gint64) * (gint16)SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_ADD_MUL_I4_IMM \
++	LOCAL_VAR (SJ_IP (1), gint32) = (LOCAL_VAR (SJ_IP (2), gint32) + (gint16)SJ_IP (3)) * (gint16)SJ_IP (4); \
++	SJ_NEXT (5);
++#define SJOP_MINT_ADD_MUL_I8_IMM \
++	LOCAL_VAR (SJ_IP (1), gint64) = (LOCAL_VAR (SJ_IP (2), gint64) + (gint16)SJ_IP (3)) * (gint16)SJ_IP (4); \
++	SJ_NEXT (5);
++#define SJOP_MINT_MUL_R4 SJM_BINOP(float, *);
++#define SJOP_MINT_MUL_R8 SJM_BINOP(double, *);
++#define SJOP_MINT_DIV_I4 \
++	{ \
++	gint32 i1 = LOCAL_VAR (SJ_IP (2), gint32); \
++	gint32 i2 = LOCAL_VAR (SJ_IP (3), gint32); \
++	if (i2 == 0) \
++	SJ_THROW_DIVIDE_BY_ZERO (); \
++	if (i2 == (-1) && i1 == G_MININT32) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = i1 / i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_DIV_I8 \
++	{ \
++	gint64 l1 = LOCAL_VAR (SJ_IP (2), gint64); \
++	gint64 l2 = LOCAL_VAR (SJ_IP (3), gint64); \
++	if (l2 == 0) \
++	SJ_THROW_DIVIDE_BY_ZERO (); \
++	if (l2 == (-1) && l1 == G_MININT64) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint64) = l1 / l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_DIV_R4 SJM_BINOP(float, /);
++#define SJOP_MINT_DIV_R8 SJM_BINOP(double, /);
++#define SJOP_MINT_DIV_UN_I4 \
++	{ \
++	guint32 i2 = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (i2 == 0) \
++	SJ_THROW_DIVIDE_BY_ZERO (); \
++	LOCAL_VAR (SJ_IP (1), guint32) = LOCAL_VAR (SJ_IP (2), guint32) / i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_DIV_UN_I8 \
++	{ \
++	guint64 l2 = LOCAL_VAR (SJ_IP (3), guint64); \
++	if (l2 == 0) \
++	SJ_THROW_DIVIDE_BY_ZERO (); \
++	LOCAL_VAR (SJ_IP (1), guint64) = LOCAL_VAR (SJ_IP (2), guint64) / l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_REM_I4 \
++	{ \
++	gint32 i1 = LOCAL_VAR (SJ_IP (2), gint32); \
++	gint32 i2 = LOCAL_VAR (SJ_IP (3), gint32); \
++	if (i2 == 0) \
++	SJ_THROW_DIVIDE_BY_ZERO (); \
++	if (i2 == (-1) && i1 == G_MININT32) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = i1 % i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_REM_I8 \
++	{ \
++	gint64 l1 = LOCAL_VAR (SJ_IP (2), gint64); \
++	gint64 l2 = LOCAL_VAR (SJ_IP (3), gint64); \
++	if (l2 == 0) \
++	SJ_THROW_DIVIDE_BY_ZERO (); \
++	if (l2 == (-1) && l1 == G_MININT64) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint64) = l1 % l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_REM_R4 \
++	LOCAL_VAR (SJ_IP (1), float) = fmodf (LOCAL_VAR (SJ_IP (2), float), LOCAL_VAR (SJ_IP (3), float)); \
++	SJ_NEXT (4);
++#define SJOP_MINT_REM_R8 \
++	LOCAL_VAR (SJ_IP (1), double) = fmod (LOCAL_VAR (SJ_IP (2), double), LOCAL_VAR (SJ_IP (3), double)); \
++	SJ_NEXT (4);
++#define SJOP_MINT_REM_UN_I4 \
++	{ \
++	guint32 i2 = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (i2 == 0) \
++	SJ_THROW_DIVIDE_BY_ZERO (); \
++	LOCAL_VAR (SJ_IP (1), guint32) = LOCAL_VAR (SJ_IP (2), guint32) % i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_REM_UN_I8 \
++	{ \
++	guint64 l2 = LOCAL_VAR (SJ_IP (3), guint64); \
++	if (l2 == 0) \
++	SJ_THROW_DIVIDE_BY_ZERO (); \
++	LOCAL_VAR (SJ_IP (1), guint64) = LOCAL_VAR (SJ_IP (2), guint64) % l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_AND_I4 SJM_BINOP(gint32, &);
++#define SJOP_MINT_AND_I8 SJM_BINOP(gint64, &);
++#define SJOP_MINT_OR_I4 SJM_BINOP(gint32, |);
++#define SJOP_MINT_OR_I8 SJM_BINOP(gint64, |);
++#define SJOP_MINT_XOR_I4 SJM_BINOP(gint32, ^);
++#define SJOP_MINT_XOR_I8 SJM_BINOP(gint64, ^);
++#define SJOP_MINT_SHL_I4 SJM_SHIFTOP(gint32, <<);
++#define SJOP_MINT_SHL_I8 SJM_SHIFTOP(gint64, <<);
++#define SJOP_MINT_SHR_I4 SJM_SHIFTOP(gint32, >>);
++#define SJOP_MINT_SHR_I8 SJM_SHIFTOP(gint64, >>);
++#define SJOP_MINT_SHR_UN_I4 SJM_SHIFTOP(guint32, >>);
++#define SJOP_MINT_SHR_UN_I8 SJM_SHIFTOP(guint64, >>);
++#define SJOP_MINT_SHL_I4_IMM \
++	LOCAL_VAR (SJ_IP (1), gint32) = LOCAL_VAR (SJ_IP (2), gint32) << SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_SHL_I8_IMM \
++	LOCAL_VAR (SJ_IP (1), gint64) = LOCAL_VAR (SJ_IP (2), gint64) << SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_SHR_I4_IMM \
++	LOCAL_VAR (SJ_IP (1), gint32) = LOCAL_VAR (SJ_IP (2), gint32) >> SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_SHR_I8_IMM \
++	LOCAL_VAR (SJ_IP (1), gint64) = LOCAL_VAR (SJ_IP (2), gint64) >> SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_SHR_UN_I4_IMM \
++	LOCAL_VAR (SJ_IP (1), guint32) = LOCAL_VAR (SJ_IP (2), guint32) >> SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_SHR_UN_I8_IMM \
++	LOCAL_VAR (SJ_IP (1), guint64) = LOCAL_VAR (SJ_IP (2), guint64) >> SJ_IP (3); \
++	SJ_NEXT (4);
++#define SJOP_MINT_NEG_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = - LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_NEG_I8 \
++	LOCAL_VAR (SJ_IP (1), gint64) = - LOCAL_VAR (SJ_IP (2), gint64); \
++	SJ_NEXT (3);
++#define SJOP_MINT_NEG_R4 \
++	LOCAL_VAR (SJ_IP (1), float) = - LOCAL_VAR (SJ_IP (2), float); \
++	SJ_NEXT (3);
++#define SJOP_MINT_NEG_R8 \
++	LOCAL_VAR (SJ_IP (1), double) = - LOCAL_VAR (SJ_IP (2), double); \
++	SJ_NEXT (3);
++#define SJOP_MINT_NOT_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = ~ LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_NOT_I8 \
++	LOCAL_VAR (SJ_IP (1), gint64) = ~ LOCAL_VAR (SJ_IP (2), gint64); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I1_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint8)LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I1_I8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint8)LOCAL_VAR (SJ_IP (2), gint64); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I1_R4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint8) (gint32) LOCAL_VAR (SJ_IP (2), float); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I1_R8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint8) (gint32) LOCAL_VAR (SJ_IP (2), double); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_U1_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint8) LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_U1_I8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint8) LOCAL_VAR (SJ_IP (2), gint64); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_U1_R4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint8) (guint32) LOCAL_VAR (SJ_IP (2), float); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_U1_R8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint8) (guint32) LOCAL_VAR (SJ_IP (2), double); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I2_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16) LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I2_I8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16) LOCAL_VAR (SJ_IP (2), gint64); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I2_R4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16) (gint32) LOCAL_VAR (SJ_IP (2), float); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I2_R8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16) (gint32) LOCAL_VAR (SJ_IP (2), double); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_U2_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint16) LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_U2_I8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint16) LOCAL_VAR (SJ_IP (2), gint64); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_U2_R4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint16) (guint32) LOCAL_VAR (SJ_IP (2), float); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_U2_R8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint16) (guint32) LOCAL_VAR (SJ_IP (2), double); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I4_R4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint32) LOCAL_VAR (SJ_IP (2), float); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I4_R8 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint32) LOCAL_VAR (SJ_IP (2), double); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I8_I4 \
++	LOCAL_VAR (SJ_IP (1), gint64) = LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I8_U4 \
++	LOCAL_VAR (SJ_IP (1), gint64) = (guint32) LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I8_R4 \
++	LOCAL_VAR (SJ_IP (1), gint64) = (gint64) LOCAL_VAR (SJ_IP (2), float); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_I8_R8 \
++	LOCAL_VAR (SJ_IP (1), gint64) = (gint64) LOCAL_VAR (SJ_IP (2), double); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_R4_I4 \
++	LOCAL_VAR (SJ_IP (1), float) = (float) LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_R4_I8 \
++	LOCAL_VAR (SJ_IP (1), float) = (float) LOCAL_VAR (SJ_IP (2), gint64); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_R4_R8 \
++	LOCAL_VAR (SJ_IP (1), float) = (float) LOCAL_VAR (SJ_IP (2), double); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_R8_I4 \
++	LOCAL_VAR (SJ_IP (1), double) = (double) LOCAL_VAR (SJ_IP (2), gint32); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_R8_I8 \
++	LOCAL_VAR (SJ_IP (1), double) = (double) LOCAL_VAR (SJ_IP (2), gint64); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CONV_R8_R4 \
++	LOCAL_VAR (SJ_IP (1), double) = (double) LOCAL_VAR (SJ_IP (2), float); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CEQ_I4 SJM_RELOP(gint32, ==);
++#define SJOP_MINT_CEQ0_I4 \
++	LOCAL_VAR (SJ_IP (1), gint32) = (LOCAL_VAR (SJ_IP (2), gint32) == 0); \
++	SJ_NEXT (3);
++#define SJOP_MINT_CEQ_I8 SJM_RELOP(gint64, ==);
++#define SJOP_MINT_CEQ_R4 SJM_RELOP_FP(float, ==, 0);
++#define SJOP_MINT_CEQ_R8 SJM_RELOP_FP(double, ==, 0);
++#define SJOP_MINT_CNE_I4 SJM_RELOP(gint32, !=);
++#define SJOP_MINT_CNE_I8 SJM_RELOP(gint64, !=);
++#define SJOP_MINT_CNE_R4 SJM_RELOP_FP(float, !=, 1);
++#define SJOP_MINT_CNE_R8 SJM_RELOP_FP(double, !=, 1);
++#define SJOP_MINT_CGT_I4 SJM_RELOP(gint32, >);
++#define SJOP_MINT_CGT_I8 SJM_RELOP(gint64, >);
++#define SJOP_MINT_CGT_R4 SJM_RELOP_FP(float, >, 0);
++#define SJOP_MINT_CGT_R8 SJM_RELOP_FP(double, >, 0);
++#define SJOP_MINT_CGE_I4 SJM_RELOP(gint32, >=);
++#define SJOP_MINT_CGE_I8 SJM_RELOP(gint64, >=);
++#define SJOP_MINT_CGE_R4 SJM_RELOP_FP(float, >=, 0);
++#define SJOP_MINT_CGE_R8 SJM_RELOP_FP(double, >=, 0);
++#define SJOP_MINT_CGE_UN_I4 SJM_RELOP_CAST(guint32, >=);
++#define SJOP_MINT_CGE_UN_I8 SJM_RELOP_CAST(guint64, >=);
++#define SJOP_MINT_CGT_UN_I4 SJM_RELOP_CAST(guint32, >);
++#define SJOP_MINT_CGT_UN_I8 SJM_RELOP_CAST(guint64, >);
++#define SJOP_MINT_CGT_UN_R4 SJM_RELOP_FP(float, >, 1);
++#define SJOP_MINT_CGT_UN_R8 SJM_RELOP_FP(double, >, 1);
++#define SJOP_MINT_CLT_I4 SJM_RELOP(gint32, <);
++#define SJOP_MINT_CLT_I8 SJM_RELOP(gint64, <);
++#define SJOP_MINT_CLT_R4 SJM_RELOP_FP(float, <, 0);
++#define SJOP_MINT_CLT_R8 SJM_RELOP_FP(double, <, 0);
++#define SJOP_MINT_CLT_UN_I4 SJM_RELOP_CAST(guint32, <);
++#define SJOP_MINT_CLT_UN_I8 SJM_RELOP_CAST(guint64, <);
++#define SJOP_MINT_CLT_UN_R4 SJM_RELOP_FP(float, <, 1);
++#define SJOP_MINT_CLT_UN_R8 SJM_RELOP_FP(double, <, 1);
++#define SJOP_MINT_CLE_I4 SJM_RELOP(gint32, <=);
++#define SJOP_MINT_CLE_I8 SJM_RELOP(gint64, <=);
++#define SJOP_MINT_CLE_UN_I4 SJM_RELOP_CAST(guint32, <=);
++#define SJOP_MINT_CLE_UN_I8 SJM_RELOP_CAST(guint64, <=);
++#define SJOP_MINT_CLE_R4 SJM_RELOP_FP(float, <=, 0);
++#define SJOP_MINT_CLE_R8 SJM_RELOP_FP(double, <=, 0);
++#define SJOP_MINT_BR_S \
++	{ \
++	short br_offset = (short) SJ_IP (1); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SJ_BRANCH (br_offset); \
++	}
++#define SJOP_MINT_BR \
++	{ \
++	gint32 br_offset = (gint32) SJ_IP32 (1); \
++	BACK_BRANCH_PROFILE (br_offset); \
++	SJ_BRANCH (br_offset); \
++	}
++#define SJOP_MINT_BRFALSE_I4_S SJM_ZEROP_S(gint32, ==);
++#define SJOP_MINT_BRFALSE_I8_S SJM_ZEROP_S(gint64, ==);
++#define SJOP_MINT_BRFALSE_I4 SJM_ZEROP(gint32, ==);
++#define SJOP_MINT_BRFALSE_I8 SJM_ZEROP(gint64, ==);
++#define SJOP_MINT_BRTRUE_I4_S SJM_ZEROP_S(gint32, !=);
++#define SJOP_MINT_BRTRUE_I8_S SJM_ZEROP_S(gint64, !=);
++#define SJOP_MINT_BRTRUE_I4 SJM_ZEROP(gint32, !=);
++#define SJOP_MINT_BRTRUE_I8 SJM_ZEROP(gint64, !=);
++#define SJOP_MINT_BRFALSE_I4_SP SJM_ZEROP_SP(gint32, ==);
++#define SJOP_MINT_BRFALSE_I8_SP SJM_ZEROP_SP(gint64, ==);
++#define SJOP_MINT_BRTRUE_I4_SP SJM_ZEROP_SP(gint32, !=);
++#define SJOP_MINT_BRTRUE_I8_SP SJM_ZEROP_SP(gint64, !=);
++#define SJOP_MINT_BEQ_I4_S SJM_BRELOP_S(gint32, ==)
++#define SJOP_MINT_BEQ_I8_S SJM_BRELOP_S(gint64, ==)
++#define SJOP_MINT_BEQ_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(!isunordered (f1, f2) && f1 == f2) \
++	}
++#define SJOP_MINT_BEQ_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(!mono_isunordered (d1, d2) && d1 == d2) \
++	}
++#define SJOP_MINT_BEQ_I4 SJM_BRELOP(gint32, ==)
++#define SJOP_MINT_BEQ_I8 SJM_BRELOP(gint64, ==)
++#define SJOP_MINT_BEQ_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(!isunordered (f1, f2) && f1 == f2) \
++	}
++#define SJOP_MINT_BEQ_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(!mono_isunordered (d1, d2) && d1 == d2) \
++	}
++#define SJOP_MINT_BGE_I4_S SJM_BRELOP_S(gint32, >=)
++#define SJOP_MINT_BGE_I8_S SJM_BRELOP_S(gint64, >=)
++#define SJOP_MINT_BGE_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(!isunordered (f1, f2) && f1 >= f2) \
++	}
++#define SJOP_MINT_BGE_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(!mono_isunordered (d1, d2) && d1 >= d2) \
++	}
++#define SJOP_MINT_BGE_I4 SJM_BRELOP(gint32, >=)
++#define SJOP_MINT_BGE_I8 SJM_BRELOP(gint64, >=)
++#define SJOP_MINT_BGE_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(!isunordered (f1, f2) && f1 >= f2) \
++	}
++#define SJOP_MINT_BGE_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(!mono_isunordered (d1, d2) && d1 >= d2) \
++	}
++#define SJOP_MINT_BGT_I4_S SJM_BRELOP_S(gint32, >)
++#define SJOP_MINT_BGT_I8_S SJM_BRELOP_S(gint64, >)
++#define SJOP_MINT_BGT_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(!isunordered (f1, f2) && f1 > f2) \
++	}
++#define SJOP_MINT_BGT_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(!mono_isunordered (d1, d2) && d1 > d2) \
++	}
++#define SJOP_MINT_BGT_I4 SJM_BRELOP(gint32, >)
++#define SJOP_MINT_BGT_I8 SJM_BRELOP(gint64, >)
++#define SJOP_MINT_BGT_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(!isunordered (f1, f2) && f1 > f2) \
++	}
++#define SJOP_MINT_BGT_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(!mono_isunordered (d1, d2) && d1 > d2) \
++	}
++#define SJOP_MINT_BLT_I4_S SJM_BRELOP_S(gint32, <)
++#define SJOP_MINT_BLT_I8_S SJM_BRELOP_S(gint64, <)
++#define SJOP_MINT_BLT_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(!isunordered (f1, f2) && f1 < f2) \
++	}
++#define SJOP_MINT_BLT_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(!mono_isunordered (d1, d2) && d1 < d2) \
++	}
++#define SJOP_MINT_BLT_I4 SJM_BRELOP(gint32, <)
++#define SJOP_MINT_BLT_I8 SJM_BRELOP(gint64, <)
++#define SJOP_MINT_BLT_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(!isunordered (f1, f2) && f1 < f2) \
++	}
++#define SJOP_MINT_BLT_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(!mono_isunordered (d1, d2) && d1 < d2) \
++	}
++#define SJOP_MINT_BLE_I4_S SJM_BRELOP_S(gint32, <=)
++#define SJOP_MINT_BLE_I8_S SJM_BRELOP_S(gint64, <=)
++#define SJOP_MINT_BLE_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(!isunordered (f1, f2) && f1 <= f2) \
++	}
++#define SJOP_MINT_BLE_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(!mono_isunordered (d1, d2) && d1 <= d2) \
++	}
++#define SJOP_MINT_BLE_I4 SJM_BRELOP(gint32, <=)
++#define SJOP_MINT_BLE_I8 SJM_BRELOP(gint64, <=)
++#define SJOP_MINT_BLE_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(!isunordered (f1, f2) && f1 <= f2) \
++	}
++#define SJOP_MINT_BLE_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(!mono_isunordered (d1, d2) && d1 <= d2) \
++	}
++#define SJOP_MINT_BNE_UN_I4_S SJM_BRELOP_S(gint32, !=)
++#define SJOP_MINT_BNE_UN_I8_S SJM_BRELOP_S(gint64, !=)
++#define SJOP_MINT_BNE_UN_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(isunordered (f1, f2) || f1 != f2) \
++	}
++#define SJOP_MINT_BNE_UN_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(mono_isunordered (d1, d2) || d1 != d2) \
++	}
++#define SJOP_MINT_BNE_UN_I4 SJM_BRELOP(gint32, !=)
++#define SJOP_MINT_BNE_UN_I8 SJM_BRELOP(gint64, !=)
++#define SJOP_MINT_BNE_UN_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(isunordered (f1, f2) || f1 != f2) \
++	}
++#define SJOP_MINT_BNE_UN_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(mono_isunordered (d1, d2) || d1 != d2) \
++	}
++#define SJOP_MINT_BGE_UN_I4_S SJM_BRELOP_S_CAST(guint32, >=);
++#define SJOP_MINT_BGE_UN_I8_S SJM_BRELOP_S_CAST(guint64, >=);
++#define SJOP_MINT_BGE_UN_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(isunordered (f1, f2) || f1 >= f2) \
++	}
++#define SJOP_MINT_BGE_UN_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(mono_isunordered (d1, d2) || d1 >= d2) \
++	}
++#define SJOP_MINT_BGE_UN_I4 SJM_BRELOP_CAST(guint32, >=);
++#define SJOP_MINT_BGE_UN_I8 SJM_BRELOP_CAST(guint64, >=);
++#define SJOP_MINT_BGE_UN_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(isunordered (f1, f2) || f1 >= f2) \
++	}
++#define SJOP_MINT_BGE_UN_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(mono_isunordered (d1, d2) || d1 >= d2) \
++	}
++#define SJOP_MINT_BGT_UN_I4_S SJM_BRELOP_S_CAST(guint32, >);
++#define SJOP_MINT_BGT_UN_I8_S SJM_BRELOP_S_CAST(guint64, >);
++#define SJOP_MINT_BGT_UN_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(isunordered (f1, f2) || f1 > f2) \
++	}
++#define SJOP_MINT_BGT_UN_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(mono_isunordered (d1, d2) || d1 > d2) \
++	}
++#define SJOP_MINT_BGT_UN_I4 SJM_BRELOP_CAST(guint32, >);
++#define SJOP_MINT_BGT_UN_I8 SJM_BRELOP_CAST(guint64, >);
++#define SJOP_MINT_BGT_UN_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(isunordered (f1, f2) || f1 > f2) \
++	}
++#define SJOP_MINT_BGT_UN_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(mono_isunordered (d1, d2) || d1 > d2) \
++	}
++#define SJOP_MINT_BLE_UN_I4_S SJM_BRELOP_S_CAST(guint32, <=);
++#define SJOP_MINT_BLE_UN_I8_S SJM_BRELOP_S_CAST(guint64, <=);
++#define SJOP_MINT_BLE_UN_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(isunordered (f1, f2) || f1 <= f2) \
++	}
++#define SJOP_MINT_BLE_UN_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(mono_isunordered (d1, d2) || d1 <= d2) \
++	}
++#define SJOP_MINT_BLE_UN_I4 SJM_BRELOP_CAST(guint32, <=);
++#define SJOP_MINT_BLE_UN_I8 SJM_BRELOP_CAST(guint64, <=);
++#define SJOP_MINT_BLE_UN_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(isunordered (f1, f2) || f1 <= f2) \
++	}
++#define SJOP_MINT_BLE_UN_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(mono_isunordered (d1, d2) || d1 <= d2) \
++	}
++#define SJOP_MINT_BLT_UN_I4_S SJM_BRELOP_S_CAST(guint32, <);
++#define SJOP_MINT_BLT_UN_I8_S SJM_BRELOP_S_CAST(guint64, <);
++#define SJOP_MINT_BLT_UN_R4_S \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR_S(isunordered (f1, f2) || f1 < f2) \
++	}
++#define SJOP_MINT_BLT_UN_R8_S \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR_S(mono_isunordered (d1, d2) || d1 < d2) \
++	}
++#define SJOP_MINT_BLT_UN_I4 SJM_BRELOP_CAST(guint32, <);
++#define SJOP_MINT_BLT_UN_I8 SJM_BRELOP_CAST(guint64, <);
++#define SJOP_MINT_BLT_UN_R4 \
++	{ \
++	float f1 = LOCAL_VAR (SJ_IP (1), float); \
++	float f2 = LOCAL_VAR (SJ_IP (2), float); \
++	SJM_CONDBR(isunordered (f1, f2) || f1 < f2) \
++	}
++#define SJOP_MINT_BLT_UN_R8 \
++	{ \
++	double d1 = LOCAL_VAR (SJ_IP (1), double); \
++	double d2 = LOCAL_VAR (SJ_IP (2), double); \
++	SJM_CONDBR(mono_isunordered (d1, d2) || d1 < d2) \
++	}
++#define SJOP_MINT_BEQ_I4_SP SJM_BRELOP_SP(gint32, ==);
++#define SJOP_MINT_BEQ_I8_SP SJM_BRELOP_SP(gint64, ==);
++#define SJOP_MINT_BGE_I4_SP SJM_BRELOP_SP(gint32, >=);
++#define SJOP_MINT_BGE_I8_SP SJM_BRELOP_SP(gint64, >=);
++#define SJOP_MINT_BGT_I4_SP SJM_BRELOP_SP(gint32, >);
++#define SJOP_MINT_BGT_I8_SP SJM_BRELOP_SP(gint64, >);
++#define SJOP_MINT_BLT_I4_SP SJM_BRELOP_SP(gint32, <);
++#define SJOP_MINT_BLT_I8_SP SJM_BRELOP_SP(gint64, <);
++#define SJOP_MINT_BLE_I4_SP SJM_BRELOP_SP(gint32, <=);
++#define SJOP_MINT_BLE_I8_SP SJM_BRELOP_SP(gint64, <=);
++#define SJOP_MINT_BNE_UN_I4_SP SJM_BRELOP_SP(guint32, !=);
++#define SJOP_MINT_BNE_UN_I8_SP SJM_BRELOP_SP(guint64, !=);
++#define SJOP_MINT_BGE_UN_I4_SP SJM_BRELOP_SP(guint32, >=);
++#define SJOP_MINT_BGE_UN_I8_SP SJM_BRELOP_SP(guint64, >=);
++#define SJOP_MINT_BGT_UN_I4_SP SJM_BRELOP_SP(guint32, >);
++#define SJOP_MINT_BGT_UN_I8_SP SJM_BRELOP_SP(guint64, >);
++#define SJOP_MINT_BLE_UN_I4_SP SJM_BRELOP_SP(guint32, <=);
++#define SJOP_MINT_BLE_UN_I8_SP SJM_BRELOP_SP(guint64, <=);
++#define SJOP_MINT_BLT_UN_I4_SP SJM_BRELOP_SP(guint32, <);
++#define SJOP_MINT_BLT_UN_I8_SP SJM_BRELOP_SP(guint64, <);
++#define SJOP_MINT_BEQ_I4_IMM_SP SJM_BRELOP_IMM_SP(gint32, ==);
++#define SJOP_MINT_BEQ_I8_IMM_SP SJM_BRELOP_IMM_SP(gint64, ==);
++#define SJOP_MINT_BGE_I4_IMM_SP SJM_BRELOP_IMM_SP(gint32, >=);
++#define SJOP_MINT_BGE_I8_IMM_SP SJM_BRELOP_IMM_SP(gint64, >=);
++#define SJOP_MINT_BGT_I4_IMM_SP SJM_BRELOP_IMM_SP(gint32, >);
++#define SJOP_MINT_BGT_I8_IMM_SP SJM_BRELOP_IMM_SP(gint64, >);
++#define SJOP_MINT_BLT_I4_IMM_SP SJM_BRELOP_IMM_SP(gint32, <);
++#define SJOP_MINT_BLT_I8_IMM_SP SJM_BRELOP_IMM_SP(gint64, <);
++#define SJOP_MINT_BLE_I4_IMM_SP SJM_BRELOP_IMM_SP(gint32, <=);
++#define SJOP_MINT_BLE_I8_IMM_SP SJM_BRELOP_IMM_SP(gint64, <=);
++#define SJOP_MINT_BNE_UN_I4_IMM_SP SJM_BRELOP_IMM_SP(guint32, !=);
++#define SJOP_MINT_BNE_UN_I8_IMM_SP SJM_BRELOP_IMM_SP(guint64, !=);
++#define SJOP_MINT_BGE_UN_I4_IMM_SP SJM_BRELOP_IMM_SP(guint32, >=);
++#define SJOP_MINT_BGE_UN_I8_IMM_SP SJM_BRELOP_IMM_SP(guint64, >=);
++#define SJOP_MINT_BGT_UN_I4_IMM_SP SJM_BRELOP_IMM_SP(guint32, >);
++#define SJOP_MINT_BGT_UN_I8_IMM_SP SJM_BRELOP_IMM_SP(guint64, >);
++#define SJOP_MINT_BLE_UN_I4_IMM_SP SJM_BRELOP_IMM_SP(guint32, <=);
++#define SJOP_MINT_BLE_UN_I8_IMM_SP SJM_BRELOP_IMM_SP(guint64, <=);
++#define SJOP_MINT_BLT_UN_I4_IMM_SP SJM_BRELOP_IMM_SP(guint32, <);
++#define SJOP_MINT_BLT_UN_I8_IMM_SP SJM_BRELOP_IMM_SP(guint64, <);
++#define SJOP_MINT_LDFLD_I1 SJM_LDFLD(gint32, gint8);
++#define SJOP_MINT_LDFLD_U1 SJM_LDFLD(gint32, guint8);
++#define SJOP_MINT_LDFLD_I2 SJM_LDFLD(gint32, gint16);
++#define SJOP_MINT_LDFLD_U2 SJM_LDFLD(gint32, guint16);
++#define SJOP_MINT_LDFLD_I4 SJM_LDFLD(gint32, gint32);
++#define SJOP_MINT_LDFLD_I8 SJM_LDFLD(gint64, gint64);
++#define SJOP_MINT_LDFLD_R4 SJM_LDFLD(float, float);
++#define SJOP_MINT_LDFLD_R8 SJM_LDFLD(double, double);
++#define SJOP_MINT_LDFLD_O SJM_LDFLD(gpointer, gpointer);
++#define SJOP_MINT_LDFLD_VT \
++	{ \
++	MonoObject *o = LOCAL_VAR (SJ_IP (2), MonoObject*); \
++	NULL_CHECK (o); \
++	memcpy (locals + SJ_IP (1), (char *)o + SJ_IP (3), SJ_IP (4)); \
++	SJ_NEXT (5); \
++	}
++#define SJOP_MINT_STFLD_I1 SJM_STFLD(gint32, gint8);
++#define SJOP_MINT_STFLD_U1 SJM_STFLD(gint32, guint8);
++#define SJOP_MINT_STFLD_I2 SJM_STFLD(gint32, gint16);
++#define SJOP_MINT_STFLD_U2 SJM_STFLD(gint32, guint16);
++#define SJOP_MINT_STFLD_I4 SJM_STFLD(gint32, gint32);
++#define SJOP_MINT_STFLD_I8 SJM_STFLD(gint64, gint64);
++#define SJOP_MINT_STFLD_R4 SJM_STFLD(float, float);
++#define SJOP_MINT_STFLD_R8 SJM_STFLD(double, double);
++#define SJOP_MINT_STFLD_O \
++	{ \
++	MonoObject *o = LOCAL_VAR (SJ_IP (1), MonoObject*); \
++	NULL_CHECK (o); \
++	mono_gc_wbarrier_set_field_internal (o, (char*)o + SJ_IP (3), LOCAL_VAR (SJ_IP (2), MonoObject*)); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_STFLD_VT_NOREF \
++	{ \
++	MonoObject *o = LOCAL_VAR (SJ_IP (1), MonoObject*); \
++	NULL_CHECK (o); \
++	memcpy ((char*)o + SJ_IP (3), locals + SJ_IP (2), SJ_IP (4)); \
++	SJ_NEXT (5); \
++	}
++#define SJOP_MINT_LDFLDA \
++	{ \
++	MonoObject *o = LOCAL_VAR (SJ_IP (2), MonoObject*); \
++	NULL_CHECK (o); \
++	LOCAL_VAR (SJ_IP (1), gpointer) = (char *)o + SJ_IP (3); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_LDFLDA_UNSAFE \
++	{ \
++	LOCAL_VAR (SJ_IP (1), gpointer) = (char*)LOCAL_VAR (SJ_IP (2), gpointer) + SJ_IP (3); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_CKNULL \
++	{ \
++	MonoObject *o = LOCAL_VAR (SJ_IP (2), MonoObject*); \
++	NULL_CHECK (o); \
++	LOCAL_VAR (SJ_IP (1), MonoObject*) = o; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_LDSFLD_I1 SJM_LDSFLD(gint32, gint8);
++#define SJOP_MINT_LDSFLD_U1 SJM_LDSFLD(gint32, guint8);
++#define SJOP_MINT_LDSFLD_I2 SJM_LDSFLD(gint32, gint16);
++#define SJOP_MINT_LDSFLD_U2 SJM_LDSFLD(gint32, guint16);
++#define SJOP_MINT_LDSFLD_I4 SJM_LDSFLD(gint32, gint32);
++#define SJOP_MINT_LDSFLD_I8 SJM_LDSFLD(gint64, gint64);
++#define SJOP_MINT_LDSFLD_R4 SJM_LDSFLD(float, float);
++#define SJOP_MINT_LDSFLD_R8 SJM_LDSFLD(double, double);
++#define SJOP_MINT_LDSFLD_O SJM_LDSFLD(gpointer, gpointer);
++#define SJOP_MINT_LDSFLDA \
++	{ \
++	MonoVTable *vtable = (MonoVTable*) SJ_DATA (2); \
++	INIT_VTABLE (vtable); \
++	LOCAL_VAR (SJ_IP (1), gpointer) = SJ_DATA (3); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_STSFLD_I1 SJM_STSFLD(gint32, gint8);
++#define SJOP_MINT_STSFLD_U1 SJM_STSFLD(gint32, guint8);
++#define SJOP_MINT_STSFLD_I2 SJM_STSFLD(gint32, gint16);
++#define SJOP_MINT_STSFLD_U2 SJM_STSFLD(gint32, guint16);
++#define SJOP_MINT_STSFLD_I4 SJM_STSFLD(gint32, gint32);
++#define SJOP_MINT_STSFLD_I8 SJM_STSFLD(gint64, gint64);
++#define SJOP_MINT_STSFLD_R4 SJM_STSFLD(float, float);
++#define SJOP_MINT_STSFLD_R8 SJM_STSFLD(double, double);
++#define SJOP_MINT_LDLEN \
++	{ \
++	MonoObject *o = LOCAL_VAR (SJ_IP (2), MonoObject*); \
++	NULL_CHECK (o); \
++	LOCAL_VAR (SJ_IP (1), mono_u) = mono_array_length_internal ((MonoArray *)o); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_LDELEM_I1 SJM_LDELEM(gint32, gint8);
++#define SJOP_MINT_LDELEM_U1 SJM_LDELEM(gint32, guint8);
++#define SJOP_MINT_LDELEM_I2 SJM_LDELEM(gint32, gint16);
++#define SJOP_MINT_LDELEM_U2 SJM_LDELEM(gint32, guint16);
++#define SJOP_MINT_LDELEM_I4 SJM_LDELEM(gint32, gint32);
++#define SJOP_MINT_LDELEM_U4 SJM_LDELEM(gint32, guint32);
++#define SJOP_MINT_LDELEM_I8 SJM_LDELEM(gint64, guint64);
++#define SJOP_MINT_LDELEM_R4 SJM_LDELEM(float, float);
++#define SJOP_MINT_LDELEM_R8 SJM_LDELEM(double, double);
++#define SJOP_MINT_LDELEM_REF SJM_LDELEM(gpointer, gpointer);
++#define SJOP_MINT_LDELEMA1 \
++	{ \
++	MonoArray *ao = LOCAL_VAR (SJ_IP (2), MonoArray*); \
++	NULL_CHECK (ao); \
++	guint32 index = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (index >= ao->max_length) \
++	SJ_THROW_INDEX_OUT_OF_RANGE (); \
++	guint16 size = SJ_IP (4); \
++	LOCAL_VAR (SJ_IP (1), gpointer) = mono_array_addr_with_size_fast (ao, size, index); \
++	SJ_NEXT (5); \
++	}
++#define SJOP_MINT_STELEM_I1 SJM_STELEM(gint32, gint8);
++#define SJOP_MINT_STELEM_U1 SJM_STELEM(gint32, guint8);
++#define SJOP_MINT_STELEM_I2 SJM_STELEM(gint32, gint16);
++#define SJOP_MINT_STELEM_U2 SJM_STELEM(gint32, guint16);
++#define SJOP_MINT_STELEM_I4 SJM_STELEM(gint32, gint32);
++#define SJOP_MINT_STELEM_I8 SJM_STELEM(gint64, gint64);
++#define SJOP_MINT_STELEM_R4 SJM_STELEM(float, float);
++#define SJOP_MINT_STELEM_R8 SJM_STELEM(double, double);
++#define SJOP_MINT_STELEM_VT_NOREF \
++	{ \
++	MonoArray *o = LOCAL_VAR (SJ_IP (1), MonoArray*); \
++	NULL_CHECK (o); \
++	guint32 aindex = LOCAL_VAR (SJ_IP (2), guint32); \
++	if (aindex >= mono_array_length_internal (o)) \
++	SJ_THROW_INDEX_OUT_OF_RANGE (); \
++	guint16 size = SJ_IP (5); \
++	char *dst_addr = mono_array_addr_with_size_fast ((MonoArray *) o, size, aindex); \
++	memcpy (dst_addr, locals + SJ_IP (3), size); \
++	SJ_NEXT (6); \
++	}
++#define SJOP_MINT_LDIND_I1 SJM_LDIND(int, gint8, FALSE);
++#define SJOP_MINT_LDIND_U1 SJM_LDIND(int, guint8, FALSE);
++#define SJOP_MINT_LDIND_I2 SJM_LDIND(int, gint16, FALSE);
++#define SJOP_MINT_LDIND_U2 SJM_LDIND(int, guint16, FALSE);
++#define SJOP_MINT_LDIND_I4 \
++	{ \
++	SJM_LDIND(int, gint32, FALSE); \
++	}
++#ifdef NO_UNALIGNED_ACCESS
++#define SJOP_MINT_LDIND_I8 SJM_LDIND(gint64, gint64, TRUE);
++#else
++#define SJOP_MINT_LDIND_I8 SJM_LDIND(gint64, gint64, FALSE);
++#endif
++#define SJOP_MINT_LDIND_R4 SJM_LDIND(float, gfloat, FALSE);
++#ifdef NO_UNALIGNED_ACCESS
++#define SJOP_MINT_LDIND_R8 SJM_LDIND(double, gdouble, TRUE);
++#else
++#define SJOP_MINT_LDIND_R8 SJM_LDIND(double, gdouble, FALSE);
++#endif
++#define SJOP_MINT_LDIND_OFFSET_I1 SJM_LDIND_OFFSET(int, gint8, FALSE);
++#define SJOP_MINT_LDIND_OFFSET_U1 SJM_LDIND_OFFSET(int, guint8, FALSE);
++#define SJOP_MINT_LDIND_OFFSET_I2 SJM_LDIND_OFFSET(int, gint16, FALSE);
++#define SJOP_MINT_LDIND_OFFSET_U2 SJM_LDIND_OFFSET(int, guint16, FALSE);
++#define SJOP_MINT_LDIND_OFFSET_I4 SJM_LDIND_OFFSET(int, gint32, FALSE);
++#ifdef NO_UNALIGNED_ACCESS
++#define SJOP_MINT_LDIND_OFFSET_I8 SJM_LDIND_OFFSET(gint64, gint64, TRUE);
++#else
++#define SJOP_MINT_LDIND_OFFSET_I8 SJM_LDIND_OFFSET(gint64, gint64, FALSE);
++#endif
++#define SJOP_MINT_LDIND_OFFSET_IMM_I1 SJM_LDIND_OFFSET_IMM(int, gint8, FALSE);
++#define SJOP_MINT_LDIND_OFFSET_IMM_U1 SJM_LDIND_OFFSET_IMM(int, guint8, FALSE);
++#define SJOP_MINT_LDIND_OFFSET_IMM_I2 SJM_LDIND_OFFSET_IMM(int, gint16, FALSE);
++#define SJOP_MINT_LDIND_OFFSET_IMM_U2 SJM_LDIND_OFFSET_IMM(int, guint16, FALSE);
++#define SJOP_MINT_LDIND_OFFSET_IMM_I4 SJM_LDIND_OFFSET_IMM(int, gint32, FALSE);
++#ifdef NO_UNALIGNED_ACCESS
++#define SJOP_MINT_LDIND_OFFSET_IMM_I8 SJM_LDIND_OFFSET_IMM(gint64, gint64, TRUE);
++#else
++#define SJOP_MINT_LDIND_OFFSET_IMM_I8 SJM_LDIND_OFFSET_IMM(gint64, gint64, FALSE);
++#endif
++#define SJOP_MINT_STIND_REF \
++	{ \
++	gpointer ptr = LOCAL_VAR (SJ_IP (1), gpointer); \
++	NULL_CHECK (ptr); \
++	mono_gc_wbarrier_generic_store_internal (ptr, LOCAL_VAR (SJ_IP (2), MonoObject*)); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_STIND_I1 SJM_STIND(gint8, FALSE);
++#define SJOP_MINT_STIND_I2 SJM_STIND(gint16, FALSE);
++#define SJOP_MINT_STIND_I4 SJM_STIND(gint32, FALSE);
++#ifdef NO_UNALIGNED_ACCESS
++#define SJOP_MINT_STIND_I8 SJM_STIND(gint64, TRUE);
++#else
++#define SJOP_MINT_STIND_I8 SJM_STIND(gint64, FALSE);
++#endif
++#define SJOP_MINT_STIND_R4 SJM_STIND(float, FALSE);
++#ifdef NO_UNALIGNED_ACCESS
++#define SJOP_MINT_STIND_R8 SJM_STIND(double, TRUE);
++#else
++#define SJOP_MINT_STIND_R8 SJM_STIND(double, FALSE);
++#endif
++#define SJOP_MINT_STIND_OFFSET_I1 SJM_STIND_OFFSET(gint8, FALSE);
++#define SJOP_MINT_STIND_OFFSET_I2 SJM_STIND_OFFSET(gint16, FALSE);
++#define SJOP_MINT_STIND_OFFSET_I4 SJM_STIND_OFFSET(gint32, FALSE);
++#ifdef NO_UNALIGNED_ACCESS
++#define SJOP_MINT_STIND_OFFSET_I8 SJM_STIND_OFFSET(gint64, TRUE);
++#else
++#define SJOP_MINT_STIND_OFFSET_I8 SJM_STIND_OFFSET(gint64, FALSE);
++#endif
++#define SJOP_MINT_STIND_OFFSET_IMM_I1 SJM_STIND_OFFSET_IMM(gint8, FALSE);
++#define SJOP_MINT_STIND_OFFSET_IMM_I2 SJM_STIND_OFFSET_IMM(gint16, FALSE);
++#define SJOP_MINT_STIND_OFFSET_IMM_I4 SJM_STIND_OFFSET_IMM(gint32, FALSE);
++#ifdef NO_UNALIGNED_ACCESS
++#define SJOP_MINT_STIND_OFFSET_IMM_I8 SJM_STIND_OFFSET_IMM(gint64, TRUE);
++#else
++#define SJOP_MINT_STIND_OFFSET_IMM_I8 SJM_STIND_OFFSET_IMM(gint64, FALSE);
++#endif
++#define SJOP_MINT_LDOBJ_VT \
++	{ \
++	guint16 size = SJ_IP (3); \
++	gpointer srcAddr = LOCAL_VAR (SJ_IP (2), gpointer); \
++	NULL_CHECK (srcAddr); \
++	memcpy (locals + SJ_IP (1), srcAddr, size); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_STOBJ_VT_NOREF \
++	{ \
++	memcpy (LOCAL_VAR (SJ_IP (1), gpointer), locals + SJ_IP (2), SJ_IP (3)); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_SAFEPOINT \
++	SAFEPOINT; \
++	SJ_NEXT (1);
++#define SJOP_MINT_INTRINS_SPAN_CTOR \
++	{ \
++	gpointer ptr = LOCAL_VAR (SJ_IP (2), gpointer); \
++	int len = LOCAL_VAR (SJ_IP (3), gint32); \
++	if (len < 0) \
++	SJ_THROW_ARGUMENT_OUT_OF_RANGE_LENGTH (); \
++	gpointer span = locals + SJ_IP (1); \
++	*(gpointer*)span = ptr; \
++	*(gint32*)((gpointer*)span + 1) = len; \
++	SJ_NEXT (4);; \
++	}
++#define SJOP_MINT_INTRINS_MEMORYMARSHAL_GETARRAYDATAREF \
++	{ \
++	MonoObject *o = LOCAL_VAR (SJ_IP (2), MonoObject*); \
++	NULL_CHECK (o); \
++	LOCAL_VAR (SJ_IP (1), gpointer) = (guint8*)o + MONO_STRUCT_OFFSET (MonoArray, vector); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_GETITEM_LOCALSPAN \
++	{ \
++	MonoSpanOfVoid *span = (MonoSpanOfVoid*)(locals + SJ_IP (2)); \
++	int index = LOCAL_VAR (SJ_IP (3), int); \
++	gint32 length = span->_length; \
++	if (index < 0 || index >= length) \
++	SJ_THROW_INDEX_OUT_OF_RANGE (); \
++	gsize element_size = (gsize)(gint16)SJ_IP (4); \
++	LOCAL_VAR (SJ_IP (1), gpointer) = (guint8*)span->_reference + index * element_size; \
++	SJ_NEXT (5); \
++	}
++#define SJOP_MINT_LDSTR \
++	LOCAL_VAR (SJ_IP (1), gpointer) = SJ_DATA (2); \
++	SJ_NEXT (3);
++#define SJOP_MINT_STRLEN \
++	{ \
++	MonoObject *o = LOCAL_VAR (SJ_IP (2), MonoObject*); \
++	NULL_CHECK (o); \
++	LOCAL_VAR (SJ_IP (1), gint32) = mono_string_length_internal ((MonoString*) o); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_GETCHR \
++	{ \
++	MonoString *s = LOCAL_VAR (SJ_IP (2), MonoString*); \
++	NULL_CHECK (s); \
++	int i32 = LOCAL_VAR (SJ_IP (3), int); \
++	if (i32 < 0 || i32 >= mono_string_length_internal (s)) \
++	SJ_THROW_INDEX_OUT_OF_RANGE (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = mono_string_chars_internal (s)[i32]; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_LDELEM_VT \
++	{ \
++	MonoArray *o = LOCAL_VAR (SJ_IP (2), MonoArray*); \
++	NULL_CHECK (o); \
++	mono_u aindex = LOCAL_VAR (SJ_IP (3), gint32); \
++	if (aindex >= mono_array_length_internal (o)) \
++	SJ_THROW_INDEX_OUT_OF_RANGE (); \
++	guint16 size = SJ_IP (4); \
++	char *src_addr = mono_array_addr_with_size_fast ((MonoArray *) o, size, aindex); \
++	memcpy (locals + SJ_IP (1), src_addr, size); \
++	SJ_NEXT (5); \
++	}
++#define SJOP_MINT_NEWOBJ_VT_INLINED \
++	{ \
++	guint16 ret_size = SJ_IP (3); \
++	gpointer this_vt = locals + SJ_IP (2); \
++	memset (this_vt, 0, ret_size); \
++	LOCAL_VAR (SJ_IP (1), gpointer) = this_vt; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_INITBLK \
++	{ \
++	gpointer dest = LOCAL_VAR (SJ_IP (1), gpointer); \
++	guint32 size = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (size) \
++	NULL_CHECK (dest); \
++	memset (dest, LOCAL_VAR (SJ_IP (2), gint32), size); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_CPBLK \
++	{ \
++	gpointer dest = LOCAL_VAR (SJ_IP (1), gpointer); \
++	gpointer src = LOCAL_VAR (SJ_IP (2), gpointer); \
++	guint32 size = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (size && (!dest || !src)) \
++	SJ_THROW_NULL_REFERENCE (); \
++	else \
++	memcpy (dest, src, size); \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_CONV_OVF_I4_U4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < 0) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I4_I8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < G_MININT32 || val > G_MAXINT32) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint32) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I4_U8 \
++	{ \
++	guint64 val = LOCAL_VAR (SJ_IP (2), guint64); \
++	if (val > G_MAXINT32) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint32) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I4_R4 \
++	{ \
++	float val = LOCAL_VAR (SJ_IP (2), float); \
++	double val_r8 = (double)val; \
++	if (val_r8 > ((double)G_MININT32 - 1) && val_r8 < ((double)G_MAXINT32 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint32) val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I4_R8 \
++	{ \
++	double val = LOCAL_VAR (SJ_IP (2), double); \
++	if (val > ((double)G_MININT32 - 1) && val < ((double)G_MAXINT32 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint32) val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U4_I4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < 0) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U4_I8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < 0 || val > G_MAXUINT32) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint32) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U4_R4 \
++	{ \
++	float val = LOCAL_VAR (SJ_IP (2), float); \
++	double val_r8 = val; \
++	if (val_r8 > -1.0 && val_r8 < ((double)G_MAXUINT32 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint32)val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U4_R8 \
++	{ \
++	double val = LOCAL_VAR (SJ_IP (2), double); \
++	if (val > -1.0 && val < ((double)G_MAXUINT32 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint32)val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I2_I4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < G_MININT16 || val > G_MAXINT16) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16)val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I2_U4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < 0 || val > G_MAXINT16) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16)val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I2_I8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < G_MININT16 || val > G_MAXINT16) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I2_U8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < 0 || val > G_MAXINT16) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I2_R4 \
++	{ \
++	float val = LOCAL_VAR (SJ_IP (2), float); \
++	if (val > (G_MININT16 - 1) && val < (G_MAXINT16 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16) val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I2_R8 \
++	{ \
++	double val = LOCAL_VAR (SJ_IP (2), double); \
++	if (val > (G_MININT16 - 1) && val < (G_MAXINT16 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint16) val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U2_I4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < 0 || val > G_MAXUINT16) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U2_I8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < 0 || val > G_MAXUINT16) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint16) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U2_R4 \
++	{ \
++	float val = LOCAL_VAR (SJ_IP (2), float); \
++	if (val > -1.0f && val < (G_MAXUINT16 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint16) val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U2_R8 \
++	{ \
++	double val = LOCAL_VAR (SJ_IP (2), double); \
++	if (val > -1.0 && val < (G_MAXUINT16 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint16) val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I1_I4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < G_MININT8 || val > G_MAXINT8) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I1_U4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < 0 || val > G_MAXINT8) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I1_I8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < G_MININT8 || val > G_MAXINT8) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint8) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I1_U8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < 0 || val > G_MAXINT8) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint8) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I1_R4 \
++	{ \
++	float val = LOCAL_VAR (SJ_IP (2), float); \
++	if (val > (G_MININT8 - 1) && val < (G_MAXINT8 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint8) val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I1_R8 \
++	{ \
++	double val = LOCAL_VAR (SJ_IP (2), double); \
++	if (val > (G_MININT8 - 1) && val < (G_MAXINT8 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (gint8) val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U1_I4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < 0 || val > G_MAXUINT8) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U1_I8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < 0 || val > G_MAXUINT8) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint8) val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U1_R4 \
++	{ \
++	float val = LOCAL_VAR (SJ_IP (2), float); \
++	if (val > -1.0f && val < (G_MAXUINT8 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint8)val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U1_R8 \
++	{ \
++	double val = LOCAL_VAR (SJ_IP (2), double); \
++	if (val > -1.0 && val < (G_MAXUINT8 + 1)) \
++	LOCAL_VAR (SJ_IP (1), gint32) = (guint8)val; \
++	else \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U8_I4 \
++	{ \
++	gint32 val = LOCAL_VAR (SJ_IP (2), gint32); \
++	if (val < 0) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), guint64) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U8_I8 \
++	{ \
++	gint64 val = LOCAL_VAR (SJ_IP (2), gint64); \
++	if (val < 0) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), guint64) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I8_U8 \
++	{ \
++	guint64 val = LOCAL_VAR (SJ_IP (2), guint64); \
++	if (val > G_MAXINT64) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint64) = val; \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U8_R4 \
++	{ \
++	float val = LOCAL_VAR (SJ_IP (2), float); \
++	if (!mono_try_trunc_u64 (val, (guint64*)(locals + SJ_IP (1)))) \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_U8_R8 \
++	{ \
++	double val = LOCAL_VAR (SJ_IP (2), double); \
++	if (!mono_try_trunc_u64 (val, (guint64*)(locals + SJ_IP (1)))) \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I8_R4 \
++	{ \
++	float val = LOCAL_VAR (SJ_IP (2), float); \
++	if (!mono_try_trunc_i64 (val, (gint64*)(locals + SJ_IP (1)))) \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_CONV_OVF_I8_R8 \
++	{ \
++	double val = LOCAL_VAR (SJ_IP (2), double); \
++	if (!mono_try_trunc_i64 (val, (gint64*)(locals + SJ_IP (1)))) \
++	SJ_THROW_OVERFLOW (); \
++	SJ_NEXT (3); \
++	}
++#define SJOP_MINT_ADD_OVF_I4 \
++	{ \
++	gint32 i1 = LOCAL_VAR (SJ_IP (2), gint32); \
++	gint32 i2 = LOCAL_VAR (SJ_IP (3), gint32); \
++	if (SJM_CHECK_ADD_OVERFLOW (i1, i2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = i1 + i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_ADD_OVF_I8 \
++	{ \
++	gint64 l1 = LOCAL_VAR (SJ_IP (2), gint64); \
++	gint64 l2 = LOCAL_VAR (SJ_IP (3), gint64); \
++	if (SJM_CHECK_ADD_OVERFLOW64 (l1, l2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint64) = l1 + l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_ADD_OVF_UN_I4 \
++	{ \
++	guint32 i1 = LOCAL_VAR (SJ_IP (2), guint32); \
++	guint32 i2 = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (SJM_CHECK_ADD_OVERFLOW_UN (i1, i2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), guint32) = i1 + i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_ADD_OVF_UN_I8 \
++	{ \
++	guint64 l1 = LOCAL_VAR (SJ_IP (2), guint64); \
++	guint64 l2 = LOCAL_VAR (SJ_IP (3), guint64); \
++	if (SJM_CHECK_ADD_OVERFLOW64_UN (l1, l2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), guint64) = l1 + l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_MUL_OVF_I4 \
++	{ \
++	gint32 i1 = LOCAL_VAR (SJ_IP (2), gint32); \
++	gint32 i2 = LOCAL_VAR (SJ_IP (3), gint32); \
++	if (SJM_CHECK_MUL_OVERFLOW (i1, i2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = i1 * i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_MUL_OVF_I8 \
++	{ \
++	gint64 l1 = LOCAL_VAR (SJ_IP (2), gint64); \
++	gint64 l2 = LOCAL_VAR (SJ_IP (3), gint64); \
++	if (SJM_CHECK_MUL_OVERFLOW64 (l1, l2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint64) = l1 * l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_MUL_OVF_UN_I4 \
++	{ \
++	guint32 i1 = LOCAL_VAR (SJ_IP (2), guint32); \
++	guint32 i2 = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (SJM_CHECK_MUL_OVERFLOW_UN (i1, i2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), guint32) = i1 * i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_MUL_OVF_UN_I8 \
++	{ \
++	guint64 l1 = LOCAL_VAR (SJ_IP (2), guint64); \
++	guint64 l2 = LOCAL_VAR (SJ_IP (3), guint64); \
++	if (SJM_CHECK_MUL_OVERFLOW64_UN (l1, l2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), guint64) = l1 * l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_SUB_OVF_I4 \
++	{ \
++	gint32 i1 = LOCAL_VAR (SJ_IP (2), gint32); \
++	gint32 i2 = LOCAL_VAR (SJ_IP (3), gint32); \
++	if (SJM_CHECK_SUB_OVERFLOW (i1, i2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint32) = i1 - i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_SUB_OVF_I8 \
++	{ \
++	gint64 l1 = LOCAL_VAR (SJ_IP (2), gint64); \
++	gint64 l2 = LOCAL_VAR (SJ_IP (3), gint64); \
++	if (SJM_CHECK_SUB_OVERFLOW64 (l1, l2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint64) = l1 - l2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_SUB_OVF_UN_I4 \
++	{ \
++	guint32 i1 = LOCAL_VAR (SJ_IP (2), guint32); \
++	guint32 i2 = LOCAL_VAR (SJ_IP (3), guint32); \
++	if (SJM_CHECK_SUB_OVERFLOW_UN (i1, i2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), guint32) = i1 - i2; \
++	SJ_NEXT (4); \
++	}
++#define SJOP_MINT_SUB_OVF_UN_I8 \
++	{ \
++	guint64 l1 = LOCAL_VAR (SJ_IP (2), guint64); \
++	guint64 l2 = LOCAL_VAR (SJ_IP (3), guint64); \
++	if (SJM_CHECK_SUB_OVERFLOW64_UN (l1, l2)) \
++	SJ_THROW_OVERFLOW (); \
++	LOCAL_VAR (SJ_IP (1), gint64) = l1 - l2; \
++	SJ_NEXT (4); \
++	}
++
++/* the list, in this order: the stencils, the trace compiler's table and the walker */
++#define SJ_OPS(X) \
++	X (MINT_MOV_4) \
++	X (MINT_MOV_8) \
++	X (MINT_MOV_1) \
++	X (MINT_MOV_2) \
++	X (MINT_MOV_I4_I1) \
++	X (MINT_MOV_I4_U1) \
++	X (MINT_MOV_I4_I2) \
++	X (MINT_MOV_I4_U2) \
++	X (MINT_MOV_8_2) \
++	X (MINT_MOV_8_3) \
++	X (MINT_MOV_8_4) \
++	X (MINT_MOV_VT) \
++	X (MINT_LDC_I4_M1) \
++	X (MINT_LDC_I4_0) \
++	X (MINT_LDC_I4_1) \
++	X (MINT_LDC_I4_2) \
++	X (MINT_LDC_I4_3) \
++	X (MINT_LDC_I4_4) \
++	X (MINT_LDC_I4_5) \
++	X (MINT_LDC_I4_6) \
++	X (MINT_LDC_I4_7) \
++	X (MINT_LDC_I4_8) \
++	X (MINT_LDC_I4_S) \
++	X (MINT_LDC_I4) \
++	X (MINT_LDC_I8_0) \
++	X (MINT_LDC_I8) \
++	X (MINT_LDC_I8_S) \
++	X (MINT_LDC_R4) \
++	X (MINT_LDC_R8) \
++	X (MINT_LDLOCA_S) \
++	X (MINT_INITLOCALS) \
++	X (MINT_ADD_I4) \
++	X (MINT_ADD_I8) \
++	X (MINT_ADD_R4) \
++	X (MINT_ADD_R8) \
++	X (MINT_ADD1_I4) \
++	X (MINT_ADD_I4_IMM) \
++	X (MINT_ADD1_I8) \
++	X (MINT_ADD_I8_IMM) \
++	X (MINT_SUB_I4) \
++	X (MINT_SUB_I8) \
++	X (MINT_SUB_R4) \
++	X (MINT_SUB_R8) \
++	X (MINT_SUB1_I4) \
++	X (MINT_SUB1_I8) \
++	X (MINT_MUL_I4) \
++	X (MINT_MUL_I8) \
++	X (MINT_MUL_I4_IMM) \
++	X (MINT_MUL_I8_IMM) \
++	X (MINT_ADD_MUL_I4_IMM) \
++	X (MINT_ADD_MUL_I8_IMM) \
++	X (MINT_MUL_R4) \
++	X (MINT_MUL_R8) \
++	X (MINT_DIV_I4) \
++	X (MINT_DIV_I8) \
++	X (MINT_DIV_R4) \
++	X (MINT_DIV_R8) \
++	X (MINT_DIV_UN_I4) \
++	X (MINT_DIV_UN_I8) \
++	X (MINT_REM_I4) \
++	X (MINT_REM_I8) \
++	X (MINT_REM_R4) \
++	X (MINT_REM_R8) \
++	X (MINT_REM_UN_I4) \
++	X (MINT_REM_UN_I8) \
++	X (MINT_AND_I4) \
++	X (MINT_AND_I8) \
++	X (MINT_OR_I4) \
++	X (MINT_OR_I8) \
++	X (MINT_XOR_I4) \
++	X (MINT_XOR_I8) \
++	X (MINT_SHL_I4) \
++	X (MINT_SHL_I8) \
++	X (MINT_SHR_I4) \
++	X (MINT_SHR_I8) \
++	X (MINT_SHR_UN_I4) \
++	X (MINT_SHR_UN_I8) \
++	X (MINT_SHL_I4_IMM) \
++	X (MINT_SHL_I8_IMM) \
++	X (MINT_SHR_I4_IMM) \
++	X (MINT_SHR_I8_IMM) \
++	X (MINT_SHR_UN_I4_IMM) \
++	X (MINT_SHR_UN_I8_IMM) \
++	X (MINT_NEG_I4) \
++	X (MINT_NEG_I8) \
++	X (MINT_NEG_R4) \
++	X (MINT_NEG_R8) \
++	X (MINT_NOT_I4) \
++	X (MINT_NOT_I8) \
++	X (MINT_CONV_I1_I4) \
++	X (MINT_CONV_I1_I8) \
++	X (MINT_CONV_I1_R4) \
++	X (MINT_CONV_I1_R8) \
++	X (MINT_CONV_U1_I4) \
++	X (MINT_CONV_U1_I8) \
++	X (MINT_CONV_U1_R4) \
++	X (MINT_CONV_U1_R8) \
++	X (MINT_CONV_I2_I4) \
++	X (MINT_CONV_I2_I8) \
++	X (MINT_CONV_I2_R4) \
++	X (MINT_CONV_I2_R8) \
++	X (MINT_CONV_U2_I4) \
++	X (MINT_CONV_U2_I8) \
++	X (MINT_CONV_U2_R4) \
++	X (MINT_CONV_U2_R8) \
++	X (MINT_CONV_I4_R4) \
++	X (MINT_CONV_I4_R8) \
++	X (MINT_CONV_I8_I4) \
++	X (MINT_CONV_I8_U4) \
++	X (MINT_CONV_I8_R4) \
++	X (MINT_CONV_I8_R8) \
++	X (MINT_CONV_R4_I4) \
++	X (MINT_CONV_R4_I8) \
++	X (MINT_CONV_R4_R8) \
++	X (MINT_CONV_R8_I4) \
++	X (MINT_CONV_R8_I8) \
++	X (MINT_CONV_R8_R4) \
++	X (MINT_CEQ_I4) \
++	X (MINT_CEQ0_I4) \
++	X (MINT_CEQ_I8) \
++	X (MINT_CEQ_R4) \
++	X (MINT_CEQ_R8) \
++	X (MINT_CNE_I4) \
++	X (MINT_CNE_I8) \
++	X (MINT_CNE_R4) \
++	X (MINT_CNE_R8) \
++	X (MINT_CGT_I4) \
++	X (MINT_CGT_I8) \
++	X (MINT_CGT_R4) \
++	X (MINT_CGT_R8) \
++	X (MINT_CGE_I4) \
++	X (MINT_CGE_I8) \
++	X (MINT_CGE_R4) \
++	X (MINT_CGE_R8) \
++	X (MINT_CGE_UN_I4) \
++	X (MINT_CGE_UN_I8) \
++	X (MINT_CGT_UN_I4) \
++	X (MINT_CGT_UN_I8) \
++	X (MINT_CGT_UN_R4) \
++	X (MINT_CGT_UN_R8) \
++	X (MINT_CLT_I4) \
++	X (MINT_CLT_I8) \
++	X (MINT_CLT_R4) \
++	X (MINT_CLT_R8) \
++	X (MINT_CLT_UN_I4) \
++	X (MINT_CLT_UN_I8) \
++	X (MINT_CLT_UN_R4) \
++	X (MINT_CLT_UN_R8) \
++	X (MINT_CLE_I4) \
++	X (MINT_CLE_I8) \
++	X (MINT_CLE_UN_I4) \
++	X (MINT_CLE_UN_I8) \
++	X (MINT_CLE_R4) \
++	X (MINT_CLE_R8) \
++	X (MINT_BR_S) \
++	X (MINT_BR) \
++	X (MINT_BRFALSE_I4_S) \
++	X (MINT_BRFALSE_I8_S) \
++	X (MINT_BRFALSE_I4) \
++	X (MINT_BRFALSE_I8) \
++	X (MINT_BRTRUE_I4_S) \
++	X (MINT_BRTRUE_I8_S) \
++	X (MINT_BRTRUE_I4) \
++	X (MINT_BRTRUE_I8) \
++	X (MINT_BRFALSE_I4_SP) \
++	X (MINT_BRFALSE_I8_SP) \
++	X (MINT_BRTRUE_I4_SP) \
++	X (MINT_BRTRUE_I8_SP) \
++	X (MINT_BEQ_I4_S) \
++	X (MINT_BEQ_I8_S) \
++	X (MINT_BEQ_R4_S) \
++	X (MINT_BEQ_R8_S) \
++	X (MINT_BEQ_I4) \
++	X (MINT_BEQ_I8) \
++	X (MINT_BEQ_R4) \
++	X (MINT_BEQ_R8) \
++	X (MINT_BGE_I4_S) \
++	X (MINT_BGE_I8_S) \
++	X (MINT_BGE_R4_S) \
++	X (MINT_BGE_R8_S) \
++	X (MINT_BGE_I4) \
++	X (MINT_BGE_I8) \
++	X (MINT_BGE_R4) \
++	X (MINT_BGE_R8) \
++	X (MINT_BGT_I4_S) \
++	X (MINT_BGT_I8_S) \
++	X (MINT_BGT_R4_S) \
++	X (MINT_BGT_R8_S) \
++	X (MINT_BGT_I4) \
++	X (MINT_BGT_I8) \
++	X (MINT_BGT_R4) \
++	X (MINT_BGT_R8) \
++	X (MINT_BLT_I4_S) \
++	X (MINT_BLT_I8_S) \
++	X (MINT_BLT_R4_S) \
++	X (MINT_BLT_R8_S) \
++	X (MINT_BLT_I4) \
++	X (MINT_BLT_I8) \
++	X (MINT_BLT_R4) \
++	X (MINT_BLT_R8) \
++	X (MINT_BLE_I4_S) \
++	X (MINT_BLE_I8_S) \
++	X (MINT_BLE_R4_S) \
++	X (MINT_BLE_R8_S) \
++	X (MINT_BLE_I4) \
++	X (MINT_BLE_I8) \
++	X (MINT_BLE_R4) \
++	X (MINT_BLE_R8) \
++	X (MINT_BNE_UN_I4_S) \
++	X (MINT_BNE_UN_I8_S) \
++	X (MINT_BNE_UN_R4_S) \
++	X (MINT_BNE_UN_R8_S) \
++	X (MINT_BNE_UN_I4) \
++	X (MINT_BNE_UN_I8) \
++	X (MINT_BNE_UN_R4) \
++	X (MINT_BNE_UN_R8) \
++	X (MINT_BGE_UN_I4_S) \
++	X (MINT_BGE_UN_I8_S) \
++	X (MINT_BGE_UN_R4_S) \
++	X (MINT_BGE_UN_R8_S) \
++	X (MINT_BGE_UN_I4) \
++	X (MINT_BGE_UN_I8) \
++	X (MINT_BGE_UN_R4) \
++	X (MINT_BGE_UN_R8) \
++	X (MINT_BGT_UN_I4_S) \
++	X (MINT_BGT_UN_I8_S) \
++	X (MINT_BGT_UN_R4_S) \
++	X (MINT_BGT_UN_R8_S) \
++	X (MINT_BGT_UN_I4) \
++	X (MINT_BGT_UN_I8) \
++	X (MINT_BGT_UN_R4) \
++	X (MINT_BGT_UN_R8) \
++	X (MINT_BLE_UN_I4_S) \
++	X (MINT_BLE_UN_I8_S) \
++	X (MINT_BLE_UN_R4_S) \
++	X (MINT_BLE_UN_R8_S) \
++	X (MINT_BLE_UN_I4) \
++	X (MINT_BLE_UN_I8) \
++	X (MINT_BLE_UN_R4) \
++	X (MINT_BLE_UN_R8) \
++	X (MINT_BLT_UN_I4_S) \
++	X (MINT_BLT_UN_I8_S) \
++	X (MINT_BLT_UN_R4_S) \
++	X (MINT_BLT_UN_R8_S) \
++	X (MINT_BLT_UN_I4) \
++	X (MINT_BLT_UN_I8) \
++	X (MINT_BLT_UN_R4) \
++	X (MINT_BLT_UN_R8) \
++	X (MINT_BEQ_I4_SP) \
++	X (MINT_BEQ_I8_SP) \
++	X (MINT_BGE_I4_SP) \
++	X (MINT_BGE_I8_SP) \
++	X (MINT_BGT_I4_SP) \
++	X (MINT_BGT_I8_SP) \
++	X (MINT_BLT_I4_SP) \
++	X (MINT_BLT_I8_SP) \
++	X (MINT_BLE_I4_SP) \
++	X (MINT_BLE_I8_SP) \
++	X (MINT_BNE_UN_I4_SP) \
++	X (MINT_BNE_UN_I8_SP) \
++	X (MINT_BGE_UN_I4_SP) \
++	X (MINT_BGE_UN_I8_SP) \
++	X (MINT_BGT_UN_I4_SP) \
++	X (MINT_BGT_UN_I8_SP) \
++	X (MINT_BLE_UN_I4_SP) \
++	X (MINT_BLE_UN_I8_SP) \
++	X (MINT_BLT_UN_I4_SP) \
++	X (MINT_BLT_UN_I8_SP) \
++	X (MINT_BEQ_I4_IMM_SP) \
++	X (MINT_BEQ_I8_IMM_SP) \
++	X (MINT_BGE_I4_IMM_SP) \
++	X (MINT_BGE_I8_IMM_SP) \
++	X (MINT_BGT_I4_IMM_SP) \
++	X (MINT_BGT_I8_IMM_SP) \
++	X (MINT_BLT_I4_IMM_SP) \
++	X (MINT_BLT_I8_IMM_SP) \
++	X (MINT_BLE_I4_IMM_SP) \
++	X (MINT_BLE_I8_IMM_SP) \
++	X (MINT_BNE_UN_I4_IMM_SP) \
++	X (MINT_BNE_UN_I8_IMM_SP) \
++	X (MINT_BGE_UN_I4_IMM_SP) \
++	X (MINT_BGE_UN_I8_IMM_SP) \
++	X (MINT_BGT_UN_I4_IMM_SP) \
++	X (MINT_BGT_UN_I8_IMM_SP) \
++	X (MINT_BLE_UN_I4_IMM_SP) \
++	X (MINT_BLE_UN_I8_IMM_SP) \
++	X (MINT_BLT_UN_I4_IMM_SP) \
++	X (MINT_BLT_UN_I8_IMM_SP) \
++	X (MINT_LDFLD_I1) \
++	X (MINT_LDFLD_U1) \
++	X (MINT_LDFLD_I2) \
++	X (MINT_LDFLD_U2) \
++	X (MINT_LDFLD_I4) \
++	X (MINT_LDFLD_I8) \
++	X (MINT_LDFLD_R4) \
++	X (MINT_LDFLD_R8) \
++	X (MINT_LDFLD_O) \
++	X (MINT_LDFLD_VT) \
++	X (MINT_STFLD_I1) \
++	X (MINT_STFLD_U1) \
++	X (MINT_STFLD_I2) \
++	X (MINT_STFLD_U2) \
++	X (MINT_STFLD_I4) \
++	X (MINT_STFLD_I8) \
++	X (MINT_STFLD_R4) \
++	X (MINT_STFLD_R8) \
++	X (MINT_STFLD_O) \
++	X (MINT_STFLD_VT_NOREF) \
++	X (MINT_LDFLDA) \
++	X (MINT_LDFLDA_UNSAFE) \
++	X (MINT_CKNULL) \
++	X (MINT_LDSFLD_I1) \
++	X (MINT_LDSFLD_U1) \
++	X (MINT_LDSFLD_I2) \
++	X (MINT_LDSFLD_U2) \
++	X (MINT_LDSFLD_I4) \
++	X (MINT_LDSFLD_I8) \
++	X (MINT_LDSFLD_R4) \
++	X (MINT_LDSFLD_R8) \
++	X (MINT_LDSFLD_O) \
++	X (MINT_LDSFLDA) \
++	X (MINT_STSFLD_I1) \
++	X (MINT_STSFLD_U1) \
++	X (MINT_STSFLD_I2) \
++	X (MINT_STSFLD_U2) \
++	X (MINT_STSFLD_I4) \
++	X (MINT_STSFLD_I8) \
++	X (MINT_STSFLD_R4) \
++	X (MINT_STSFLD_R8) \
++	X (MINT_LDLEN) \
++	X (MINT_LDELEM_I1) \
++	X (MINT_LDELEM_U1) \
++	X (MINT_LDELEM_I2) \
++	X (MINT_LDELEM_U2) \
++	X (MINT_LDELEM_I4) \
++	X (MINT_LDELEM_U4) \
++	X (MINT_LDELEM_I8) \
++	X (MINT_LDELEM_R4) \
++	X (MINT_LDELEM_R8) \
++	X (MINT_LDELEM_REF) \
++	X (MINT_LDELEMA1) \
++	X (MINT_STELEM_I1) \
++	X (MINT_STELEM_U1) \
++	X (MINT_STELEM_I2) \
++	X (MINT_STELEM_U2) \
++	X (MINT_STELEM_I4) \
++	X (MINT_STELEM_I8) \
++	X (MINT_STELEM_R4) \
++	X (MINT_STELEM_R8) \
++	X (MINT_STELEM_VT_NOREF) \
++	X (MINT_LDIND_I1) \
++	X (MINT_LDIND_U1) \
++	X (MINT_LDIND_I2) \
++	X (MINT_LDIND_U2) \
++	X (MINT_LDIND_I4) \
++	X (MINT_LDIND_I8) \
++	X (MINT_LDIND_R4) \
++	X (MINT_LDIND_R8) \
++	X (MINT_LDIND_OFFSET_I1) \
++	X (MINT_LDIND_OFFSET_U1) \
++	X (MINT_LDIND_OFFSET_I2) \
++	X (MINT_LDIND_OFFSET_U2) \
++	X (MINT_LDIND_OFFSET_I4) \
++	X (MINT_LDIND_OFFSET_I8) \
++	X (MINT_LDIND_OFFSET_IMM_I1) \
++	X (MINT_LDIND_OFFSET_IMM_U1) \
++	X (MINT_LDIND_OFFSET_IMM_I2) \
++	X (MINT_LDIND_OFFSET_IMM_U2) \
++	X (MINT_LDIND_OFFSET_IMM_I4) \
++	X (MINT_LDIND_OFFSET_IMM_I8) \
++	X (MINT_STIND_REF) \
++	X (MINT_STIND_I1) \
++	X (MINT_STIND_I2) \
++	X (MINT_STIND_I4) \
++	X (MINT_STIND_I8) \
++	X (MINT_STIND_R4) \
++	X (MINT_STIND_R8) \
++	X (MINT_STIND_OFFSET_I1) \
++	X (MINT_STIND_OFFSET_I2) \
++	X (MINT_STIND_OFFSET_I4) \
++	X (MINT_STIND_OFFSET_I8) \
++	X (MINT_STIND_OFFSET_IMM_I1) \
++	X (MINT_STIND_OFFSET_IMM_I2) \
++	X (MINT_STIND_OFFSET_IMM_I4) \
++	X (MINT_STIND_OFFSET_IMM_I8) \
++	X (MINT_LDOBJ_VT) \
++	X (MINT_STOBJ_VT_NOREF) \
++	X (MINT_SAFEPOINT) \
++	X (MINT_INTRINS_SPAN_CTOR) \
++	X (MINT_INTRINS_MEMORYMARSHAL_GETARRAYDATAREF) \
++	X (MINT_GETITEM_LOCALSPAN) \
++	X (MINT_LDSTR) \
++	X (MINT_STRLEN) \
++	X (MINT_GETCHR) \
++	X (MINT_LDELEM_VT) \
++	X (MINT_NEWOBJ_VT_INLINED) \
++	X (MINT_INITBLK) \
++	X (MINT_CPBLK) \
++	X (MINT_CONV_OVF_I4_U4) \
++	X (MINT_CONV_OVF_I4_I8) \
++	X (MINT_CONV_OVF_I4_U8) \
++	X (MINT_CONV_OVF_I4_R4) \
++	X (MINT_CONV_OVF_I4_R8) \
++	X (MINT_CONV_OVF_U4_I4) \
++	X (MINT_CONV_OVF_U4_I8) \
++	X (MINT_CONV_OVF_U4_R4) \
++	X (MINT_CONV_OVF_U4_R8) \
++	X (MINT_CONV_OVF_I2_I4) \
++	X (MINT_CONV_OVF_I2_U4) \
++	X (MINT_CONV_OVF_I2_I8) \
++	X (MINT_CONV_OVF_I2_U8) \
++	X (MINT_CONV_OVF_I2_R4) \
++	X (MINT_CONV_OVF_I2_R8) \
++	X (MINT_CONV_OVF_U2_I4) \
++	X (MINT_CONV_OVF_U2_I8) \
++	X (MINT_CONV_OVF_U2_R4) \
++	X (MINT_CONV_OVF_U2_R8) \
++	X (MINT_CONV_OVF_I1_I4) \
++	X (MINT_CONV_OVF_I1_U4) \
++	X (MINT_CONV_OVF_I1_I8) \
++	X (MINT_CONV_OVF_I1_U8) \
++	X (MINT_CONV_OVF_I1_R4) \
++	X (MINT_CONV_OVF_I1_R8) \
++	X (MINT_CONV_OVF_U1_I4) \
++	X (MINT_CONV_OVF_U1_I8) \
++	X (MINT_CONV_OVF_U1_R4) \
++	X (MINT_CONV_OVF_U1_R8) \
++	X (MINT_CONV_OVF_U8_I4) \
++	X (MINT_CONV_OVF_U8_I8) \
++	X (MINT_CONV_OVF_I8_U8) \
++	X (MINT_CONV_OVF_U8_R4) \
++	X (MINT_CONV_OVF_U8_R8) \
++	X (MINT_CONV_OVF_I8_R4) \
++	X (MINT_CONV_OVF_I8_R8) \
++	X (MINT_ADD_OVF_I4) \
++	X (MINT_ADD_OVF_I8) \
++	X (MINT_ADD_OVF_UN_I4) \
++	X (MINT_ADD_OVF_UN_I8) \
++	X (MINT_MUL_OVF_I4) \
++	X (MINT_MUL_OVF_I8) \
++	X (MINT_MUL_OVF_UN_I4) \
++	X (MINT_MUL_OVF_UN_I8) \
++	X (MINT_SUB_OVF_I4) \
++	X (MINT_SUB_OVF_I8) \
++	X (MINT_SUB_OVF_UN_I4) \
++	X (MINT_SUB_OVF_UN_I8) \
++	/* end */
++
++#endif /* __SHEPJIT_OPS_H__ */

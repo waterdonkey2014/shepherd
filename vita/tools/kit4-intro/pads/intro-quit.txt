@@ -1,0 +1,20 @@
+# polish round 1: pad-main.txt with the game's joystick semantics (the pad is a DualShock-4 joystick to Rewired):
+# menu/dialogue: cross; movement: the left stick (lup/ldown/lleft/lright); attack: square; dodge: circle; heavy attack: r (R1)
+# survey main run: menu -> new game -> quote -> intro, then move/attack/dodge loop
+1050:cross
+1400:cross
+1600:cross
+3100:cross
+3160:cross
+3220:cross
+3280:cross
+3340:cross
+# kit4 intro-plan: pause -> Main Menu (4 downs from Resume) -> confirm dialog: right (Accept), cross
+3500:start
+3600:down
+3650:down
+3700:down
+3750:down
+3850:cross
+3950:right
+4000:cross

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Kit #7 tests track (vita/notes/kit7-tests.md): the Mac-only test host. It references the engine (Debug build: the Mac tools are
+       compiled in; never an eboot), installs test hooks (the seeded PCT scheduler, icall mutations) and either forwards to the engine's own
+       Main ("boot ...") or runs the shared probe suites (vita/tests/probes, the same source the Unity oracle players compile) on Shepherd's
+       engine. Not part of any VPK, never built by vita/shepherd/build.sh. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable><ImplicitUsings>enable</ImplicitUsings><RootNamespace>Shepherd.TestHost</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;CS8632;MSB3277;CS1701;CS1702;CS0649;CS0169;CS0414</NoWarn><InvariantGlobalization>false</InvariantGlobalization>
+    <ServerGarbageCollector>false</ServerGarbageCollector>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../engine/Shepherd.Engine/Shepherd.Engine.csproj" />
+    <Reference Include="$(MSBuildThisFileDirectory)../../../runtime/Managed/UnityEngine.*.dll"><Private>false</Private></Reference>
+    <Compile Include="../probes/*.cs" />
+    <!-- the machine-drafted probes that passed the compile filter so far (vita/tests/drafted/filter.sh moves them in and out) -->
+    <Compile Include="../drafted/active/*.cs" />
+    <Reference Include="UnityEngine.UI"><HintPath>$(SHEPHERD_GAME_DATA)/Managed/UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

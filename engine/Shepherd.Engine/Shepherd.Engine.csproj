@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>disable</Nullable><ImplicitUsings>enable</ImplicitUsings><RootNamespace>Shepherd.Engine</RootNamespace>
+    <NoWarn>$(NoWarn);CS0618;CS8632;MSB3277;CS1701;CS1702</NoWarn><InvariantGlobalization>false</InvariantGlobalization>
+    <ServerGarbageCollector>false</ServerGarbageCollector><TieredPGO>true</TieredPGO>
+  </PropertyGroup>
+  <!-- Kit #5 review (vita/notes/kit5-boot.md "Review fixes"): the Vita eboot leaves out code only the Mac (or a diagnostic run) uses:
+       every byte of AOT code is eboot span, and the device's free user memory drops 1 MiB at a time with it. vita/shepherd/build.sh
+       builds with -p:ShepherdEboot=1 (SHEPHERD_ENGINE_TOOLS=1 keeps the code); the Mac build is unchanged. -->
+  <PropertyGroup Condition="'$(ShepherdEboot)' == '1'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_EBOOT</DefineConstants>
+  </PropertyGroup>
+  <!-- Kit #8 review fix (vita/notes/kit8-physics.md "Review fixes"): ShepherdPhysCode=0 (vita/shepherd/build.sh SHEPHERD_PHYS_CODE=0) = the
+       build switch back to kit #7's engine image: the physics runtime (Physics/, ~1.1 MiB of eboot AOT text) left out but the Derived
+       provider's contract (Physics/DerivedPhysics.cs), PhysicsOff/PhysOff.cs compiled in (the SHEPHERD_PHYS=none answers). Default: unchanged
+       (PhysicsOff/ never compiled). -->
+  <PropertyGroup Condition="'$(ShepherdPhysCode)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_NO_PHYS</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ShepherdPhysCode)' == '0'">
+    <Compile Remove="Physics/**" />
+    <Compile Include="Physics/DerivedPhysics.cs" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(ShepherdPhysCode)' != '0'">
+    <Compile Remove="PhysicsOff/**" />
+  </ItemGroup>
+  <!-- Device kit #8, track boot (vita/notes/kit8-boot.md): -p:ShepherdK8=0 (vita/shepherd/build.sh SHEPHERD_K8_ENGINE=0: the default of the
+       kit #7-style eboot apps) leaves the engine side of kit #8's boot rows out (Runtime/K8Video.cs real video, Runtime/K8Preload.cs the
+       idle-window preload, their backend / pack-reader hooks): kit #7's engine code, and so kit #7's eboot span (00097 / 00098 have 0.003-0.129
+       MiB of room before their next MiB step). The launcher apps and the Mac build keep it. -->
+  <PropertyGroup Condition="'$(ShepherdK8)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_NO_K8</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="$(MSBuildThisFileDirectory)../../runtime/Managed/UnityEngine.*.dll"><Private>false</Private></Reference>
+    <ProjectReference Include="../Shepherd.Hooks/Shepherd.Hooks.csproj" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="8.0.0" />
+    <ProjectReference Include="../Shepherd.Assets/Shepherd.Assets/Shepherd.Assets.csproj" />
+    <Reference Include="UnityEngine.UI"><HintPath>$(SHEPHERD_GAME_DATA)/Managed/UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <!-- V4 Vita profile: Shepherd.Audio.Fmod implements the FMOD P/Invokes (Rewriter pass 3) with FMOD's own types. Compile-time
+         only; at run time FMODUnity comes from runtime/ManagedVita (vita) or the game (Mac default), same identity. -->
+    <Reference Include="FMODUnity"><HintPath>$(SHEPHERD_GAME_DATA)/Managed/FMODUnity.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Derived code (ports of decompiled game / third-party code) is never compiled into Shepherd.Engine, which ships in every VPK:
+         it lives in the owner-local engine/Derived/Shepherd.Engine.Derived (git-ignored), loaded at run time from the owner's
+         managed folder (Runtime/VitaMemory.cs FebucciReplay). This guard keeps any engine/**/Derived/ file out of this assembly. -->
+    <Compile Remove="**/Derived/**" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- V4 part 2 GL backend: GLSL ES 1.00 shader bodies (Render/Shaders), embedded; SHEPHERD_GL_SHADERS=<dir> overrides at run time -->
+    <EmbeddedResource Include="Render/Shaders/*.vert;Render/Shaders/*.frag" LogicalName="Shepherd.Shaders.%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

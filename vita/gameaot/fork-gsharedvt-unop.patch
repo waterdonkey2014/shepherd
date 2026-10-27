@@ -1,0 +1,14 @@
+--- a/src/mono/mono/mini/method-to-ir.c
++++ b/src/mono/mono/mini/method-to-ir.c
+@@ -519,6 +519,11 @@
+ 		ins->sreg1 = sp [0]->dreg; \
+ 		type_from_op (cfg, ins, sp [0], NULL); \
+ 		CHECK_TYPE (ins); \
++		/* SHEPHERD (gameaot study): a unop on a source type with no mapping (e.g. conv.i8 of a T_GSHAREDVT value, \
++		   UnityEngine.CoreModule's UnsafeUtility.EnumEquals<T>) leaves the raw CEE opcode in the IR, which crashed \
++		   mono_local_cprop / asserted in mono_handle_global_vregs. Fail the method instead (gsharedvt: falls back to \
++		   instantiations, AOT: "Unable to compile"); valid IL never gets here. */ \
++		if (G_UNLIKELY ((ins)->opcode < MONO_CEE_LAST)) UNVERIFIED; \
+ 		(ins)->dreg = alloc_dreg ((cfg), (MonoStackType)(ins)->type); \
+ 		MONO_ADD_INS ((cfg)->cbb, (ins)); \
+ 		*sp++ = mono_decompose_opcode (cfg, ins); \

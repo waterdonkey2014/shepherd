@@ -1,0 +1,21 @@
+# A32-to-arm64 AOT text-size ratio per module, from the kit #6 game-AOT build's A32 objects ($SHEPHERD_WORK/kit6/kit-build/vb/
+# k6-gaot-play/work/aot/<M>.dll.o, arm-vita-eabi-size .text) against this stage's arm64 full-AOT images (jit-work/mac/aot-full/<M>.dll.dylib,
+# size -m __text). This sizes the DERIVED A32 projection of the arm64 JIT census (jitcensus.py): JIT code for the same methods, but JIT code
+# avoids the AOT GOT-load and class-init sequences these module texts carry, so the module ratio is the UPPER bound and the gain lane's
+# instruction-count ratio (1.23, jitstudy/gain.md section 4: 33 hot engine methods, insns x4) the LOWER bound. jitcensus.py default band: 1.23 / 1.4 / 1.6.
+module	a32_text	a32_compiled	arm64_text	arm64_compiled	ratio_text	ratio_per_method
+System.Private.CoreLib	26261984	55682	15974552	55895	1.644	1.650
+System.Linq	3974680	7410	2243104	7615	1.772	1.821
+System.Collections	1346600	2540	821400	2691	1.639	1.737
+System.Collections.Concurrent	1095976	2177	673960	2329	1.626	1.740
+System.Console	1166216	2525	726272	2679	1.606	1.704
+System.Memory	1321432	2156	793032	2306	1.666	1.782
+System.ObjectModel	122952	342	79680	342	1.543	1.543
+System.Runtime.InteropServices	809840	1679	500384	1830	1.618	1.764
+System.Threading	57472	204	36496	204	1.575	1.575
+Shepherd.Assets	2477240	4499	1542512	4652	1.606	1.661
+Shepherd.Hooks	12016	34	7176	34	1.674	1.674
+Microsoft.Bcl.AsyncInterfaces	3952	27	2000	27	1.976	1.976
+Shepherd.Engine	11736392	21334	7765080	22071	1.511	1.564
+# weighted (by arm64 text): ~1.60 whole-module; the big two (CoreLib 1.64, Engine 1.51) dominate. JIT code should land below this
+# (no GOT/class-init), so 1.4 is the central estimate and 1.6 the pessimistic cap.

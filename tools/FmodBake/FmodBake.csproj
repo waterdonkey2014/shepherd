@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Offline FMOD bake for the Vita (vita/notes/sound-bake.md). Drives the game's OWN FMOD Studio 2.02.07 (fmodstudio.bundle)
+       through the game's own managed wrapper (FMODUnity.dll, FMOD.* / FMOD.Studio.* only), non-realtime and SILENT:
+       output type NOSOUND_NRT only, audio captured by a pass-through DSP on the master channel group.
+       - FMODUnity.dll: compile-time reference, Private=false (never copied); resolved from the game at run time.
+       - Shepherd.Assets: compiled from source into this assembly (own obj/bin, no ProjectReference), as tools/VitaPack does,
+         so the bake never writes into the engine's build outputs or races a concurrent engine build.
+       - The bank key is read in memory from FMODStudioSettings and handed to FMOD; it is never printed, logged or stored.
+       Output = derived game data: written only under runtime/audiobake/ (gitignored). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <RootNamespace>Shepherd.FmodBake</RootNamespace>
+    <NoWarn>$(NoWarn);CS8632;MSB3277;CS1701;CS1702;CS0618</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../engine/Shepherd.Assets/Shepherd.Assets/**/*.cs" Exclude="../../engine/Shepherd.Assets/Shepherd.Assets/obj/**;../../engine/Shepherd.Assets/Shepherd.Assets/bin/**" LinkBase="Assets" />
+    <Reference Include="FMODUnity">
+      <HintPath>$(SHEPHERD_GAME_DATA)/Managed/FMODUnity.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

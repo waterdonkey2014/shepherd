@@ -1,0 +1,19 @@
+# kit #7 tests track (vita/notes/kit7-tests.md "Recorded replay fixtures"): the recorded sessions replayed headless on the Mac null backend
+# after every build (run-fixtures.sh), each with per-frame STATE checksums (Diag/StateHash.cs) and per-frame render-stream hashes
+# (SHEPHERD_STREAM_HASH), failing on the first mismatch. Columns (TAB): name, frames, pack (menu = runtime/vitapack/menu, card = the kit
+# owner folder's pack, intro = the kit #4 intro pack; FIXTURE_PACK_<NAME> overrides), pad file (pads/, vita/v6/ or -), extra env, what it is.
+# Every fixture also runs with the test-only determinism switches SHEPHERD_TEST_ASTAR=join and SHEPHERD_TEST_SPINE=join (frame clock):
+# the game's two worker threads (A* paths, Spine's dispatch thread) otherwise make routes with pathing / skeleton readers host-timing
+# dependent (the combat flake); on the menu and New Game routes they change no frame (checked: kit7-tests.md).
+#name	frames	pack	pad	env	what
+idle	1500	menu	-	-	the boot to the idle Main Menu (no input)
+tour	4900	menu	../../v6/pad-menu-tour.txt	-	the whole Main Menu: every sub-menu opened and closed
+route-a	4900	card	pads/pad-route-a.txt	SHEPHERD_STOP_AT=m+4150	the kit's route A: Play slots, DLC, every Settings tab, Roadmap, Achievements, the Quit dialog
+credits	2000	card	pads/pad-credits-only.txt	SHEPHERD_STOP_AT=m+1100	Credits opened, scrolled, closed; the menu still answers
+settings-ng	5000	card	pads/pad-settings-newgame.txt	-	route A's menus, then Play -> New Game to the scene stop
+new-game	3000	card	pads/vlx-intro.txt	-	New Game to the scene stop ('Game Biome Intro' announced)
+intro	4400	intro	pads/intro-explore.txt	SHEPHERD_STOP_SCENE=	the intro past the scene stop: the Lamb walks and attacks (no physics on main: Stage 0)
+# pending (not reachable on main yet; each needs the named step first):
+#   base-day-100   a 100-follower base day from the sandboxed save -- the owner's approved sandboxed save + the base scene's load (physics Stage 5)
+#   dungeon-floor  a dungeon floor -- generated rooms (physics 4d) + combat (physics Stage 3 merged)
+#   boss           a boss -- the above + a boss room

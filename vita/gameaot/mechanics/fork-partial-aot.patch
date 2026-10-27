@@ -1,0 +1,95 @@
+--- a/src/mono/mono/mini/aot-compiler.c
++++ b/src/mono/mono/mini/aot-compiler.c
+@@ -9532,12 +9532,34 @@
+ 		} else {
+ 			gboolean keep = method->is_inflated;
+ 
++			/*
++			 * SHEPHERD-VITA (partial AOT): SHEPHERD_AOT_PROFILE_STRICT=1 also drops the generic instances the profile does not
++			 * name (upstream keeps every inflated method it enumerated, e.g. all of List<Vector3> for any typespec of it:
++			 * most of a game/Unity module's image). Profile instances and the shared bodies of profile methods are in
++			 * profile_methods (add_profile_method / add_extra_method_full); inflated wrappers are kept as before.
++			 */
++			if (keep && method->wrapper_type == MONO_WRAPPER_NONE && g_hasenv ("SHEPHERD_AOT_PROFILE_STRICT"))
++				keep = FALSE;
++
+ 			/* Keep managed-to-native and native-to-managed wrappers */
+ 			switch (method->wrapper_type) {
+ 				case MONO_WRAPPER_MANAGED_TO_NATIVE:
+ 				case MONO_WRAPPER_NATIVE_TO_MANAGED:
+ 					keep = TRUE;
+ 					break;
++				case MONO_WRAPPER_OTHER: {
++					/*
++					 * SHEPHERD-VITA (partial AOT): in full + interp mode compile_method () adds a gsharedvt_out_sig (and
++					 * interp_in) wrapper for the signature of every method it compiled: the interpreter calls AOT code
++					 * through them (interp.c init_jit_call_info ()). They exist because a profile method was compiled;
++					 * dropping them made each interpreter -> AOT call of a signature no other image covers fatal.
++					 */
++					WrapperInfo *info = mono_marshal_get_wrapper_info (method);
++					if (info && (info->subtype == WRAPPER_SUBTYPE_GSHAREDVT_OUT_SIG || info->subtype == WRAPPER_SUBTYPE_GSHAREDVT_IN_SIG ||
++							info->subtype == WRAPPER_SUBTYPE_INTERP_IN))
++						keep = TRUE;
++					break;
++				}
+ 				default:
+ 					break;
+ 			}
+@@ -14963,7 +14985,10 @@
+ 	if (acfg->aot_opts.llvm_only) {
+ 		if (!mono_aot_mode_is_interp (&acfg->aot_opts))
+ 			acfg->jit_opts |= MONO_OPT_GSHAREDVT;
+-	} else if (mono_aot_mode_is_full (&acfg->aot_opts) || mono_aot_mode_is_hybrid (&acfg->aot_opts))
++	} else if ((mono_aot_mode_is_full (&acfg->aot_opts) || mono_aot_mode_is_hybrid (&acfg->aot_opts)) &&
++		   !(mono_aot_mode_is_interp (&acfg->aot_opts) && g_hasenv ("SHEPHERD_AOT_NO_GSHAREDVT")))
++		/* SHEPHERD-VITA: SHEPHERD_AOT_NO_GSHAREDVT (full + interp only, for owner-local game/Unity modules): no gsharedvt
++		 * bodies -- generic instances that are not compiled run in the interpreter instead. Unset: upstream. */
+ 		acfg->jit_opts |= MONO_OPT_GSHAREDVT;
+ #endif
+ 
+--- a/src/mono/mono/mini/aot-runtime.c
++++ b/src/mono/mono/mini/aot-runtime.c
+@@ -6136,11 +6136,15 @@
+ 		/* Search the llvm_unbox_tramp_indexes table using a binary search */
+ 		if (amodule->info.llvm_unbox_tramp_elemsize == sizeof (guint32)) {
+ 			void *ptr = mono_binary_search (GINT_TO_POINTER (method_index), amodule->info.llvm_unbox_tramp_indexes, amodule->info.llvm_unbox_tramp_num, amodule->info.llvm_unbox_tramp_elemsize, i32_idx_comparer);
++			if (!ptr && mono_use_interpreter)   /* SHEPHERD-VITA (partial AOT): not compiled here, see below */
++				return mono_aot_get_unbox_arbitrary_trampoline (addr);
+ 			g_assert (ptr);
+ 			g_assert (*(int*)ptr == method_index);
+ 			unbox_tramp_idx = (guint32*)ptr - (guint32*)amodule->info.llvm_unbox_tramp_indexes;
+ 		} else {
+ 			void *ptr = mono_binary_search (GINT_TO_POINTER (method_index), amodule->info.llvm_unbox_tramp_indexes, amodule->info.llvm_unbox_tramp_num, amodule->info.llvm_unbox_tramp_elemsize, ui16_idx_comparer);
++			if (!ptr && mono_use_interpreter)   /* SHEPHERD-VITA (partial AOT): not compiled here, see below */
++				return mono_aot_get_unbox_arbitrary_trampoline (addr);
+ 			g_assert (ptr);
+ 			g_assert (*(guint16*)ptr == method_index);
+ 			unbox_tramp_idx = (guint16*)ptr - (guint16*)amodule->info.llvm_unbox_tramp_indexes;
+@@ -6176,6 +6180,7 @@
+ 	code = NULL;
+ 	low = 0;
+ 	high = GPTRDIFF_TO_INT (ut_end - ut);
++	gboolean found = FALSE;
+ 	while (low < high) {
+ 		entry_index = (low + high) / 2;
+ 		entry = &ut [entry_index];
+@@ -6184,8 +6189,19 @@
+ 		} else if (entry [0] > method_index) {
+ 			high = entry_index;
+ 		} else {
++			found = TRUE;
+ 			break;
+ 		}
++	}
++	/*
++	 * SHEPHERD-VITA (partial AOT): a value-type method of this image that was not compiled (profile-only image) has no
++	 * unbox trampoline in this table. Upstream fell through with the last probed entry and returned ANOTHER method's
++	 * trampoline, so a virtual/interface/delegate call on a boxed struct silently ran the wrong method. Enter the
++	 * interpreter instead, as for images without an AOT module (the case handled above).
++	 */
++	if (!found) {
++		g_assert (mono_use_interpreter);
++		return mono_aot_get_unbox_arbitrary_trampoline (addr);
+ 	}
+ 
+ 	if (amodule->info.flags & MONO_AOT_FILE_FLAG_CODE_EXEC_ONLY)

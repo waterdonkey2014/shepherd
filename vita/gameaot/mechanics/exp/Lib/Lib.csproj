@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <Optimize>true</Optimize>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <!-- LibVariant=2 changes one constant: a new MVID for the GUID-gate experiment -->
+    <DefineConstants Condition="'$(LibVariant)' == '2'">$(DefineConstants);LIB_VARIANT2</DefineConstants>
+  </PropertyGroup>
+</Project>

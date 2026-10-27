@@ -1,0 +1,173 @@
+--- a/vita/shepherd/build.sh
++++ b/vita/shepherd/build.sh
+@@ -14,6 +14,15 @@
+ #   (SHEPHERD_AOT_INLINE_IMAGES = the engine + BCL only; a gate checks that every compiled method is engine, BCL or a wrapper).
+ #   The image still records their MVIDs and type layouts, so it is bound to the owner's DLLs: it is written to the build volume
+ #   only ($B/shepherd-v6-engineaot/out: TITLE_ID SHPD00011, log ux0:data/shepherd/menu-aot.txt), never to vita/shepherd/out.
++# SHEPHERD_AOT_OWNER=1 (game-AOT study, vita/gameaot/proto; OPT-IN, owner-local, needs SHEPHERD_AOT_ENGINE=1, headless only): also AOT
++#   the owner's rewritten Unity modules and game / third-party assemblies, each as ITS OWN module, from the owner managed folder
++#   (never packaged): whole (SHEPHERD_AOT_OWNER_FULL = a file of assembly names) or profile-guided partial (SHEPHERD_AOT_OWNER_PART
++#   + SHEPHERD_AOT_OWNER_PROFILE = an .aotprofile; profile-only + SHEPHERD_AOT_PROFILE_STRICT: needs the gameaot compiler patches,
++#   SHEPHERD_CROSS_OBJ). Their images hold compiled game / Unity code: build volume only ($B/shepherd-v6-gameaot/out: TITLE_ID
++#   SHPD00012, log ux0:data/shepherd/menu-gameaot.txt), checked by the owner GUID gate and listed in out/owner-modules.tsv. The
++#   engine image and its foreign-code gate are unchanged. CoreLib's trampoline pools grow (SHEPHERD_CORELIB_TRAMPS; the default
++#   8192 specific trampolines run out once game modules are AOT'd). Partial modules want a runtime with the gameaot fix A
++#   (SHEPHERD_VITA_RUNTIME_OBJ) unless the profile holds their value-type closure.
+ # SHEPHERD_GL=1 (Stage B, the milestone app; vita/notes/m1-gl-app.md): shepherd_menu_gl.vpk -- the same eboot recipe plus the GL
+ #   backend's host layer: host.c built with SHEPHERD_GL, vita/gltest/shepgl (shepgl_vita.c: vitaGL context/swap + the 51 GL entry
+ #   points, every shepgl_* export in the static P/Invoke table), vitaGL + vitaShaRK linked, SceCtrl/ScePower/SceGxm imports.
+@@ -39,12 +48,14 @@
+ ENGINE_AOT=${SHEPHERD_AOT_ENGINE:-0}
+ GL=${SHEPHERD_GL:-0}
+ AUDIO=${SHEPHERD_AUDIO:-0}
++OWNER_AOT=${SHEPHERD_AOT_OWNER:-0}
++[ "$OWNER_AOT" = 1 ] && { [ "$ENGINE_AOT" = 1 ] && [ "$GL" != 1 ] || { echo "SHEPHERD_AOT_OWNER=1 needs SHEPHERD_AOT_ENGINE=1 (headless build only)"; exit 1; }; }
+ [ "$AUDIO" = 1 ] && [ "$GL" != 1 ] && { echo "SHEPHERD_AUDIO=1 is a variant of the GL app: set SHEPHERD_GL=1 too"; exit 1; }
+ [ "$AUDIO" = 1 ] && [ "$ENGINE_AOT" = 1 ] && { echo "SHEPHERD_AUDIO=1 with SHEPHERD_AOT_ENGINE=1 is not wired (the audio app is interpreter + the BCL/engine-library AOT only)"; exit 1; }
+ GLW=; [ "$GL" = 1 ] && GLW=-gl                     # work/out dirs of the GL app are separate from the headless build's
+ [ "$AUDIO" = 1 ] && GLW=-gl-audio
+ if [ "$ENGINE_AOT" = 1 ]; then
+-  W=${SHEPHERD_V6_WORK:-$B/shepherd${GLW:-"-v6"}-engineaot}; OUT=${SHEPHERD_V6_OUT:-$W/out}
++  W=${SHEPHERD_V6_WORK:-$B/shepherd${GLW:-"-v6"}-$([ "$OWNER_AOT" = 1 ] && echo gameaot || echo engineaot)}; OUT=${SHEPHERD_V6_OUT:-$W/out}
+   OWNER_MANAGED=${SHEPHERD_OWNER_MANAGED:-$B/v6b/owner/shepherd/managed}
+   [ -f "$OWNER_MANAGED/UnityEngine.CoreModule.dll" ] || { echo "SHEPHERD_AOT_ENGINE=1 needs the staged owner managed folder ($OWNER_MANAGED): run vita/shepherd/stage-owner.sh"; exit 1; }
+   case "$OUT" in "$REPO"/*) echo "SHEPHERD_AOT_ENGINE=1: the output is bound to the owner's DLLs; it must not go under the repo ($OUT)"; exit 1 ;; esac
+@@ -56,6 +67,7 @@
+ COMMON=$VITASDK/share/gcc-arm-vita-eabi/samples/common
+ TITLE_ID=SHPD00006; TITLE="Shepherd Menu (V6)"; LOG_NAME=menu.txt; LOG_PREV_NAME=menu.prev.txt; ENV_NAME=env.txt; ARGS_NAME=args.txt; VPK=shepherd_menu.vpk
+ [ "$ENGINE_AOT" = 1 ] && { TITLE_ID=SHPD00011; TITLE="Shepherd Menu (V6 engine AOT)"; LOG_NAME=menu-aot.txt; LOG_PREV_NAME=menu-aot.prev.txt; }
++[ "$OWNER_AOT" = 1 ] && { TITLE_ID=SHPD00012; TITLE="Shepherd Menu (V6 game AOT)"; LOG_NAME=menu-gameaot.txt; LOG_PREV_NAME=menu-gameaot.prev.txt; VPK=shepherd_menu_gameaot.vpk; }
+ if [ "$GL" = 1 ]; then
+   TITLE_ID=SHPD00008; TITLE="Shepherd Menu (GL)"; LOG_NAME=menu_gl.txt; LOG_PREV_NAME=menu_gl.prev.txt; ENV_NAME=env_gl.txt; ARGS_NAME=args_gl.txt; VPK=shepherd_menu_gl.vpk
+   [ "$ENGINE_AOT" = 1 ] && { TITLE_ID=SHPD00009; TITLE="Shepherd Menu (GL engine AOT)"; LOG_NAME=menu_gl-aot.txt; LOG_PREV_NAME=menu_gl-aot.prev.txt; VPK=shepherd_menu_gl-aot.vpk; }
+@@ -79,6 +91,26 @@
+ # what Shepherd.Engine's AOT may inline: itself, our other assemblies and the BCL -- never the owner's Unity / game assemblies
+ ENGINE_INLINE_IMAGES="Shepherd.Engine,Shepherd.Assets,Shepherd.Hooks,System.*,Microsoft.*,mscorlib,netstandard"
+ ENGINE_DLLS=(Shepherd.Engine Shepherd.Assets Shepherd.Hooks Microsoft.Bcl.AsyncInterfaces)
++# SHEPHERD_AOT_OWNER=1: the owner modules (their objects go to $W/aot-owner: the packaged-set GUID gate never sees them)
++OWNER_FULL=(); OWNER_PART=(); OWNER_PROFILE=
++if [ "$OWNER_AOT" = 1 ]; then
++  [ -n "${SHEPHERD_AOT_OWNER_FULL:-}" ] && OWNER_FULL=($(grep -v '^#' "$SHEPHERD_AOT_OWNER_FULL"))
++  [ -n "${SHEPHERD_AOT_OWNER_PART:-}" ] && OWNER_PART=($(grep -v '^#' "$SHEPHERD_AOT_OWNER_PART"))
++  OWNER_PROFILE=${SHEPHERD_AOT_OWNER_PROFILE:-}
++  [ ${#OWNER_PART} = 0 ] || [ -f "$OWNER_PROFILE" ] || { echo "SHEPHERD_AOT_OWNER_PART needs SHEPHERD_AOT_OWNER_PROFILE (an .aotprofile)"; exit 1; }
++  [ ${#OWNER_PART} = 0 ] || strings "$X" | grep SHEPHERD_AOT_PROFILE_STRICT > /dev/null \
++    || { echo "partial owner modules need the gameaot compiler patches ($X has no SHEPHERD_AOT_PROFILE_STRICT)"; exit 1; }
++  for a in $OWNER_FULL $OWNER_PART; do
++    [ -f "$OWNER_MANAGED/$a.dll" ] || { echo "owner module $a: no $OWNER_MANAGED/$a.dll"; exit 1; }
++    (( ${AOT[(Ie)$a]} )) && { echo "owner module $a is already in the AOT set"; exit 1; }
++  done
++  AOT+=($OWNER_FULL $OWNER_PART)
++  # what an owner image may inline: the owner modules and the BCL -- never Shepherd.* (no engine code baked into an owner image)
++  OWNER_INLINE_IMAGES="${(j:,:)OWNER_FULL}${OWNER_FULL:+,}${(j:,:)OWNER_PART}${OWNER_PART:+,}System.*,Microsoft.*,mscorlib,netstandard"
++  mkdir -p "$W/aot-owner"
++fi
++is_owner() { (( ${OWNER_FULL[(Ie)$1]} + ${OWNER_PART[(Ie)$1]} )); }
++aotdir() { if is_owner "$1"; then echo "$W/aot-owner"; else echo "$W/aot"; fi; }
+ export MONO_AGGRESSIVE_INLINELIMIT=${MONO_AGGRESSIVE_INLINELIMIT:-256}
+ MAX_MODULE_TEXT=$((28 * 1024 * 1024))
+ 
+@@ -95,25 +127,38 @@
+ AOT_OPTS="full,interp,static,asmonly,direct-icalls,direct-pinvoke,nodebug,mtriple=armv7-vita-eabihf"
+ # all runtime trampolines come from CoreLib's image; running out of a pool is fatal (see vita/notes/v5-runtime.md)
+ CORELIB_TRAMPS=",ntrampolines=8192,nrgctx-trampolines=8192,nimt-trampolines=2048,ngsharedvt-trampolines=4096,nftnptr-arg-trampolines=4096,nunbox-arbitrary-trampolines=1024"
++# game AOT: AOT'd game code takes far more specific / rgctx trampolines (Mac proxy counts, vita/gameaot/proto/trampcount: the
++# engine-AOT set alone 7.1k specific in the menu + intro, + all owner modules partial 10.1k, whole 16.3k of the 8192)
++[ "$OWNER_AOT" = 1 ] && CORELIB_TRAMPS=",${SHEPHERD_CORELIB_TRAMPS:-ntrampolines=32768,nrgctx-trampolines=16384,nimt-trampolines=4096,ngsharedvt-trampolines=4096,nftnptr-arg-trampolines=4096,nunbox-arbitrary-trampolines=1024}"
+ # content stamps: the cross compiler + every DLL the module can depend on (CoreLib: itself; the BCL: the BCL; ours: all)
+ BCL_FILES=("$PACK"/lib/net8.0/*.dll "$PACK/native/System.Private.CoreLib.dll")
+ DEPS_CORELIB=$(cat "$W/bcl/System.Private.CoreLib.dll" "$X" | shasum -a 256 | cut -c1-16)
+ DEPS_BCL=$(cat $BCL_FILES "$X" | shasum -a 256 | cut -c1-16)
+ DEPS_ALL=$(cat "$W"/bcl/*.dll "$X" | shasum -a 256 | cut -c1-16)
+ [ "$ENGINE_AOT" = 1 ] && DEPS_ENGINE=$(cat "$W"/bcl/*.dll "$OWNER_MANAGED"/*.dll "$X" | shasum -a 256 | cut -c1-16)
+-for f in "$W"/aot/*.dll.s(N); do a=${${f:t}%.dll.s}; (( ${AOT[(Ie)$a]} )) || { echo "   (dropping stale $a)"; rm -f "$W/aot/$a".*; }; done
++[ "$OWNER_AOT" = 1 ] && DEPS_OWNER=$(cat "$W"/bcl/*.dll "$OWNER_MANAGED"/*.dll "$X" ${OWNER_PROFILE:+"$OWNER_PROFILE"} | shasum -a 256 | cut -c1-16)
++for f in "$W"/aot/*.dll.s(N) "$W"/aot-owner/*.dll.s(N); do a=${${f:t}%.dll.s}; (( ${AOT[(Ie)$a]} )) && [ "$(aotdir $a)" = "${f:h}" ] || { echo "   (dropping stale $a)"; rm -f "${f:h}/$a".*; }; done
+ for a in $AOT; do
+-  dll="$W/bcl/$a.dll"; s="$W/aot/$a.dll.s"; o="$W/aot/$a.dll.o"
++  dll="$W/bcl/$a.dll"; s="$(aotdir $a)/$a.dll.s"; o="$(aotdir $a)/$a.dll.o"
++  is_owner $a && dll="$OWNER_MANAGED/$a.dll"
++  if is_owner $a; then EXTRA=$( (( ${OWNER_PART[(Ie)$a]} )) && echo ",profile=$OWNER_PROFILE,profile-only" || true ) DEPS=$DEPS_OWNER; else
+   case $a in
+     System.Private.CoreLib) EXTRA=$CORELIB_TRAMPS DEPS=$DEPS_CORELIB ;;
+     Shepherd.Engine) EXTRA= DEPS=$DEPS_ENGINE ;;
+     Shepherd.*|Microsoft.Bcl.*) EXTRA= DEPS=$DEPS_ALL ;;
+     *) EXTRA= DEPS=$DEPS_BCL ;;
+   esac
+-  stamp="$W/aot/$a.stamp"; want="$DEPS opts=$AOT_OPTS$EXTRA inl=$MONO_AGGRESSIVE_INLINELIMIT${GLW}"
++  fi
++  stamp="$(aotdir $a)/$a.stamp"; want="$DEPS opts=$AOT_OPTS$EXTRA inl=$MONO_AGGRESSIVE_INLINELIMIT${GLW}"
+   if [ -f "$o" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]; then echo "   $a: up to date"; continue; fi
+   rm -f "$stamp"
+-  if [ "$a" = Shepherd.Engine ]; then
++  if is_owner $a; then
++    # an owner module: compiled from the owner folder; no direct P/Invoke (late-bound, failing at call time as in the interpreter);
++    # partial = profile-only + strict (only the profile's methods and instances; the rest of the module stays interpreted)
++    OWNER_ENV=(SHEPHERD_AOT_INLINE_IMAGES=$OWNER_INLINE_IMAGES); (( ${OWNER_PART[(Ie)$a]} )) && OWNER_ENV+=(SHEPHERD_AOT_PROFILE_STRICT=1)
++    env $OWNER_ENV MONO_PATH="$W/bcl:$OWNER_MANAGED" \
++      "$X" --aot=${AOT_OPTS/direct-pinvoke,/}$EXTRA,outfile="$s" "$dll" > "$(aotdir $a)/$a.log" 2>&1 || { tail -20 "$(aotdir $a)/$a.log"; exit 1; }
++  elif [ "$a" = Shepherd.Engine ]; then
+     # the owner's managed folder resolves the engine's Unity / game types; nothing of theirs is inlined; only the engine's own
+     # __Internal export (the host checkpoint) is a direct P/Invoke (its Mac-only SDL / libc imports stay late-bound, never called)
+     # the headless build links only the checkpoint export: its other __Internal imports (the GL app's shepgl_* and the pad
+@@ -126,14 +171,20 @@
+   fi
+   arm-vita-eabi-as -mfpu=neon -mfloat-abi=hard -o "$o" "$s"
+   echo "$want" > "$stamp"
+-  echo "   $a: $(grep -o 'Compiled: [0-9/]*' "$W/aot/$a.log" | tail -1)"
++  echo "   $a: $(grep -o 'Compiled: [0-9/]*' "$(aotdir $a)/$a.log" | tail -1)"
+ done
+ python3 "$V/hello/check_aot_guids.py" "$W/bcl" "$W/aot" ${OWNER_MANAGED:+$OWNER_MANAGED} > "$OUT/aot-guids.txt" || true
+ grep -qx 'TOTAL MISMATCHES 0' "$OUT/aot-guids.txt" || { cat "$OUT/aot-guids.txt"; echo "AOT images do not match the packaged DLLs (see aot-guids.txt)"; exit 1; }
+ echo "   AOT GUID gate: $(tail -1 "$OUT/aot-guids.txt")"
++if [ "$OWNER_AOT" = 1 ]; then
++  # owner modules: their own GUID against the owner DLL, every image_table entry against the packaged DLL, else the owner DLL
++  python3 "$V/gameaot/check_owner_guids.py" "$W/bcl" "$OWNER_MANAGED" "$W/aot-owner" > "$OUT/aot-guids-owner.txt" \
++    || { tail -20 "$OUT/aot-guids-owner.txt"; echo "owner AOT images do not match the owner / packaged DLLs"; exit 1; }
++  echo "   owner AOT GUID gate: $(tail -1 "$OUT/aot-guids-owner.txt")"
++fi
+ : > "$OUT/aot-sizes.txt"
+ for a in $AOT; do
+-  t=$(arm-vita-eabi-size "$W/aot/$a.dll.o" | tail -1 | awk '{print $1}')
++  t=$(arm-vita-eabi-size "$(aotdir $a)/$a.dll.o" | tail -1 | awk '{print $1}')
+   printf "%-36s text %10d (%6.2f MiB)\n" "$a" "$t" "$(echo "$t / 1048576" | bc -l)" >> "$OUT/aot-sizes.txt"
+   [ "$t" -lt $MAX_MODULE_TEXT ] || { echo "AOT module $a text $t >= 28 MiB (bl reach margin)"; exit 1; }
+ done
+@@ -149,6 +200,20 @@
+   [ ! -s "$W/obj/engine-aot-foreign.txt" ] || { echo "Shepherd.Engine AOT image holds non-engine/BCL methods:"; head -20 "$W/obj/engine-aot-foreign.txt"; exit 1; }
+   echo "   Shepherd.Engine AOT: $(wc -l < "$W/obj/engine-aot-methods.txt" | tr -d ' ') text symbols, all engine/BCL/wrappers; $(grep -o '[0-9]* inline(s) of methods outside SHEPHERD_AOT_INLINE_IMAGES refused ([0-9]* distinct methods)' "$W/aot/Shepherd.Engine.log")" | tee "$OUT/engine-aot.txt"
+ fi
++if [ "$OWNER_AOT" = 1 ]; then
++  # the owner-local module manifest: what this eboot holds besides the packaged set, and the exact owner DLLs it is bound to
++  # (a different DLL -- a restaged owner folder, a new Shepherd.Hooks -- is a fatal "doesn't match assembly" at load)
++  { echo "# $TITLE_ID owner-local AOT modules (compiled game / Unity code: never in git, never in a shareable VPK)"
++    echo "# compiler $(shasum -a 256 "$X" | cut -c1-16)  profile ${OWNER_PROFILE:+$(shasum -a 256 "$OWNER_PROFILE" | cut -c1-16)}  runtime $RT"
++    printf "module\tmode\tassembly_guid\tdll_sha256\tcompiled\ttext_bytes\n"
++    for a in $OWNER_FULL $OWNER_PART; do
++      printf "%s\t%s\t%s\t%s\t%s\t%s\n" "$a" "$( (( ${OWNER_PART[(Ie)$a]} )) && echo partial || echo whole)" \
++        "$(grep -A1 '^assembly_guid:' "$W/aot-owner/$a.dll.s" | sed -n 's/.*\.string "\(.*\)"/\1/p')" \
++        "$(shasum -a 256 "$OWNER_MANAGED/$a.dll" | cut -c1-16)" "$(grep -o 'Compiled: [0-9/]*' "$W/aot-owner/$a.log" | tail -1 | cut -d' ' -f2)" \
++        "$(arm-vita-eabi-size "$W/aot-owner/$a.dll.o" | tail -1 | awk '{print $1}')"
++    done; } > "$OUT/owner-modules.tsv"
++  echo "   owner modules: ${#OWNER_FULL} whole + ${#OWNER_PART} partial -> owner-modules.tsv"
++fi
+ 
+ echo "== 3. P/Invoke census of the packaged managed set"
+ dotnet build "$V/v6/tools/AsmSize/AsmSize.csproj" -c Release -o "$W/asmsize" --artifacts-path "$W/asmsize-art" -p:DisableTransitiveFrameworkReferenceDownloads=true -nologo -v q > "$W/obj/asmsize.log" 2>&1 \
+@@ -235,7 +300,7 @@
+ arm-vita-eabi-gcc -O2 -I"$COMMON" -c "$COMMON/debugScreen.c" -o "$W/obj/debugScreen.o"
+ 
+ echo "== 6. link"
+-AOT_OBJS=(); for a in $AOT; do AOT_OBJS+=("$W/aot/$a.dll.o"); done
++AOT_OBJS=(); for a in $AOT; do AOT_OBJS+=("$(aotdir $a)/$a.dll.o"); done
+ MONO_LIBS=("$RT/mono/mini/libmonosgen-2.0.a" "$RT/mono/mini/libmono-component-marshal-ilgen-static.a"
+            "$RT/mono/mini/libmono-component-debugger-stub-static.a" "$RT/mono/mini/libmono-component-hot_reload-stub-static.a"
+            "$RT/mono/mini/libmono-component-diagnostics_tracing-stub-static.a")
+@@ -304,6 +369,7 @@
+   echo "AOT text total: $(awk '{s+=$3} END {printf "%d bytes (%.2f MiB)", s, s/1048576}' "$OUT/aot-sizes.txt")"
+   echo "static P/Invoke table: $(wc -l < "$W/obj/static-symbols.txt" | tr -d ' ') symbols; packaged BCL declares $(wc -l < "$W/obj/declared.txt" | tr -d ' ') entry points, all answered"
+   echo "newlib heap: $NEWLIB_MB MiB"
++  [ "$OWNER_AOT" = 1 ] && echo "owner AOT modules (owner-local, not packaged): ${#OWNER_FULL} whole + ${#OWNER_PART} partial, text $(awk -F'\t' 'NR>3 {s+=$6} END {printf "%d bytes (%.2f MiB)", s, s/1048576}' "$OUT/owner-modules.tsv"); CoreLib pools$CORELIB_TRAMPS"
+ } > "$OUT/build-info.txt"
+ cat "$OUT/build-info.txt"
+ ls -la "$OUT/$VPK" "$OUT/eboot.bin"

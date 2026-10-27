@@ -1,0 +1,35 @@
+# Owner-local game AOT, variant P (kit 4; vita/shepherd/build.sh SHEPHERD_AOT_OWNER=1, SHEPHERD_AOT_OWNER_PART default):
+# the owner modules compiled PROFILE-GUIDED PARTIAL (profile-only + SHEPHERD_AOT_PROFILE_STRICT) into the owner-only eboots
+# (SHPD00095 / SHPD00190). Module names only. Selection (vita/notes/game-aot.md section 2):
+# - from the prototype's 86 owner modules (proto/modules-rewritten.txt + proto/modules-game.txt minus Shepherd.Engine.Derived, which
+#   SHEPHERD_AOT_DERIVED compiles whole), the 36 with >= 1 method in the owner profile (owner-p.aotprofile = the prototype's nocl profile);
+#   the other 50 compiled to per-module tables and wrappers only (1.60 MiB of the prototype's 8.06 MiB) and stay interpreted;
+# - minus 11 whose profile methods cost <= 0.0006 ms/frame in every window of the hot study (idle, tour, intro: interpreted self
+#   time) for 0.94 MiB of image (UIElementsModule alone 605 KiB for 3 methods: its icall wrappers), interpreted as before:
+#   UnityEngine.UIElementsModule Unity.2D.SpriteShape.Runtime com.steamworks.net Sirenix.Utilities DOTweenPro.Scripts Unity.Postprocessing.Runtime
+#   AFPSCounter.Runtime UnityEngine.TextRenderingModule UnityEngine.TextCoreFontEngineModule UnityEngine.UnityWebRequestModule UnityEngine.AssetBundleModule
+FMODUnity
+UnityEngine.CoreModule
+UnityEngine.InputLegacyModule
+UnityEngine.JSONSerializeModule
+UnityEngine.ParticleSystemModule
+UnityEngine.PhysicsModule
+UnityEngine.UIModule
+Assembly-CSharp
+Assembly-CSharp-firstpass
+AstarPathfindingProject
+Coffee.SoftMaskForUGUI
+Coffee.UIParticle
+DOGames.Threading
+DOTween
+DOTween.Modules
+Elringus.BlendModes.Runtime
+LeTai.TranslucentImage
+Rewired_Core
+Sirenix.Serialization
+UnifyLibrary
+Unity.Addressables
+Unity.ResourceManager
+Unity.TextMeshPro
+UnityEngine.UI
+spine-unity

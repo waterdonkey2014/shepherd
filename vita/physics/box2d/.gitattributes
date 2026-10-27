@@ -1,0 +1,2 @@
+# vendored third-party source: keep the bytes (CRLF included) exactly as upstream
+* -text

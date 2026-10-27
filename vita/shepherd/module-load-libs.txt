@@ -1,0 +1,35 @@
+# Device kit #8.1: the libraries the engine module (app0:module/shepherd.suprx, launcher builds) may import -- the ones already
+# loaded when the launcher calls sceKernelLoadStartModule. Any other import makes the Vita refuse the module with 0x8002D003
+# (SCE_KERNEL_ERROR_MODULEMGR_NO_LIB), as both launcher apps did on the owner's Vita on 2026-10-22.
+# Read by build.sh -> check_vpk.py --module-load-libs (the build fails) and by vlx (vita/vlx/vlx.c sceKernelLoadStartModule refuses
+# the module with 0x8002D003, as the Vita does). One library per line.
+# Basis: kit #7's / kit #8's eboots call every one of these with nothing loaded first (no sceSysmoduleLoadModule / module load before
+# the first call); the launcher itself has loaded SCE_SYSMODULE_AVCDEC by then (the splash). NOT here, on purpose: SceShaccCg
+# (libshacccg, loaded by vitaShaRK inside vglInit), SceNet (libnet: sceSysmoduleLoadModule (SCE_SYSMODULE_NET), never done),
+# SceNgs / ScePerf (loaded at run time by the measurement app's probes) -- k8_latelibs.c binds the first two at first use.
+SceLibKernel
+SceThreadmgr
+SceThreadmgrCoredumpTime
+SceSysmem
+SceIofilemgr
+SceProcessmgr
+SceModulemgr
+SceRtcUser
+SceLibRng
+SceCtrl
+SceDisplay
+SceDisplayUser
+ScePower
+SceTouch
+SceAudio
+SceAudiodecUser
+SceVideodecUser
+SceGxm
+SceGxmInternalForVsh
+SceSharedFb
+SceDmacmgr
+SceAppMgrUser
+SceCommonDialog
+SceVshBridge
+SceSysmodule
+taihen

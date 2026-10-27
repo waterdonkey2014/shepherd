@@ -1,0 +1,199 @@
+SHEPHERD-VITA DIAG engine patch (devfail1, 2026-10-07): ONLY for "Shepherd Menu Diag" (SHPD00016). vita/shepherd/build.sh with
+SHEPHERD_DIAG=1 applies it to a COPY of engine/ in its work dir; the normal builds never see it, so their Shepherd.Engine.dll
+stays byte-identical. Adds Diag/BootPhase.cs (phase markers: host buffer + an int-only P/Invoke + engine.log), marks every phase of
+Program.Main / Boot.Run / BootGame before it starts, and makes engine.log open+append+close per line.
+
+
+diff -ruN a/engine/Shepherd.Engine/Boot.cs b/engine/Shepherd.Engine/Boot.cs
+--- a/engine/Shepherd.Engine/Boot.cs
++++ b/engine/Shepherd.Engine/Boot.cs
+@@ -11,10 +11,14 @@
+     public static bool QuitRequested;
+     public static int Run(string[] args)
+     {
++        Diag.BootPhase.Mark("Boot.Run: Log.Open (engine.log, one append+close per line in this diag build)");
+         Log.Open(Path.Combine(Program.LogDir, "engine.log"));
++        Diag.BootPhase.Mark("Boot.Run: IcallRegistry.Init (icalls.json)");
+         IcallRegistry.Init(Path.Combine(Program.RuntimeManaged, "icalls.json"));
+         var mode = args.FirstOrDefault() ?? "smoke";
++        Diag.BootPhase.Mark("Boot.Run: mode " + mode);
+         int rc = mode switch { "smoke" => Smoke(), "gfxtest" => GfxTest(), "uitest" => UiTest(), "boot" => BootGame(args), "nativetest" => NativeTest(), "respaths" => ResPaths(args), "dumpobj" => DumpObj(args), "shaderdump" => ShaderDump(args), _ => Diag.TriggerTest.Handles(mode) ? Diag.TriggerTest.Run() : Diag.VitaSelfTest.Handles(mode) ? Diag.VitaSelfTest.Run() : Render.RenderTest.Handles(mode) ? Render.RenderTest.Run() : Unknown(mode) };   // "vitatest"
++        Diag.BootPhase.Mark("Boot.Run: end-of-run summaries (rc " + rc + ")");
+         if (Profile.Vita) VitaSummary(); else if (Impl.NetIcalls.Created > 0) Log.Info(Impl.NetIcalls.Summary());
+         IcallRegistry.Report(Path.Combine(Program.LogDir, "missing-icalls.txt"));
+         Diag.SimStats.End();         // V6 SHEPHERD_SIMSTATS: startup/window summary + assembly list; no-op when unset
+@@ -82,29 +86,40 @@
+         int frames = args.Length > 1 ? int.Parse(args[1]) : 600, every = args.Length > 2 ? int.Parse(args[2]) : 120;
+         if (frames <= 0) frames = int.MaxValue;   // 0 = run until the window closes
+         bool window = args.Length > 3 && args[3] == "window";
++        Diag.BootPhase.Mark("BootGame: Render.Backends.Create");
+         Diag.VitaHost.PinMain();        // the Vita: main thread -> USER_0 when pinning is on (SHEPHERD_VITA_PIN; default = SHEPHERD_MT_RENDER=1)
+         using var g = Render.MtRender.Wrap(Render.Backends.Create(Impl.AppIcalls.ScreenW, Impl.AppIcalls.ScreenH, headless: !window)); Render.SceneRenderer.G = g;   // 1280x720; vita profile 960x544; SHEPHERD_RENDER picks the backend; SHEPHERD_MT_RENDER=1 the multicore pipeline (Render/MtRender.cs)
+         var rstats = Render.Backends.Explicit ? new Render.FrameTimes(frames, every) : null;
+         Runtime.PlayClock.Configure(window);   // kit3 play mode: SHEPHERD_TIME=frame (headless default: 1/60 s per frame of game time and, stage 2, realtime) | wall (window default, the play VPKs: Unity's clock); logged
+         Shepherd.Audio.Silence.Configure(headless: !window);       // Mac default: FMOD muted at the engine level in headless runs
+         var sw = System.Diagnostics.Stopwatch.StartNew();
++        Diag.BootPhase.Mark("BootGame: Assets.Loader.Init (pack TOC, catalog, settings)");
+         Assets.Loader.Init();
+         Log.Info($"asset layer up in {sw.ElapsedMilliseconds} ms"); Diag.SimStats.AssetsUp();
+         Lifecycle.Render = Render.SceneRenderer.Frame;
++        Diag.BootPhase.Mark("BootGame: Lifecycle.InstallSyncContext");
+         Lifecycle.InstallSyncContext();
++        Diag.BootPhase.Mark("BootGame: VitaMemory.BeforeRuntimeInit (loads Assembly-CSharp)");
+         if (Profile.Vita) VitaMemory.BeforeRuntimeInit();   // stage 1: save streams seeded before InitUnifyGlobal.Startup
++        Diag.BootPhase.Mark("BootGame: VitaPad.InstallJoystick");
+         if (Profile.Vita) Impl.VitaPad.InstallJoystick();   // polish round 1: the pad is a Unity-input joystick to Rewired, from before its init
++        Diag.BootPhase.Mark("BootGame: RuntimeInit.Run SubsystemRegistration..BeforeSceneLoad (game static inits; threads start here)");
+         RuntimeInit.Run(RuntimeInit.SubsystemRegistration, RuntimeInit.AfterAssembliesLoaded, RuntimeInit.BeforeSplashScreen, RuntimeInit.BeforeSceneLoad);
++        Diag.BootPhase.Mark("BootGame: Assets.Loader.LoadLevel0");
+         Assets.Loader.LoadLevel0();
++        Diag.BootPhase.Mark("BootGame: RuntimeInit.Run AfterSceneLoad");
+         RuntimeInit.Run(RuntimeInit.AfterSceneLoad);
+         var shots = Diag.ShotPlan.Dir(Path.Combine(Program.Root, "runtime", "shots", "boot")); Directory.CreateDirectory(shots);   // Stage B: SHEPHERD_SHOT_DIR
+         // SHEPHERD_PRESS="frame:unityKeyCode,frame:key" -> synthetic key presses (held 6 frames)
+         var presses = (Environment.GetEnvironmentVariable("SHEPHERD_PRESS") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(x => x.Split(':')).Select(p => (f: int.Parse(p[0]), k: int.Parse(p[1]))).ToList();
++        Diag.BootPhase.Mark("BootGame: VitaHost.Start (CP0, the first interpreted P/Invoke with a string)");
+         Diag.VitaHost.Start();          // V6 Stage B: frame-0 checkpoint for the Vita host's log; no-op unless SHEPHERD_VITA_HOST=1
++        Diag.BootPhase.Mark("BootGame: the frame loop");
+         int last = 0;
+         for (int i = 1; i <= frames && !QuitRequested && !Impl.InputState.QuitRequested; i++)
+         {
+             last = i;
++            Diag.BootPhase.Frame(i);
+             Diag.SimStats.Before(i);    // V6 SHEPHERD_SIMSTATS; no-op when unset
+             Diag.NativeCensus.Tick(i);  // V6: frame map for Mono's DllImport log (only with MONO_LOG_DEST + MONO_LOG_MASK=dll)
+             Impl.InputState.Pump();
+@@ -124,6 +139,7 @@
+             if ((every > 0 && (i % every == 0 || i == 1)) || Diag.ShotPlan.Extra(i)) { g.Screenshot(Path.Combine(shots, $"f{i:D5}.png")); Log.Info($"frame {i}: t={UnityEngine.Time.time:F2}s draws={Render.SceneRenderer.LastDraws} tris={Render.SceneRenderer.LastTris} live={Objects.LiveCount} scenes=[{string.Join(", ", Scenes.All.Values.Select(x => x.Name + ":" + x.Roots.Count))}] coroutines={Coroutines.Count}"); rstats?.Shot(i, g); }
+             Diag.Throttle.After();      // kit3 play mode: SHEPHERD_FRAME_MS=<ms> pads every frame to that much wall time (the device's frame rate on the Mac); no-op unless set
+         }
++        Diag.BootPhase.Mark("BootGame: frame loop done at frame " + last + "; VitaHost.Finish");
+         Diag.VitaHost.Finish(last);     // V6 Stage B: the end checkpoint (selected menu button); no-op unless SHEPHERD_VITA_HOST=1
+         rstats?.Summary(g);
+         DumpUi();
+diff -ruN a/engine/Shepherd.Engine/Diag/BootPhase.cs b/engine/Shepherd.Engine/Diag/BootPhase.cs
+--- a/engine/Shepherd.Engine/Diag/BootPhase.cs
++++ b/engine/Shepherd.Engine/Diag/BootPhase.cs
+@@ -0,0 +1,63 @@
++using System.Runtime.CompilerServices;
++using System.Runtime.InteropServices;
++namespace Shepherd.Engine.Diag;
++
++/// <summary>DIAG-ONLY (vita/shepherd/diag/engine-diag.patch: compiled only into "Shepherd Menu Diag", SHPD00016; never in a normal
++/// build). Boot-phase markers: each phase is marked BEFORE it starts, three ways, so a hang or crash anywhere names the phase:
++/// (1) the text goes into a host-owned buffer (SHEPHERD_DIAG_PHASE_BUF=&lt;hex address&gt;:&lt;capacity&gt;; plain stores, no native call), which
++/// the host's heartbeat thread reads every second; (2) a P/Invoke (int argument only, no marshalling) makes the host log it at once;
++/// (3) once engine.log is open, a "[phase]" line there. The frame counter goes into the same buffer every frame (stores only).</summary>
++public static unsafe class BootPhase
++{
++    static readonly byte* Buf;   // [0] int seq, [4] int frame, [8] int text length, [12..] text (ASCII, NUL-terminated)
++    static readonly int Cap;
++    static readonly bool Host = Environment.GetEnvironmentVariable("SHEPHERD_VITA_HOST") == "1";
++    static int _seq;
++
++    static BootPhase()
++    {
++        var b = Environment.GetEnvironmentVariable("SHEPHERD_DIAG_PHASE_BUF");
++        if (b == null) return;
++        int colon = b.IndexOf(':');
++        if (colon <= 0) return;
++        ulong a = 0;
++        for (int i = 0; i < colon; i++)
++        {
++            int c = b[i], d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
++            if (d < 0) return;
++            a = a * 16 + (ulong)d;
++        }
++        if (!int.TryParse(b.AsSpan(colon + 1), out int cap) || cap < 64) return;
++        Buf = (byte*)(nuint)a; Cap = cap;
++    }
++
++    /// <summary>Marks the start of a phase (call it BEFORE the phase's first statement).</summary>
++    [MethodImpl(MethodImplOptions.NoInlining)]
++    public static void Mark(string name)
++    {
++        int seq = ++_seq;
++        if (Buf != null)
++        {
++            int n = Math.Min(name.Length, Cap - 13);
++            for (int i = 0; i < n; i++) { char ch = name[i]; Buf[12 + i] = (byte)(ch >= 32 && ch < 127 ? ch : '?'); }
++            Buf[12 + n] = 0;
++            *(int*)(Buf + 8) = n;
++            Volatile.Write(ref *(int*)Buf, seq);
++        }
++        if (Host) HostPhase(seq);
++        if (Log.IsOpen) Log.Info($"[phase] #{seq} {name}");
++    }
++
++    /// <summary>Every frame: the frame number into the host buffer (no call); a phase line at frames 1-3, 5, 10, 25, 50 and every 100th.</summary>
++    public static void Frame(int f)
++    {
++        if (Buf != null) Volatile.Write(ref *(int*)(Buf + 4), f);
++        if (f is 1 or 2 or 3 or 5 or 10 or 25 or 50 || f % 100 == 0) Mark("frame " + f);
++    }
++
++    [MethodImpl(MethodImplOptions.NoInlining)]
++    static void HostPhase(int seq) => shepherd_vita_diag_phase(seq);
++
++    [DllImport("__Internal")]
++    static extern void shepherd_vita_diag_phase(int seq);
++}
+diff -ruN a/engine/Shepherd.Engine/Log.cs b/engine/Shepherd.Engine/Log.cs
+--- a/engine/Shepherd.Engine/Log.cs
++++ b/engine/Shepherd.Engine/Log.cs
+@@ -3,15 +3,23 @@
+ public static class Log
+ {
+     static readonly object Gate = new();
+-    static StreamWriter _file;
++    static string _path;   // DIAG (engine-diag.patch): no long-lived writer; every line is opened, appended and closed
+     public static int Errors, Warnings, Exceptions;
+     public static bool Echo = true;
+     static readonly Dictionary<string, int> Seen = new();
+-    public static void Open(string path) { Directory.CreateDirectory(Path.GetDirectoryName(path)); _file = new StreamWriter(path, false) { AutoFlush = true }; }
++    public static bool IsOpen => _path != null;
++    public static void Open(string path) { Directory.CreateDirectory(Path.GetDirectoryName(path)); File.WriteAllText(path, ""); _path = path; }
++    /// <summary>DIAG: open + append + close per line, so a hang, a crash or a killed app keeps every line already written.</summary>
++    static void AppendLine(string line)
++    {
++        var bytes = System.Text.Encoding.UTF8.GetBytes(line + "\n");
++        using var fs = new FileStream(_path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite, 1, FileOptions.None);
++        fs.Write(bytes, 0, bytes.Length);
++    }
+     public static void Write(string tag, string msg)
+     {
+         var line = $"[{Runtime.Time.FrameCount,5}] {tag} {msg}";
+-        lock (Gate) { _file?.WriteLine(line); if (Echo) Console.WriteLine(line.Length > 400 ? line[..400] + "…" : line); }
++        lock (Gate) { if (_path != null) AppendLine(line); if (Echo) Console.WriteLine(line.Length > 400 ? line[..400] + "…" : line); }
+     }
+     public static void Info(string m) => Write("   ", m);
+     public static void Warn(string m) { Warnings++; Write("WRN", m); }
+diff -ruN a/engine/Shepherd.Engine/Program.cs b/engine/Shepherd.Engine/Program.cs
+--- a/engine/Shepherd.Engine/Program.cs
++++ b/engine/Shepherd.Engine/Program.cs
+@@ -20,11 +20,17 @@
+ 
+     public static int Main(string[] args)
+     {
++        Diag.BootPhase.Mark("Main: entered; next Diag.SimStats.MainEntered");   // DIAG (engine-diag.patch): each phase marked BEFORE it starts
+         Diag.SimStats.MainEntered();             // V6 startup clock; no-op unless SHEPHERD_SIMSTATS is set
++        Diag.BootPhase.Mark("Main: MonoCompat.MonoInterpCompat.Install (2026-10-07 device hang point: its transform loads System.Runtime.InteropServices)");
+         MonoCompat.MonoInterpCompat.Install();   // no-op unless running on the Mono interpreter (V2) and SHEPHERD_MONO_CFSHIM is set
++        Diag.BootPhase.Mark("Main: Profile.Check");
+         if (!Profile.Check(RuntimeManaged)) return 2;
++        Diag.BootPhase.Mark("Main: Diag.NativeCensus.Install");
+         Diag.NativeCensus.Install();             // vita: on by default (+ BCL network fail-fast); Mac default: only with SHEPHERD_NATIVE_CENSUS=1
++        Diag.BootPhase.Mark("Main: Profile.StartVita (VitaMemory.Install; loads Shepherd.Assets)");
+         if (Profile.Vita) Profile.StartVita();
++        Diag.BootPhase.Mark("Main: AssemblyLoadContext Resolving / ResolvingUnmanagedDll handlers");
+         // Must be installed before ANY Unity type is touched — Boot lives in another class so its JIT happens after this.
+         AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+         {
+@@ -57,6 +63,7 @@
+             Diag.NativeCensus.Fallback(name, asm, null, IntPtr.Zero);
+             return IntPtr.Zero;
+         };
++        Diag.BootPhase.Mark("Main: Boot.Run");
+         return Boot.Run(args);
+     }
+ }
