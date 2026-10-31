@@ -25,6 +25,10 @@ Working: boot, title, Main Menu, Settings, Credits, New Game to the opening, tou
 (matching Unity on the tested scenes). Video playback works on the device (both logos to their last frame, kit 10). Not yet: real gameplay frame rates, the whole game, the DLCs. The full plan, with every
 idea labelled, lives in the companion Claude plugin's idea catalog.
 
+**Progress ledger:** every kit, done and planned, each trick with a plain explanation and its measured or estimated effect --
+[docs/ledger/](docs/ledger/index.html) (served by GitHub Pages from `docs/` once the repository is public). Kits that ran are measured
+on the hardware; everything else is an estimate and says so.
+
 ## You need
 - **Your own copy of the game** you port. Shepherd never ships game files, and its build reads them only from your own install.
 - A PS Vita with HENkaku / Enso (taiHEN), and `libshacccg.suprx` extracted with ShaRKF00D (the runtime shader compiler).
@@ -47,7 +51,7 @@ See [BUILD.md](BUILD.md) for the steps.
 | `vita/audio` | The native audio engine |
 | `vita/vlx` | Off-device harness: the Vita build's own objects relinked for ARM Linux and run under QEMU |
 | `vita/tests`, `vita/gameaot`, ... | Tests, the game-AOT pipeline, probes, devlog, smaller experiments |
-| `docs/` | [Architecture](docs/ARCHITECTURE.md), [porting another game](docs/PORTING-ANOTHER-GAME.md) |
+| `docs/` | [Architecture](docs/ARCHITECTURE.md), [porting another game](docs/PORTING-ANOTHER-GAME.md), [progress ledger](docs/ledger/index.html) |
 
 ## The companion Claude plugin
 The knowledge behind this engine -- measured Vita hardware facts, gotchas that cost device runs, proven and failed techniques, a
