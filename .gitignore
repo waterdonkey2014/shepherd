@@ -29,3 +29,4 @@ vita/*/tools/*/out/
 engine/**/Derived
 # third-party checkout (see THIRD-PARTY-NOTICES.md)
 engine/Shepherd.Assets/native/crunch-unity
+.scrub-extra
