@@ -161,6 +161,7 @@ static class BundleIcalls
             string k8name = found.HasValue ? System.IO.Path.GetFileNameWithoutExtension(found.Value.path) : isLevel0 ? "level0" : name;
             if (Runtime.K8Preload.On) Runtime.K8Preload.OnLoadStart(k8name);   // kit #8: the read-order map / the preload's store (data only)
 #endif
+            if (Runtime.K9Gc.SceneNursery) Runtime.K9Gc.OnLoadStart(found.HasValue ? System.IO.Path.GetFileNameWithoutExtension(found.Value.path) : isLevel0 ? "level0" : name);   // kit #9 gc: the per-scene nursery
             int created0 = Loader.Created;   // kit #5 integration: SHEPHERD_BLACK_GC=scene counts the objects a game scene load creates
             if (found.HasValue) newHandle = Loader.InstantiateSceneFile(found.Value.file, System.IO.Path.GetFileNameWithoutExtension(found.Value.path), found.Value.path, activate: false);
             else if (isLevel0) newHandle = Loader.LoadLevel0(activate: false);

@@ -1,6 +1,6 @@
 #!/bin/zsh
 # libshepphys build + checks (vendored Box2D 2.3.1, our shim, the T1 determinism scenarios).
-#   vita/physics/build.sh [mac|vita|qemu|verify|golden|san|prof|all]   (default: all = mac vita qemu verify san)
+#   vita/physics/build.sh [mac|vita|qemu|verify|golden|san|prof|tsan|all]   (default: all = mac vita qemu verify san tsan)
 #   mac     Mac arm64: build/mac/libshepphys.dylib (+ .a, t1_runner); T1 check against tests/golden; FMA scan
 #   vita    Vita: build/vita/libshepphys_vita.a, the T1 test eboot + VPK (SHPD00020), symbol check, FMA/NEON scan
 #   qemu    runs libshepphys_vita.a's scenarios on QEMU's emulated Cortex-A9 (bare metal, silent) against the goldens
@@ -8,6 +8,7 @@
 #           two expected-to-differ risk probes: -ffp-contract=on (FMA) and Apple-libm trig
 #   golden  re-record tests/golden (canonical build: arm64 -O2 -ffp-contract=off, own trig) -- only after an intended change
 #   san     Stage 0: the ASan + UBSan build (asserts on, -O1) running T1, the Stage 0 self-test and the trace replay
+#   tsan    kit #9 (patch P3): the ThreadSanitizer build running T1 / S1-S3 / S7 / the traces with the worker pool: 0 race reports
 #   prof    the Mac library with Box2D's stock b2Timer (b2Profile phase splits) -> build/mac-prof/ (physbench_mac_prof links it)
 #   qemu-replay <trace.sptr>   Stage 1: an engine drive's trace replayed on the Mac and on QEMU's Cortex-A9 (the Vita archive), bit for bit
 # Stage 0 (physics-plan-v2 section 4) also made `mac` check B3 (the link map: b2Timer's symbols from sp_timer_stub.o), run the Stage 0
@@ -124,6 +125,9 @@ s0_trace() {   # <t1_runner> <label>
   grep "S3 RESULT" "$OUT/s3-$2.txt"
   "$1" s6 > "$OUT/s6-$2.txt" 2>&1 || { tail -5 "$OUT/s6-$2.txt"; print "S6 $2 FAILED"; exit 1; }   # Stage 6: the 3D island-ground ray
   grep "S6 RESULT" "$OUT/s6-$2.txt"
+  "$1" s7 > "$OUT/s7-$2.txt" 2>&1 || { tail -5 "$OUT/s7-$2.txt"; print "S7 $2 FAILED"; exit 1; }   # kit #9: patch P3's worlds (serial)
+  grep "S7 RESULT" "$OUT/s7-$2.txt"
+  [[ "$2" == mac ]] && p3_workers "$1"
   local hs=(); for k in s1 s2 s3 s6; do hs+=($(sed -nE 's/.*RESULT PASS hash ([0-9a-f]+).*/\1/p' "$OUT/$k-$2.txt")); done
   "$1" host $hs > "$OUT/host-$2.txt" 2>&1 || { cat "$OUT/host-$2.txt"; print "HOST $2 FAILED"; exit 1; }   # kit #8: the Vita host's pool block (sp_host_memory)
   grep -E "HOST (RESULT|contract)" "$OUT/host-$2.txt"
@@ -131,6 +135,69 @@ s0_trace() {   # <t1_runner> <label>
   "$1" trace "$W/trace-$2" > "$OUT/trace-$2.txt" 2>&1 || { cat "$OUT/trace-$2.txt"; print "TRACE $2 FAILED"; exit 1; }
   grep "TRACE SUMMARY" "$OUT/trace-$2.txt"
   rm -rf "$W/trace-$2"
+}
+
+# kit #9 (Stage 7 item 2, patch P3): T1, S1-S3, S7 and the T1 traces again with the worker pool (1, 2 and 3 workers, every phase forked
+# from one item, the check mode comparing each forked phase with its serial run): every hash must be the serial one, 0 check mismatches,
+# and S7's run must have taken each path once at least (Collide, triggers, islands, a big island, a non-fixed-point static body)
+p3_workers() {   # <t1_runner>
+  local r=0 w k
+  : > "$OUT/p3-workers.txt"
+  local s1=$(sed -nE 's/.*S1 RESULT PASS hash ([0-9a-f]+).*/\1/p' "$OUT/s1-mac.txt") s2=$(sed -nE 's/.*S2 RESULT PASS hash ([0-9a-f]+).*/\1/p' "$OUT/s2-mac.txt")
+  local s3=$(sed -nE 's/.*S3 RESULT PASS hash ([0-9a-f]+).*/\1/p' "$OUT/s3-mac.txt") s7=$(sed -nE 's/.*S7 RESULT PASS hash ([0-9a-f]+).*/\1/p' "$OUT/s7-mac.txt")
+  for w in 1 2 3; do
+    "$1" check tests/golden "$W/t1-p3w$w" --workers $w --jcheck > "$W/p3-t1-w$w.txt" 2>&1 || r=1
+    grep -q "8/8 match the golden files, 8/8" "$W/p3-t1-w$w.txt" || r=1
+    print "T1 workers $w: $(grep 'T1 SUMMARY' "$W/p3-t1-w$w.txt") | $(grep '^JOBS' "$W/p3-t1-w$w.txt" | sed -E 's/.*check runs ([0-9]+), mismatches ([0-9]+).*/check \1 runs, \2 mismatches/')" >> "$OUT/p3-workers.txt"
+    grep -q "mismatches 0$" "$W/p3-t1-w$w.txt" || r=1
+    for k in s1:$s1 s2:$s2 s3:$s3 s7:$s7; do
+      "$1" ${k%%:*} --workers $w --jcheck > "$W/p3-${k%%:*}-w$w.txt" 2>&1 || r=1
+      local got=$(sed -nE 's/.*RESULT PASS hash ([0-9a-f]+).*/\1/p' "$W/p3-${k%%:*}-w$w.txt")
+      [[ -n "$got" && "$got" == "${k#*:}" ]] || r=1
+      grep -q "mismatches 0$" "$W/p3-${k%%:*}-w$w.txt" || r=1
+      print "${(U)${k%%:*}} workers $w: hash ${got:-none} (serial ${k#*:}) | $(grep '^JOBS' "$W/p3-${k%%:*}-w$w.txt" | cut -c1-400)" >> "$OUT/p3-workers.txt"
+    done
+  done
+  # kit #9 review fix: S7 at the island threshold 3 too (its WAKE world then hands scene A back through the island count; at 1, scene B through a
+  # static that is not a fixed point): = the serial hash, and both runs must have left sleepers asleep on a hand-back (the path the fix is about)
+  for w in 1 2 3; do
+    "$1" s7 --workers $w --jmin 3 --jcheck > "$W/p3-s7j3-w$w.txt" 2>&1 || r=1
+    local got=$(sed -nE 's/.*RESULT PASS hash ([0-9a-f]+).*/\1/p' "$W/p3-s7j3-w$w.txt")
+    [[ -n "$got" && "$got" == "$s7" ]] || r=1
+    grep -q "mismatches 0$" "$W/p3-s7j3-w$w.txt" || r=1
+    print "S7 workers $w, thresholds 3: hash ${got:-none} (serial $s7) | $(grep '^JOBS' "$W/p3-s7j3-w$w.txt" | cut -c1-460)" >> "$OUT/p3-workers.txt"
+  done
+  local hb1=$(sed -nE 's/.*statics; ([0-9]+) sleepers left asleep.*/\1/p' "$W/p3-s7-w2.txt") hb3=$(sed -nE 's/.*statics; ([0-9]+) sleepers left asleep.*/\1/p' "$W/p3-s7j3-w2.txt")
+  (( ${hb1:-0} > 0 && ${hb3:-0} > 0 )) || { print "S7's WAKE world did not hand a step with sleepers back (thresholds 1: ${hb1:-none}, 3: ${hb3:-none})" >> "$OUT/p3-workers.txt"; r=1; }
+  rm -rf "$W/trace-p3"
+  "$1" trace "$W/trace-p3" --workers 2 --jcheck > "$W/p3-trace.txt" 2>&1 || r=1
+  grep -q "8/8 scenarios traced and replayed bit for bit" "$W/p3-trace.txt" || r=1
+  print "TRACE workers 2: $(grep 'TRACE SUMMARY' "$W/p3-trace.txt")" >> "$OUT/p3-workers.txt"
+  rm -rf "$W/trace-p3"
+  local j=$(grep '^JOBS' "$W/p3-s7-w2.txt")
+  [[ "$j" =~ "collide [1-9][0-9]* forks" && "$j" =~ "triggers [1-9][0-9]* /" && "$j" =~ "islands [1-9][0-9]* forks" && "$j" =~ "\([1-9][0-9]* big" && "$j" =~ "joints, [1-9][0-9]* statics" ]] || { print "S7's run did not take every P3 path: $j" >> "$OUT/p3-workers.txt"; r=1; }
+  print "P3 $( (( r == 0 )) && print OK || print FAILED): T1 8/8 + S1 / S2 / S3 / S7 hashes (S7 also at thresholds 3: hand-backs with sleepers ${hb1:-?} / ${hb3:-?}) and the T1 traces with 1, 2 and 3 workers = the serial run, 0 check mismatches" | tee -a "$OUT/p3-workers.txt"
+  (( r == 0 )) || { cat "$OUT/p3-workers.txt"; exit 1; }
+}
+
+# kit #9 (patch P3): ThreadSanitizer over the worker pool -- the library + t1_runner built with -fsanitize=thread, T1 / S1-S3 / S7 / the
+# traces with 2 and 3 workers and every phase forked: 0 race reports (stock Box2D's GJK counters gave 19-21 in PhysBench's run)
+tsan() {
+  local d="$W/tsan" f="-fsanitize=thread"
+  mac_build "$d" -DSHEPPHYS_OPT=-O1 "-DCMAKE_C_FLAGS=$f" "-DCMAKE_CXX_FLAGS=$f" "-DCMAKE_SHARED_LINKER_FLAGS=$f" "-DCMAKE_EXE_LINKER_FLAGS=$f"
+  local rep="$OUT/tsan.txt" r=0 w
+  : > "$rep"
+  export TSAN_OPTIONS="halt_on_error=0 history_size=2"
+  for w in 2 3; do
+    "$d/t1_runner" check tests/golden "$W/t1-tsan" --workers $w --jcheck >> "$rep" 2>&1 || r=1
+    for k in s1 s2 s3 s7; do "$d/t1_runner" $k --workers $w --jcheck >> "$rep" 2>&1 || r=1; done
+    rm -rf "$W/trace-tsan"; "$d/t1_runner" trace "$W/trace-tsan" --workers $w >> "$rep" 2>&1 || r=1; rm -rf "$W/trace-tsan"
+  done
+  local races=$(grep -c "WARNING: ThreadSanitizer" "$rep" || true)
+  grep -E "T1 SUMMARY|S1 RESULT|S2 RESULT|S3 RESULT|S7 RESULT|TRACE SUMMARY" "$rep" | cut -c1-120
+  (( races == 0 )) || { grep -A12 "WARNING: ThreadSanitizer" "$rep" | head -60; r=1; }
+  print "tsan (ThreadSanitizer, -O1, 2 and 3 workers, every phase forked): $( (( r == 0 )) && print "clean: 0 race reports" || print "FAILED ($races race reports)")" | tee -a "$rep"
+  (( r == 0 )) || exit 1
 }
 
 prof() {
@@ -262,6 +329,10 @@ qemu() {
   local q6=$(grep "QEMU S6 RESULT" "$d/run.txt" | sed -E 's/.*hash ([0-9a-f]+).*/\1/') m6=$(grep "S6 RESULT" "$OUT/s6-mac.txt" 2>/dev/null | sed -E 's/.*hash ([0-9a-f]+).*/\1/')
   print "S6 qemu hash $q6, mac hash ${m6:-missing (run build.sh mac first)}: $([[ -n "$m6" && "$q6" == "$m6" ]] && print equal || print DIFFERENT)" | tee "$OUT/s6-qemu-vs-mac.txt"
   [[ -n "$m6" && "$q6" == "$m6" ]] || exit 1
+  # kit #9 (patch P3): the P3 worlds, serial on QEMU (no threads there) = the Mac's serial run (= its worker runs: p3_workers)
+  local q7=$(grep "QEMU S7 RESULT" "$d/run.txt" | sed -E 's/.*hash ([0-9a-f]+).*/\1/') m7=$(grep "S7 RESULT" "$OUT/s7-mac.txt" 2>/dev/null | sed -E 's/.*hash ([0-9a-f]+).*/\1/')
+  print "S7 qemu hash $q7, mac hash ${m7:-missing (run build.sh mac first)}: $([[ -n "$m7" && "$q7" == "$m7" ]] && print equal || print DIFFERENT)" | tee "$OUT/s7-qemu-vs-mac.txt"
+  [[ -n "$m7" && "$q7" == "$m7" ]] || exit 1
 }
 
 verify() {
@@ -275,8 +346,9 @@ verify() {
     asan-ubsan  "-DSHEPPHYS_OPT=-O1 -DSHEPPHYS_NDEBUG=OFF -DCMAKE_C_FLAGS=-fsanitize=address,undefined -DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -DCMAKE_SHARED_LINKER_FLAGS=-fsanitize=address,undefined -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
     fma-on      "-DSHEPPHYS_FP_CONTRACT=on"
     libm-trig   "-DSHEPPHYS_TRIG_OWN=OFF"
+    gjk-stats   "-DSHEPPHYS_GJK_STATS=ON"
   )
-  for v in o0-asserts o3 x86_64 asan-ubsan fma-on libm-trig; do
+  for v in o0-asserts o3 x86_64 asan-ubsan fma-on libm-trig gjk-stats; do
     mac_build "$W/v-$v" ${=ARGS[$v]}
     local r=0
     local runner=("$W/v-$v/t1_runner")
@@ -316,8 +388,8 @@ qemu_replay() {   # <trace.sptr>
 
 what=${1:-all}
 case "$what" in
-  mac) mac ;; vita) vita ;; qemu) qemu ;; verify) verify ;; golden) golden ;; san) san ;; prof) prof ;;
+  mac) mac ;; vita) vita ;; qemu) qemu ;; verify) verify ;; golden) golden ;; san) san ;; prof) prof ;; tsan) tsan ;;
   qemu-replay) qemu_replay "${2:-}" ;;
-  all) mac; vita; qemu; verify; san ;;
-  *) print "usage: $0 [mac|vita|qemu|verify|golden|san|prof|all|qemu-replay <trace.sptr>]"; exit 2 ;;
+  all) mac; vita; qemu; verify; san; tsan ;;
+  *) print "usage: $0 [mac|vita|qemu|verify|golden|san|prof|tsan|all|qemu-replay <trace.sptr>]"; exit 2 ;;
 esac

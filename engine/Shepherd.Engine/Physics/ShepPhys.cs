@@ -13,6 +13,11 @@ public interface IPhysCore
     int Abi(int[] sizes, out float probe);
     string BuildInfo { get; }
     int Init(int poolBytes, int flags);
+    /// <summary>Kit #9 (Stage 7 item 2, patch P3): sp_init with worker threads (0..3; 0 = exactly <see cref="Init"/>).</summary>
+    int InitWorkers(int poolBytes, int flags, int workers);
+    /// <summary>Kit #9: the worker pool's settings and counters (sp_jobs_set / sp_jobs_get, shim/shepphys.h SP_JOBS_*); -2 without them.</summary>
+    int JobsSet(int key, int value);
+    int JobsGet(int key);
     int Shutdown();
     IntPtr PoolBase { get; }
     int PoolAlloc(int bytes);
@@ -204,6 +209,8 @@ public sealed unsafe class ShepPhys : IPhysCore
         if (p == IntPtr.Zero) throw new EntryPointNotFoundException($"shepphys: {name} not found ({(PhysConfig.HostProc ? "host shepphys_proc" : LibPath())})");
         return p;
     }
+    /// <summary>An optional entry point (kit #9's worker pool): IntPtr.Zero when the library has none.</summary>
+    static IntPtr TryProc(string name) { try { return Proc(name); } catch (EntryPointNotFoundException) { return IntPtr.Zero; } }
 
     delegate* unmanaged<int*, int, float*, int> _abi;
     delegate* unmanaged<IntPtr> _buildInfo;
@@ -255,6 +262,14 @@ public sealed unsafe class ShepPhys : IPhysCore
     delegate* unmanaged<int, int, Col3Def*, int> _col3dSet;
     delegate* unmanaged<int, Ray3Query*, Ray3Hit*, int, int> _ray3d;
     delegate* unmanaged<int, int*, int> _scene3dStats;
+    // kit #9 (Stage 7 item 2): the worker pool (optional entries: a library without them answers -2)
+    delegate* unmanaged<int, int, int> _jobsSet;
+    delegate* unmanaged<int, int> _jobsGet;
+    /// <summary>shim/shepphys.h's SP_JOBS_* keys the engine uses (kit #9).</summary>
+    public const int JobsWorkers = 0, JobsEnable = 1, JobsMinCollide = 2, JobsMinTriggers = 3, JobsMinIslands = 4, JobsSpinUs = 5, JobsCheck = 6, JobsHost = 8,
+        JobsStSteps = 16, JobsStForks = 17, JobsStWakes = 18, JobsStSleeps = 19, JobsStCollideForks = 20, JobsStCollideItems = 21, JobsStCollideSmall = 22,
+        JobsStTriggerForks = 23, JobsStTriggerItems = 24, JobsStTriggerSmall = 25, JobsStIslandForks = 26, JobsStIslands = 27, JobsStIslandsBig = 28,
+        JobsStIslandSmall = 29, JobsStIslandJoints = 30, JobsStIslandStatics = 31, JobsStAnomalies = 32, JobsStCheckRuns = 33, JobsStCheckMismatches = 34;
 
     static ShepPhys Bind()
     {
@@ -321,6 +336,8 @@ public sealed unsafe class ShepPhys : IPhysCore
             c._col3dDestroy = (delegate* unmanaged<int, int, int>)Proc("sp_col3d_destroy");
             c._ray3d = (delegate* unmanaged<int, Ray3Query*, Ray3Hit*, int, int>)Proc("sp_ray3d");
             c._scene3dStats = (delegate* unmanaged<int, int*, int>)Proc("sp_scene3d_stats");
+            c._jobsSet = (delegate* unmanaged<int, int, int>)TryProc("sp_jobs_set");   // kit #9 (optional)
+            c._jobsGet = (delegate* unmanaged<int, int>)TryProc("sp_jobs_get");
             var sizes = new int[AbiSizes];
             int v = c.Abi(sizes, out var probe);
             var bad = new List<string>();
@@ -339,6 +356,9 @@ public sealed unsafe class ShepPhys : IPhysCore
     [MethodImpl(MethodImplOptions.NoInlining)] public int Abi(int[] sizes, out float probe) { float p = 0; int v; fixed (int* s = sizes) v = _abi(s, sizes.Length, &p); probe = p; return v; }
     public string BuildInfo { [MethodImpl(MethodImplOptions.NoInlining)] get => Marshal.PtrToStringUTF8(_buildInfo()) ?? "?"; }
     [MethodImpl(MethodImplOptions.NoInlining)] public int Init(int poolBytes, int flags) { var d = new InitDef { PoolBytes = poolBytes, Flags = flags }; return _init(&d); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public int InitWorkers(int poolBytes, int flags, int workers) { var d = new InitDef { PoolBytes = poolBytes, Workers = workers, Flags = flags }; return _init(&d); }
+    [MethodImpl(MethodImplOptions.NoInlining)] public int JobsSet(int key, int value) => _jobsSet != null ? _jobsSet(key, value) : -2;
+    [MethodImpl(MethodImplOptions.NoInlining)] public int JobsGet(int key) => _jobsGet != null ? _jobsGet(key) : -2;
     [MethodImpl(MethodImplOptions.NoInlining)] public int Shutdown() => _shutdown();
     public IntPtr PoolBase { [MethodImpl(MethodImplOptions.NoInlining)] get => _poolBase(); }
     [MethodImpl(MethodImplOptions.NoInlining)] public int PoolAlloc(int bytes) => _poolAlloc(bytes);

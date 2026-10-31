@@ -546,7 +546,8 @@ public static class Lifecycle
 #endif
         Diag.K7Prof.Push(Diag.K7Prof.ZUpdate);
         int nu = PhaseSnapshot(PhUpdate, ref _updateBuf, ref _updateD); var ud = Shepherd.Engine.Render.HotCfg.On ? _updateD : null;
-        for (int i = 0; i < nu; i++) { var m = _updateBuf[i]; if (m.Started && m.IsEnabledCalled) { if (k7) Diag.K7Prof.Push(K7Id(m, PhUpdate)); if (ud != null) CallD(m, For(m).Update, ud[i], "Update"); else Call(m, For(m).Update, "Update"); if (k7) Diag.K7Prof.Pop(); } }
+        bool pf = Prefetch.On;   // kit #9 engine (SHEPHERD_K9_PREFETCH, off): the next behaviour's record prefetched while this one runs
+        for (int i = 0; i < nu; i++) { var m = _updateBuf[i]; if (pf && i + 1 < nu) Prefetch.Line(_updateBuf[i + 1]); if (m.Started && m.IsEnabledCalled) { if (k7) Diag.K7Prof.Push(K7Id(m, PhUpdate)); if (ud != null) CallD(m, For(m).Update, ud[i], "Update"); else Call(m, For(m).Update, "Update"); if (k7) Diag.K7Prof.Pop(); } }
         Array.Clear(_updateBuf, 0, nu); if (ud != null) Array.Clear(ud, 0, nu);
         Diag.K7Prof.Pop();
         Diag.K7Prof.Push(Diag.K7Prof.ZCoNext); Coroutines.Resume(Coroutines.Wait.NextFrame); Diag.K7Prof.Pop();
@@ -561,7 +562,7 @@ public static class Lifecycle
         Diag.K7Prof.Push(Diag.K7Prof.ZAnimator); Anim.AnimatorRuntime.UpdateAll(); Diag.K7Prof.Pop();
         Diag.K7Prof.Push(Diag.K7Prof.ZLate);
         int nl = PhaseSnapshot(PhLate, ref _lateBuf, ref _lateD); var lde = Shepherd.Engine.Render.HotCfg.On ? _lateD : null;
-        for (int i = 0; i < nl; i++) { var m = _lateBuf[i]; if (m.Started && m.IsEnabledCalled) { if (k7) Diag.K7Prof.Push(K7Id(m, PhLate)); if (lde != null) CallD(m, For(m).LateUpdate, lde[i], "LateUpdate"); else Call(m, For(m).LateUpdate, "LateUpdate"); if (k7) Diag.K7Prof.Pop(); } }
+        for (int i = 0; i < nl; i++) { var m = _lateBuf[i]; if (pf && i + 1 < nl) Prefetch.Line(_lateBuf[i + 1]); if (m.Started && m.IsEnabledCalled) { if (k7) Diag.K7Prof.Push(K7Id(m, PhLate)); if (lde != null) CallD(m, For(m).LateUpdate, lde[i], "LateUpdate"); else Call(m, For(m).LateUpdate, "LateUpdate"); if (k7) Diag.K7Prof.Pop(); } }
         Array.Clear(_lateBuf, 0, nl); if (lde != null) Array.Clear(lde, 0, nl);
         Diag.K7Prof.Pop();
         if (K6Engine.Video) { Diag.K7Prof.Push(Diag.K7Prof.ZVideo); Impl.VideoIcalls.Tick(); Diag.K7Prof.Pop(); }    // kit #6 (a): Unity's PostLateUpdate.UpdateVideo, after every LateUpdate
@@ -587,6 +588,7 @@ public static class Lifecycle
         Diag.K7Prof.Push(Diag.K7Prof.ZEngEnd);
         Assets.Diet.EndFrame();   // V3 diet: release whole-file buffers nothing read lately
         Registry.EndFrame();      // fid1-fixup D2: every list in use classifies this frame's records; the bind log never outlives a frame
+        K9House.EndFrame();       // kit #9 engine: one slice of the engine's 16-frame housekeeping cycle (SHEPHERD_K9_PHASE / _PURGE / _FIND / _SORT)
         Diag.K7Prof.Pop();
     }
 
@@ -611,7 +613,8 @@ public static class Lifecycle
         bool k7 = Diag.K7Prof.Types;
         Diag.K7Prof.Push(Diag.K7Prof.ZFixedUpd);
         int nf = PhaseSnapshot(PhFixed, ref _fixedBuf, ref _fixedD); var fd = Shepherd.Engine.Render.HotCfg.On ? _fixedD : null;
-        for (int i = 0; i < nf; i++) { var m = _fixedBuf[i]; if (m.Started && m.IsEnabledCalled) { if (k7) Diag.K7Prof.Push(K7Id(m, PhFixed)); if (fd != null) CallD(m, For(m).FixedUpdate, fd[i], "FixedUpdate"); else Call(m, For(m).FixedUpdate, "FixedUpdate"); if (k7) Diag.K7Prof.Pop(); } }
+        bool pf = Prefetch.On;   // kit #9 engine (SHEPHERD_K9_PREFETCH, off)
+        for (int i = 0; i < nf; i++) { var m = _fixedBuf[i]; if (pf && i + 1 < nf) Prefetch.Line(_fixedBuf[i + 1]); if (m.Started && m.IsEnabledCalled) { if (k7) Diag.K7Prof.Push(K7Id(m, PhFixed)); if (fd != null) CallD(m, For(m).FixedUpdate, fd[i], "FixedUpdate"); else Call(m, For(m).FixedUpdate, "FixedUpdate"); if (k7) Diag.K7Prof.Pop(); } }
         Array.Clear(_fixedBuf, 0, nf); if (fd != null) Array.Clear(fd, 0, nf);
         Diag.K7Prof.Pop();
         Diag.K7Prof.Push(Diag.K7Prof.ZTriggers);
@@ -683,11 +686,22 @@ public static class Coroutines
     public sealed class State
     {
         public NMono Owner; public readonly Stack<IEnumerator> Stack = new(); public IEnumerator Root; public string Method;
-        public Wait Kind; public double ResumeAt; public State WaitingOn; public AsyncOperation Async; public Coroutine Handle; public bool Done;
+        public Wait Kind; public double ResumeAt; public State WaitingOn; public AsyncOperation Async; public Coroutine Handle;
+        /// <summary>Finished or stopped. Kit #9 engine: a property (was a field) so that a state that finishes while in <see cref="All"/> is
+        /// counted for the end-of-pass sweep (SHEPHERD_K9_WHEEL); the value is the same bool as before.</summary>
+        public bool Done { get => _done; set { if (value && !_done && InAll) _doneInAll++; _done = value; } }
+        bool _done;
+        // kit #9 engine (SHEPHERD_K9_WHEEL): in All (wheel bookkeeping), its wait group (-1 none, 0..4) and the group lists it sits in (bits 0..2).
+        // Declared right after _done, Seq last and an int (review round 2, the object's size): on the Vita (32-bit Mono auto layout: the other
+        // fields in declaration order at their alignment) they fill the padding after _done and after YieldFrame, so a state stays 64 bytes, SGen's
+        // 64 class (with a long Seq and two ints it was 80: +16 bytes per coroutine started).
+        internal bool InAll; internal sbyte Group = -1; internal byte InLists;
         /// <summary>Kit #7: the profiler's id of this coroutine (owner type + method), made on its first timed step.</summary>
         public int K7Id = -1;
         /// <summary>The frame (Time.FrameCount) of the step that produced the current wait.</summary>
         public int YieldFrame;
+        /// <summary>Kit #9 engine (SHEPHERD_K9_WHEEL): its place in All's order (renumbered in All's order before the counter would wrap).</summary>
+        internal int Seq;
     }
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "m_Seconds")] static extern ref float Seconds(WaitForSeconds w);
     [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "m_Ptr")] static extern ref IntPtr CoPtr(Coroutine c);
@@ -703,7 +717,8 @@ public static class Coroutines
         var h = (Coroutine)RuntimeHelpers.GetUninitializedObject(typeof(Coroutine));
         var ptr = new IntPtr(_nextHandle++); CoPtr(h) = ptr; s.Handle = h; ByHandle[ptr] = s;
         if (Diag.K7Prof.Types) StepK7(s); else Step(s);   // Unity runs the first step synchronously (kit #7: timed as the coroutine's own key)
-        if (!s.Done) All.Add(s);
+        if (!s.Done) { All.Add(s); if (Wheel) Joined(s); }
+        else if (Wheel) ByHandle.Remove(ptr);   // kit #9: finished in its first step -- its handle answers as a finished one either way
         return h;
     }
 
@@ -758,6 +773,7 @@ public static class Coroutines
     public static void Resume(Wait phase)
     {
         if (All.Count == 0) return;
+        if (Wheel) { ResumeWheel(phase); return; }   // kit #9 engine (SHEPHERD_K9_WHEEL); below: kit #8's pass
         var arr = Pooled<State>.Copy(All, out int na);   // (menu-speed: was All.ToArray(); the same copy, pooled)
         try { for (int ia = 0; ia < na; ia++) ResumeOne(arr[ia], phase); }
         finally { Pooled<State>.Back(arr, na); }
@@ -765,44 +781,270 @@ public static class Coroutines
     }
     static void ResumeOne(State s, Wait phase)
     {
+        if (s.Done) return;
+        if (Due(s, phase)) { if (Diag.K7Prof.Types) StepK7(s); else Step(s); }
+    }
+    /// <summary>Unity: `yield return null` (and WaitForSeconds) continue after the Update functions of a LATER frame, never in the frame
+    /// that yielded -- a coroutine started from Update/Awake/Start (or a button handler) used to resume in the same frame's
+    /// coroutine phase, ahead of the Start() of objects created in that frame (polish round 1: the Settings menu's DoShow fired
+    /// OnShow before its tab navigator's Start had subscribed, so no tab was ever shown).</summary>
+    static bool Due(State s, Wait phase) => s.Kind switch
+    {
+        Wait.NextFrame => phase == Wait.NextFrame && s.YieldFrame != Time.FrameCount,
+        Wait.Seconds => phase == Wait.NextFrame && s.YieldFrame != Time.FrameCount && Time.Now >= s.ResumeAt,
+        Wait.FixedUpdate => phase == Wait.FixedUpdate,
+        Wait.EndOfFrame => phase == Wait.EndOfFrame,
+        Wait.Coroutine => phase == Wait.NextFrame && (s.WaitingOn == null || s.WaitingOn.Done),
+        Wait.Async => phase == Wait.NextFrame && AsyncOps.IsDone(s.Async),
+        _ => false
+    };
+
+    // ---------------- kit #9 engine (SHEPHERD_K9_WHEEL): the coroutine timer wheel ----------------
+    // A pass of kit #8 visits every live coroutine and steps, in All's order, those whose wait is over (Due). Which coroutines CAN be due in a
+    // pass is known from their wait kind alone, and a coroutine's kind changes only when it steps: so the live coroutines are kept in groups --
+    // 0 = the NextFrame pass's waits (null, a Coroutine, an AsyncOperation, a WaitForSeconds whose time has come), 1 = WaitForFixedUpdate,
+    // 2 = WaitForEndOfFrame, 3 = WaitForSeconds still asleep (a heap ordered by the wake-up time; the NextFrame pass first moves those whose time
+    // has come into group 0: Time.Now only changes between frames), 4 = never due (a NaN wait). Each group list is in All's order (Seq: the
+    // order of All.Add; All only appends and removes), a pass copies its group's list and calls Due on each in that order -- the coroutines it
+    // steps, and their order, are kit #8's (the others' Due is false in kit #8's pass too). A finished coroutine leaves All at the end of the
+    // pass that saw it finish, as before (one sweep per pass that has finished ones), and leaves the handle table then (a handle that is not
+    // there answers exactly like a finished one: Step's `yield return handle` and Stop(handle)). =check runs kit #8's pass (its copy of All,
+    // its order) and checks that every coroutine it steps is in the wheel's group list, in order.
+    static readonly bool Wheel = K9Engine.Wheel, WheelCheck = K9Engine.WheelCheck;
+    static readonly List<State>[] _grp = { new(), new(), new() };
+    static State[] _heap = new State[64]; static int _heapN; static int _seq; static int _doneInAll;
+    static void Joined(State s)
+    {
+        if (_seq >= SeqWrap) Renumber();
+        s.InAll = true; s.Seq = ++_seq;
+        if (s.Owner != null && s.Owner.CoN < 255) s.Owner.CoN++;
+        Classify(s);
+    }
+    /// <summary>The Seq counter's limit (int.MaxValue - 1; a test may lower it with SHEPHERD_K9_SEQ_WRAP to exercise the renumbering).</summary>
+    static readonly int SeqWrap = int.TryParse(Environment.GetEnvironmentVariable("SHEPHERD_K9_SEQ_WRAP"), out var w) && w > 0 ? w : int.MaxValue - 1;
+    /// <summary>Before Seq would wrap: the group lists drop the entries that left All (or finished: the next pass would drop them), then every state
+    /// in All is renumbered 1..n in All's order -- each list is a subsequence of All, so it stays sorted and the binary insertion keeps working.</summary>
+    static void Renumber()
+    {
+        for (int g = 0; g < _grp.Length; g++)
         {
-            if (s.Done) return;
-            // Unity: `yield return null` (and WaitForSeconds) continue after the Update functions of a LATER frame, never in the frame
-            // that yielded -- a coroutine started from Update/Awake/Start (or a button handler) used to resume in the same frame's
-            // coroutine phase, ahead of the Start() of objects created in that frame (polish round 1: the Settings menu's DoShow fired
-            // OnShow before its tab navigator's Start had subscribed, so no tab was ever shown).
-            bool go = s.Kind switch
-            {
-                Wait.NextFrame => phase == Wait.NextFrame && s.YieldFrame != Time.FrameCount,
-                Wait.Seconds => phase == Wait.NextFrame && s.YieldFrame != Time.FrameCount && Time.Now >= s.ResumeAt,
-                Wait.FixedUpdate => phase == Wait.FixedUpdate,
-                Wait.EndOfFrame => phase == Wait.EndOfFrame,
-                Wait.Coroutine => phase == Wait.NextFrame && (s.WaitingOn == null || s.WaitingOn.Done),
-                Wait.Async => phase == Wait.NextFrame && AsyncOps.IsDone(s.Async),
-                _ => false
-            };
-            if (go) { if (Diag.K7Prof.Types) StepK7(s); else Step(s); }
+            var l = _grp[g]; int w = 0, bit = 1 << g;
+            for (int r = 0; r < l.Count; r++) { var x = l[r]; if (x.InAll && !x.Done) l[w++] = x; else x.InLists = (byte)(x.InLists & ~bit); }
+            l.RemoveRange(w, l.Count - w);
         }
+        int q = 0; foreach (var x in All) x.Seq = ++q;
+        _seq = q; K9Engine.WheelRenumbers++;
+    }
+    static void Classify(State s)
+    {
+        if (s.Done) return;
+        if (s.Kind == Wait.Seconds) { if (double.IsNaN(s.ResumeAt)) s.Group = 4; else { s.Group = 3; HeapPush(s); K9Engine.WheelSleeps++; } return; }
+        int g = s.Kind == Wait.FixedUpdate ? 1 : s.Kind == Wait.EndOfFrame ? 2 : 0;
+        s.Group = (sbyte)g;
+        if ((s.InLists & (1 << g)) == 0) { Insert(_grp[g], s); s.InLists = (byte)(s.InLists | 1 << g); }
+    }
+    static void Insert(List<State> l, State s)
+    {
+        int lo = 0, hi = l.Count;
+        if (hi == 0 || l[hi - 1].Seq < s.Seq) { l.Add(s); return; }
+        while (lo < hi) { int mid = (lo + hi) >> 1; if (l[mid].Seq < s.Seq) lo = mid + 1; else hi = mid; }
+        l.Insert(lo, s);
+    }
+    static void ResumeWheel(Wait phase)
+    {
+        int g = phase == Wait.NextFrame ? 0 : phase == Wait.FixedUpdate ? 1 : phase == Wait.EndOfFrame ? 2 : -1;
+        if (g < 0) { Sweep(); return; }
+        if (g == 0)
+        {
+            double now = Time.Now;
+            while (_heapN > 0 && now >= _heap[0].ResumeAt)
+            {
+                var s = HeapPop(); K9Engine.WheelWakes++;
+                if (s.Done || s.Group != 3) continue;
+                s.Group = 0; if ((s.InLists & 1) == 0) { Insert(_grp[0], s); s.InLists = (byte)(s.InLists | 1); }
+            }
+        }
+        var l = _grp[g]; int w = 0, bit = 1 << g;
+        for (int r = 0; r < l.Count; r++) { var s = l[r]; if (s.Group == g && !s.Done) l[w++] = s; else s.InLists = (byte)(s.InLists & ~bit); }
+        l.RemoveRange(w, l.Count - w);
+        if (WheelCheck) CheckPass(phase, l);
+        else if (w > 0)
+        {
+            var arr = Pooled<State>.Copy(l, out int n);
+            try
+            {
+                bool pf = Prefetch.On;   // (SHEPHERD_K9_PREFETCH, off: the next coroutine's state prefetched)
+                for (int i = 0; i < n; i++)
+                {
+                    var s = arr[i]; if (pf && i + 1 < n) Prefetch.Line(arr[i + 1]);
+                    if (s.Done || !Due(s, phase)) continue;
+                    if (Diag.K7Prof.Types) StepK7(s); else Step(s);
+                    Classify(s);
+                }
+            }
+            finally { Pooled<State>.Back(arr, n); }
+        }
+        Sweep();
+    }
+    /// <summary>=check: kit #8's pass, each step classified for the wheel; a stepped coroutine missing from the wheel's list (or out of its
+    /// order) is a difference.</summary>
+    static void CheckPass(Wait phase, List<State> candList)
+    {
+        var arr = Pooled<State>.Copy(All, out int na); int ci = 0;
+        var cand = Pooled<State>.Copy(candList, out int nc);   // (review fix: a copy -- a black-frame collection inside a step may prune the group list)
+        try
+        {
+            for (int ia = 0; ia < na; ia++)
+            {
+                var s = arr[ia];
+                if (s.Done || !Due(s, phase)) continue;
+                while (ci < nc && !ReferenceEquals(cand[ci], s)) ci++;
+                if (ci == nc) K9Engine.DiffCoroutine(s.Owner?.Managed, s.Method); else ci++;
+                if (Diag.K7Prof.Types) StepK7(s); else Step(s);
+                Classify(s);
+            }
+        }
+        finally { Pooled<State>.Back(cand, nc); Pooled<State>.Back(arr, na); }
+    }
+    /// <summary>The end of a pass: the finished coroutines leave All (kit #8 removes them at the end of every pass: when none finished that is a
+    /// no-op) and the handle table.</summary>
+    static void Sweep()
+    {
+        if (_doneInAll == 0) return;
+        _doneInAll = 0;
+        All.RemoveAll(s =>
+        {
+            if (!s.Done) return false;
+            s.InAll = false; ByHandle.Remove(CoPtr(s.Handle));
+            if (s.Owner != null && s.Owner.CoN is > 0 and < 255) s.Owner.CoN--;
+            return true;
+        });
+    }
+    static void HeapPush(State s)
+    {
+        if (_heapN == _heap.Length) Array.Resize(ref _heap, _heapN * 2);
+        int i = _heapN++;
+        while (i > 0) { int p = (i - 1) >> 1; if (_heap[p].ResumeAt <= s.ResumeAt) break; _heap[i] = _heap[p]; i = p; }
+        _heap[i] = s;
+    }
+    static State HeapPop()
+    {
+        var top = _heap[0]; var last = _heap[--_heapN]; _heap[_heapN] = null;
+        if (_heapN > 0)
+        {
+            int i = 0;
+            while (true)
+            {
+                int c = 2 * i + 1; if (c >= _heapN) break;
+                if (c + 1 < _heapN && _heap[c + 1].ResumeAt < _heap[c].ResumeAt) c++;
+                if (last.ResumeAt <= _heap[c].ResumeAt) break;
+                _heap[i] = _heap[c]; i = c;
+            }
+            _heap[i] = last;
+        }
+        return top;
+    }
+    /// <summary>Kit #9 engine, review fix (SHEPHERD_K9_WHEEL_COMPACT; Runtime/K9House.cs slot 12 and right before the black-frame collection): the
+    /// sleepers' heap drops the coroutines that were stopped while asleep (popping skips them anyway: `s.Done` -> continue) and is rebuilt over
+    /// the rest. Nothing else changes: a wake-up pops every sleeper whose time has come and puts each into group 0 by Seq (All's order), so the
+    /// heap's internal layout never decides an order. Returns the entries dropped.</summary>
+    internal static int CompactHeap()
+    {
+        int w = 0;
+        for (int r = 0; r < _heapN; r++) { var s = _heap[r]; if (!s.Done) _heap[w++] = s; }
+        int dropped = _heapN - w; if (dropped == 0) return 0;
+        Array.Clear(_heap, w, _heapN - w); _heapN = w;
+        for (int i = (w >> 1) - 1; i >= 0; i--)
+        {
+            var x = _heap[i]; int j = i;
+            while (true)
+            {
+                int c = 2 * j + 1; if (c >= w) break;
+                if (c + 1 < w && _heap[c + 1].ResumeAt < _heap[c].ResumeAt) c++;
+                if (x.ResumeAt <= _heap[c].ResumeAt) break;
+                _heap[j] = _heap[c]; j = c;
+            }
+            _heap[j] = x;
+        }
+        if (_heap.Length > 64 && w < _heap.Length / 4) Array.Resize(ref _heap, Math.Max(64, w * 2));   // a burst's doubled array is given back
+        return dropped;
     }
 
-    public static void StopAll(NMono m) { foreach (var s in All) if (s.Owner == m) s.Done = true; }
-    public static void Stop(NMono m, IEnumerator e) { foreach (var s in All) if (s.Owner == m && s.Root == e) s.Done = true; }
-    public static void Stop(NMono m, string method) { foreach (var s in All) if (s.Owner == m && s.Method == method) s.Done = true; }
+    /// <summary>Kit #9 engine, review fix (SHEPHERD_K9_WHEEL_COMPACT; Runtime/K9House.cs BeforeCollect, right before the black-frame collection,
+    /// after CompactHeap): the group lists drop the coroutines that left All or finished (Renumber's rule) -- a list is otherwise pruned only by
+    /// its own pass (none at all while All is empty), so a swept coroutine, its owner and its enumerators stayed reachable through the
+    /// collection although kit #8's All no longer held them. A list is a subsequence of All either way; every pass iterates a copy (the check's
+    /// candidate list too), so this may run inside a step. Returns the entries dropped.</summary>
+    internal static int ReleaseDead()
+    {
+        int dropped = 0;
+        for (int g = 0; g < _grp.Length; g++)
+        {
+            var l = _grp[g]; int w = 0, bit = 1 << g;
+            for (int r = 0; r < l.Count; r++) { var x = l[r]; if (x.InAll && !x.Done) l[w++] = x; else x.InLists = (byte)(x.InLists & ~bit); }
+            dropped += l.Count - w; l.RemoveRange(w, l.Count - w);
+        }
+        return dropped;
+    }
+
+    /// <summary>Kit #9 engine (SHEPHERD_K9_WHEEL): a behaviour no live coroutine belongs to (its count of them is 0) is not searched for.
+    /// =check (review fix): the search runs anyway; a live coroutine of the behaviour found there is a difference, and kit #8's stop is applied.</summary>
+    public static void StopAll(NMono m) { if (Wheel && m.CoN == 0) { if (WheelCheck) CheckSkipped(m, K9Engine.SkipStopAll, null, null); return; } foreach (var s in All) if (s.Owner == m) s.Done = true; }
+    public static void Stop(NMono m, IEnumerator e) { if (Wheel && m.CoN == 0) { if (WheelCheck) CheckSkipped(m, K9Engine.SkipStopRoutine, e, null); return; } foreach (var s in All) if (s.Owner == m && s.Root == e) s.Done = true; }
+    public static void Stop(NMono m, string method) { if (Wheel && m.CoN == 0) { if (WheelCheck) CheckSkipped(m, K9Engine.SkipStopMethod, null, method); return; } foreach (var s in All) if (s.Owner == m && s.Method == method) s.Done = true; }
+    /// <summary>=check: kit #8's loop for a skipped Stop* (what = which: all / by enumerator / by method name); a match that was still live (kit #8
+    /// would stop it; the skip did not) is counted and stopped.</summary>
+    static void CheckSkipped(NMono m, int what, IEnumerator e, string method)
+    {
+        foreach (var s in All)
+            if (s.Owner == m && (what == K9Engine.SkipStopAll || what == K9Engine.SkipStopRoutine && s.Root == e || what == K9Engine.SkipStopMethod && s.Method == method))
+            { if (!s.Done) K9Engine.DiffCount(m.Managed, s.Method, what); s.Done = true; }
+    }
     public static void Stop(Coroutine c) { if (c != null && ByHandle.TryGetValue(CoPtr(c), out var s)) s.Done = true; }
     public static int Count => All.Count;
 }
 
 public static class Invokes
 {
-    sealed class Item { public NMono Owner; public string Method; public double At; public float Repeat; public bool Cancelled; }
+    // (kit #9 engine: Due declared before Seq -- on the Vita it sits in the padding after Cancelled: 40 bytes, not 48)
+    sealed class Item { public NMono Owner; public string Method; public double At; public float Repeat; public bool Cancelled; internal bool Due; internal long Seq; }
     static readonly List<Item> Items = new();
-    public static void Add(NMono m, string method, float time, float repeat) => Items.Add(new Item { Owner = m, Method = method, At = Time.Now + time, Repeat = repeat });
-    public static void Cancel(NMono m, string method) { foreach (var i in Items) if (i.Owner == m && (method == null || i.Method == method)) i.Cancelled = true; }
+    public static void Add(NMono m, string method, float time, float repeat)
+    {
+        var it = new Item { Owner = m, Method = method, At = Time.Now + time, Repeat = repeat };
+        Items.Add(it);
+        if (Wheel) { it.Seq = ++_seq; if (m.InvN < 255) m.InvN++; Place(it); }
+    }
+    public static void Cancel(NMono m, string method)
+    {
+        if (Wheel) { if (m.InvN == 0) { if (WheelCheck) CheckSkippedCancel(m, method); return; } _dirty = true; }   // kit #9 engine: a behaviour with no live timer is not searched for
+        foreach (var i in Items) if (i.Owner == m && (method == null || i.Method == method)) i.Cancelled = true;
+    }
     public static void CancelAll(NMono m) => Cancel(m, null);
-    public static bool IsInvoking(NMono m, string method) => Items.Any(i => !i.Cancelled && i.Owner == m && (method == null || i.Method == method));
+    public static bool IsInvoking(NMono m, string method)
+    {
+        if (Wheel && m.InvN == 0) return WheelCheck && CheckSkippedIsInvoking(m, method);   // kit #9 engine: no live timer -> false without a search
+        return Items.Any(i => !i.Cancelled && i.Owner == m && (method == null || i.Method == method));
+    }
+    /// <summary>=check (review fix): kit #8's CancelInvoke loop although the behaviour's timer count was 0; a timer it cancels that was still live is
+    /// a difference (cancelled, as kit #8 does).</summary>
+    static void CheckSkippedCancel(NMono m, string method)
+    {
+        foreach (var i in Items)
+            if (i.Owner == m && (method == null || i.Method == method))
+            { if (!i.Cancelled) { K9Engine.DiffCount(m.Managed, i.Method, K9Engine.SkipCancelInvoke); _dirty = true; } i.Cancelled = true; }
+    }
+    /// <summary>=check (review fix): kit #8's IsInvoking answer although the behaviour's timer count was 0; true is a difference (and is returned).</summary>
+    static bool CheckSkippedIsInvoking(NMono m, string method)
+    {
+        bool r = Items.Any(i => !i.Cancelled && i.Owner == m && (method == null || i.Method == method));
+        if (r) K9Engine.DiffCount(m.Managed, method, K9Engine.SkipIsInvoking);
+        return r;
+    }
     static Item[] _tickBuf = Array.Empty<Item>();
     public static void Tick()
     {
+        if (Wheel) { TickWheel(); return; }   // kit #9 engine (SHEPHERD_K9_WHEEL); below: kit #8's tick
         int n = Items.Count; if (_tickBuf.Length < n) _tickBuf = new Item[Math.Max(16, n * 2)];
         Items.CopyTo(_tickBuf); var snap = _tickBuf;   // (was Items.ToArray(); cleared below)
         for (int k = 0; k < n; k++)
@@ -810,24 +1052,178 @@ public static class Invokes
             var i = snap[k];
             if (i.Cancelled || i.Owner.Destroyed) { i.Cancelled = true; continue; }
             if (Time.Now < i.At || !i.Owner.Go.ActiveInHierarchy) continue;
-            var mi = FindMethod(i.Owner.Managed.GetType(), i.Method);
-            try { mi?.Invoke(i.Owner.Managed, null); } catch (Exception e) { Log.Exception(e, $"Invoke {i.Method}"); }
-#if !SHEPHERD_EBOOT
-            if (Diag.TestSpine.On) Diag.TestSpine.After();   // kit #7 tests: SHEPHERD_TEST_SPINE (review fix: Invoke / InvokeRepeating targets)
-#endif
-            if (i.Repeat > 0) i.At += i.Repeat; else i.Cancelled = true;
+            Fire(i);
         }
         Array.Clear(snap, 0, n);
         Items.RemoveAll(i => i.Cancelled);
     }
+    static void Fire(Item i)
+    {
+        var mi = FindMethod(i.Owner.Managed.GetType(), i.Method);
+        try { mi?.Invoke(i.Owner.Managed, null); } catch (Exception e) { Log.Exception(e, $"Invoke {i.Method}"); }
+#if !SHEPHERD_EBOOT
+        if (Diag.TestSpine.On) Diag.TestSpine.After();   // kit #7 tests: SHEPHERD_TEST_SPINE (review fix: Invoke / InvokeRepeating targets)
+#endif
+        if (i.Repeat > 0) i.At += i.Repeat; else i.Cancelled = true;
+    }
     public static MethodInfo FindMethod(Type t, string name)
     {
+        if (K9Memo.On) return K9Memo.InvokeTarget(t, name);   // kit #9 engine (SHEPHERD_K9_MEMO): this walk, memoized per (type, name)
         for (var c = t; c != null; c = c.BaseType)
         {
             var m = c.GetMethod(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
             if (m != null) return m;
         }
         return null;
+    }
+
+    // ---------------- kit #9 engine (SHEPHERD_K9_WHEEL): Invoke / InvokeRepeating into the timer wheel ----------------
+    // Kit #8's tick visits every timer and fires, in Items' order, those that are due (!(Time.Now < At)) and whose behaviour is active in the
+    // hierarchy. A timer that is not due stays not due until Time.Now passes it (Time.Now changes between frames only; At changes only when the
+    // timer fires): so the timers sleep in a heap by At, and the tick first moves the due ones into the due list (kept in Items' order: Seq),
+    // then copies the due list and fires from it with kit #8's tests, in that order -- kit #8's fires in kit #8's order. A due timer whose
+    // behaviour is inactive stays in the due list (kit #8 re-tests it every tick); a NaN At is always due (kit #8's test); a repeating timer
+    // goes back to sleep once its next At is in the future. Timers added while the tick fires are not fired in it (kit #8's copy). Cancelled
+    // timers leave Items at the end of a tick that cancelled any (kit #8: every tick). =check runs kit #8's tick and checks each fire was in the
+    // wheel's due list, in order.
+    static readonly bool Wheel = K9Engine.Wheel, WheelCheck = K9Engine.WheelCheck;
+    static readonly List<Item> _due = new();
+    static Item[] _heap = new Item[16]; static int _heapN; static long _seq; static bool _dirty;
+    static void Place(Item i)
+    {
+        if (!(Time.Now < i.At) || double.IsNaN(i.At)) { if (!i.Due) { i.Due = true; InsertDue(i); } return; }
+        i.Due = false; HeapPush(i); K9Engine.WheelSleeps++;
+    }
+    static void InsertDue(Item it)
+    {
+        int lo = 0, hi = _due.Count;
+        if (hi == 0 || _due[hi - 1].Seq < it.Seq) { _due.Add(it); return; }
+        while (lo < hi) { int mid = (lo + hi) >> 1; if (_due[mid].Seq < it.Seq) lo = mid + 1; else hi = mid; }
+        _due.Insert(lo, it);
+    }
+    static void TickWheel()
+    {
+        double now = Time.Now;
+        while (_heapN > 0 && !(now < _heap[0].At)) { var it = HeapPop(); K9Engine.WheelWakes++; if (it.Cancelled) continue; if (!it.Due) { it.Due = true; InsertDue(it); } }
+        int n = _due.Count;
+        if (WheelCheck) CheckTick(n);
+        else if (n > 0)
+        {
+            if (_tickBuf.Length < n) _tickBuf = new Item[Math.Max(16, n * 2)];
+            _due.CopyTo(_tickBuf); var snap = _tickBuf;
+            for (int k = 0; k < n; k++)
+            {
+                var i = snap[k];
+                if (i.Cancelled || i.Owner.Destroyed) { i.Cancelled = true; _dirty = true; continue; }
+                if (Time.Now < i.At || !i.Owner.Go.ActiveInHierarchy) continue;
+                Fire(i); if (i.Cancelled) _dirty = true;
+            }
+            Array.Clear(snap, 0, n);
+        }
+        // the due list: cancelled timers out, repeating ones whose next time is in the future back to sleep
+        int w = 0;
+        for (int r = 0; r < _due.Count; r++)
+        {
+            var i = _due[r];
+            if (i.Cancelled) { i.Due = false; continue; }
+            if (Time.Now < i.At && !double.IsNaN(i.At)) { i.Due = false; HeapPush(i); continue; }
+            _due[w++] = i;
+        }
+        _due.RemoveRange(w, _due.Count - w);
+        if (_dirty)
+        {
+            _dirty = false;
+            Items.RemoveAll(i => { if (!i.Cancelled) return false; if (i.Owner != null && i.Owner.InvN is > 0 and < 255) i.Owner.InvN--; return true; });
+        }
+    }
+    /// <summary>=check: kit #8's tick over Items (its copy, its order, its tests); a fire missing from the wheel's due list (or out of its order) is
+    /// a difference.</summary>
+    static void CheckTick(int nd)
+    {
+        int n = Items.Count; var snap = new Item[n]; Items.CopyTo(snap); int di = 0;
+        var due = _due.GetRange(0, nd);   // (review fix: a copy -- a black-frame collection inside a fire may release the due list's cancelled timers)
+        for (int k = 0; k < n; k++)
+        {
+            var i = snap[k];
+            if (i.Cancelled || i.Owner.Destroyed) { i.Cancelled = true; _dirty = true; continue; }
+            if (Time.Now < i.At || !i.Owner.Go.ActiveInHierarchy) continue;
+            while (di < nd && !ReferenceEquals(due[di], i)) di++;
+            if (di == nd) K9Engine.DiffInvoke(i.Owner?.Managed, i.Method); else di++;
+            Fire(i); if (i.Cancelled) _dirty = true;
+        }
+        _dirty = true;
+    }
+    static void HeapPush(Item s)
+    {
+        if (_heapN == _heap.Length) Array.Resize(ref _heap, _heapN * 2);
+        int i = _heapN++;
+        while (i > 0) { int p = (i - 1) >> 1; if (_heap[p].At <= s.At) break; _heap[i] = _heap[p]; i = p; }
+        _heap[i] = s;
+    }
+    static Item HeapPop()
+    {
+        var top = _heap[0]; var last = _heap[--_heapN]; _heap[_heapN] = null;
+        if (_heapN > 0)
+        {
+            int i = 0;
+            while (true)
+            {
+                int c = 2 * i + 1; if (c >= _heapN) break;
+                if (c + 1 < _heapN && _heap[c + 1].At < _heap[c].At) c++;
+                if (last.At <= _heap[c].At) break;
+                _heap[i] = _heap[c]; i = c;
+            }
+            _heap[i] = last;
+        }
+        return top;
+    }
+    /// <summary>Kit #9 engine, review fix (SHEPHERD_K9_WHEEL_COMPACT; Runtime/K9House.cs slot 12 and right before the black-frame collection): the
+    /// timers' heap drops the cancelled ones (they left Items at the end of the tick that cancelled them; popping skips them) and is rebuilt over
+    /// the rest. A sleeping timer whose behaviour was destroyed is cancelled here, as kit #8's next tick cancels it (`i.Owner.Destroyed` ->
+    /// Cancelled), and leaves Items at the end of the next tick (_dirty), as in kit #8; its Cancelled flag is not observable in between (a
+    /// destroyed behaviour's managed object has no record: the CancelInvoke / IsInvoking icalls do not reach Invokes). A wake-up pops every timer
+    /// whose time has come and puts each into the due list by Seq (Items' order), so the heap's internal layout never decides an order. Returns
+    /// the entries dropped.</summary>
+    internal static int CompactHeap()
+    {
+        int w = 0;
+        for (int r = 0; r < _heapN; r++)
+        {
+            var it = _heap[r];
+            if (!it.Cancelled && it.Owner.Destroyed) { it.Cancelled = true; _dirty = true; }
+            if (!it.Cancelled) _heap[w++] = it;
+        }
+        int dropped = _heapN - w; if (dropped == 0) return 0;
+        Array.Clear(_heap, w, _heapN - w); _heapN = w;
+        for (int i = (w >> 1) - 1; i >= 0; i--)
+        {
+            var x = _heap[i]; int j = i;
+            while (true)
+            {
+                int c = 2 * j + 1; if (c >= w) break;
+                if (c + 1 < w && _heap[c + 1].At < _heap[c].At) c++;
+                if (x.At <= _heap[c].At) break;
+                _heap[j] = _heap[c]; j = c;
+            }
+            _heap[j] = x;
+        }
+        if (_heap.Length > 16 && w < _heap.Length / 4) Array.Resize(ref _heap, Math.Max(16, w * 2));   // a burst's doubled array is given back
+        return dropped;
+    }
+    /// <summary>Kit #9 engine, review fix (SHEPHERD_K9_WHEEL_COMPACT; Runtime/K9House.cs BeforeCollect, right before the black-frame collection,
+    /// after CompactHeap): the cancelled timers leave Items and the due list now -- the next tick would drop them (kit #8's tick: Items.RemoveAll
+    /// at its end), but it runs after the collection, so a destroyed behaviour's sleeping timer (cancelled by CompactHeap) kept the behaviour
+    /// and everything it references alive through it. Removing cancelled timers never changes the order of the others, and a cancelled timer
+    /// never fires (kit #8's test); the tick's own RemoveAll then finds them gone (each owner's count is decremented once, here). The fire loops
+    /// iterate copies (the check's due list too), so this may run inside a fire. Returns the timers released.</summary>
+    internal static int ReleaseDead()
+    {
+        int w = 0;
+        for (int r = 0; r < _due.Count; r++) { var i = _due[r]; if (i.Cancelled) { i.Due = false; continue; } _due[w++] = i; }
+        _due.RemoveRange(w, _due.Count - w);
+        if (!_dirty) return 0;
+        _dirty = false;
+        return Items.RemoveAll(i => { if (!i.Cancelled) return false; if (i.Owner != null && i.Owner.InvN is > 0 and < 255) i.Owner.InvN--; return true; });
     }
 }
 
@@ -865,9 +1261,20 @@ public static class AsyncOps
 #endif
     }
     static Op[] _tickBuf = Array.Empty<Op>();
+    /// <summary>The frame's integration of finished loads. Kit #10 (boot track, Runtime/K10Load.cs): under the play clock, while Unity's
+    /// background-loading slice lasts, operations that became ready during a pass are taken in further passes of the same frame;
+    /// SHEPHERD_K10_LOADPRIO=0 (and every frame-clock run unless a test forces it) = kit #9's single pass.</summary>
     public static void Tick()
     {
-        int n = ByPtr.Count; if (_tickBuf.Length < n) _tickBuf = new Op[Math.Max(16, n * 2)];
+        if (!K10Load.Active) { TickPass(); return; }
+        K10Load.Begin();
+        int passes = 1, done = TickPass(), extra = 0;
+        while (K10Load.More(passes, done)) { done = TickPass(); extra += done; passes++; }
+        K10Load.End(passes, extra);
+    }
+    static int TickPass()
+    {
+        int n = ByPtr.Count, done = 0; if (_tickBuf.Length < n) _tickBuf = new Op[Math.Max(16, n * 2)];
         ByPtr.Values.CopyTo(_tickBuf, 0); var snap = _tickBuf;   // (was ByPtr.Values.ToArray(): the same elements, the same order)
         for (int k = 0; k < n; k++)
         {
@@ -876,7 +1283,7 @@ public static class AsyncOps
             if (!o.AllowActivation) { o.Progress = Math.Max(o.Progress, 0.9f); continue; }
             if (o.Poll == null || o.Poll())
             {
-                o.Done = true; o.Progress = 1f;
+                o.Done = true; o.Progress = 1f; done++;
                 try { o.OnComplete?.Invoke(); } catch (Exception e) { Log.Exception(e, "async onComplete"); }
                 try { InvokeCompletionEvent(o.Managed); } catch (Exception e) { Log.Exception(e, "AsyncOperation.completed"); }
 #if !SHEPHERD_EBOOT
@@ -885,6 +1292,7 @@ public static class AsyncOps
             }
         }
         Array.Clear(snap, 0, n);
+        return done;
     }
     static void InvokeCompletionEvent(AsyncOperation a)
     {

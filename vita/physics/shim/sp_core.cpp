@@ -11,7 +11,8 @@
  *  - sp_settings_check: Physics2DSettings decoded from the install at run time vs Box2D 2.3.1's compiled constants (plan section 1.2:
  *    every CotL value equals a stock constant except maxRotationSpeed, which only spinning bodies reach: H-MAXROT).
  *  - sp_nop: the managed->native transition floor for the engine's physbench mode.
- * Not thread-safe: USER_0 only, like every physics call (plan section 3 "Threads"). */
+ * Not thread-safe: USER_0 only, like every physics call (plan section 3 "Threads"); kit #9's worker pool (shim/sp_jobs.cpp) runs only inside
+ * b2World::Step's forked phases, which never allocate from the pool or the arena on a worker. */
 #include "shepphys.h"
 
 #include <Box2D/Common/b2Settings.h>
@@ -187,7 +188,7 @@ SP_API int32_t sp_b2_get_stats(sp_pool_stats *out)
 SP_API int32_t sp_init(const sp_init_def *def)
 {
     if (g_up) return SP_OK;
-    if (def && def->workers != 0) return SP_ERR_PARAM;   /* Stage 7 (P3) */
+    if (def && (def->workers < 0 || def->workers > 3)) return SP_ERR_PARAM;   /* Stage 7 item 2 (kit #9): 0..3 workers (patch P3) */
     uint32_t bytes = def && def->pool_bytes > 0 ? (uint32_t)def->pool_bytes : (uint32_t)DEFAULT_BYTES;
     unsigned char *b2host = nullptr; uint32_t b2host_bytes = 0;
     if (g_host.base) {   /* kit #8: the pool and B2's arena from the host's block (sp_host_memory) */
@@ -220,6 +221,8 @@ SP_API int32_t sp_init(const sp_init_def *def)
     hd->base_gen = 0;
     if (!g_host.base || b2host) b2_arena_init(def, b2host, b2host_bytes);   /* Stage 1, B2 (kit #8: in the host's block when one is registered;
                                                                                no room left in it: Box2D's malloc, counted -- never a calloc) */
+    if (def && def->workers > 0) sp_jobs_start(def->workers);   /* Stage 7 item 2 (kit #9): the worker pool (a build without threads stays
+                                                                   serial: sp_jobs_get(SP_JOBS_WORKERS) = 0) */
     return SP_OK;
 }
 

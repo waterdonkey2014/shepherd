@@ -21,7 +21,18 @@ static class RenderIcalls
     public static Func<NTexture, bool> LoadPixels;
     public static NShader ShaderNamed(string name)
     {
-        foreach (var n in Objects.All) if (n is NShader s && s.ShaderName == name) return s;
+        // kit #9 engine (SHEPHERD_K9_FIND): the shader records only (Registry.Shaders: the live NShader records in Objects.All's order) -- the scan's first match
+        if (K9Engine.Find && !K9Engine.FindCheck) { K9Engine.FindIndexed++; foreach (var n in Registry.Shaders.Items()) if (n is NShader s && s.ShaderName == name) return s; }
+        else if (K9Engine.FindCheck)
+        {
+            // =check (review fix): the scan's first match (returned) against the shader records' first match
+            NShader hit = null, idx = null;
+            foreach (var n in Objects.All) if (n is NShader s && s.ShaderName == name) { hit = s; break; }
+            foreach (var n in Registry.Shaders.Items()) if (n is NShader s && s.ShaderName == name) { idx = s; break; }
+            K9Engine.CheckShader(name, hit, idx); K9Engine.FindScans++;
+            if (hit != null) return hit;
+        }
+        else foreach (var n in Objects.All) if (n is NShader s && s.ShaderName == name) return s;
         var sh = (Shader)Objects.NewManaged(typeof(Shader)); return Objects.Bind(sh, new NShader { Name = name, ShaderName = name }, asset: true);
     }
     public static NMaterial NewMaterial(NShader shader, string name = "")
@@ -37,7 +48,7 @@ static class RenderIcalls
     }
 
     // ---------------- Shader ----------------
-    [Icall("UnityEngine.Shader::PropertyToID")] static object PropId(object[] a) => ShaderIds.Id((string)a[0]);
+    [Icall("UnityEngine.Shader::PropertyToID")] static object PropId(object[] a) => K9Memo.Int(ShaderIds.Id((string)a[0]));
     [Icall("UnityEngine.Shader::Find")] static object Find(object[] a) => ShaderNamed((string)a[0]).Managed;
     [Icall("UnityEngine.Shader::FindBuiltin")] static object FindB(object[] a) => ShaderNamed((string)a[0]).Managed;
     [Icall("UnityEngine.Shader::get_isSupported")] static object Supported(object[] a) => true;
@@ -115,6 +126,7 @@ static class RenderIcalls
     [Icall("UnityEngine.Material::SetTextureOffsetImpl_Injected")] static object MSetOff(object[] a) { var cur = Get(a[0], -(int)a[1]) is Vector4 v ? v : new Vector4(1, 1, 0, 0); var o = (Vector2)a[2]; return Set(a[0], -(int)a[1], new Vector4(cur.x, cur.y, o.x, o.y)); }
     [Icall("UnityEngine.Material::SetTextureScaleImpl_Injected")] static object MSetScale(object[] a) { var cur = Get(a[0], -(int)a[1]) is Vector4 v ? v : new Vector4(1, 1, 0, 0); var s = (Vector2)a[2]; return Set(a[0], -(int)a[1], new Vector4(s.x, s.y, cur.z, cur.w)); }
     [Icall("UnityEngine.Material::HasProperty")] static object MHas(object[] a) => true;   // most game code guards SetX with HasProperty; say yes
+    // kit #9 E5 MIRROR (MHas above): while Shepherd.Hooks.Mirror.On the stub answers Mirror.MaterialHasProperty (true) itself (tools/Rewriter/TypedPass.cs) -- change this body and you must change that formula (Runtime/K9Typed.cs binds the mirror only while THIS method is the key's hook; SHEPHERD_K9_MIRROR=check compares them)
     [Icall("UnityEngine.Material::HasFloatImpl")] static object MHasF(object[] a) => true;
     [Icall("UnityEngine.Material::HasTextureImpl")] static object MHasT(object[] a) => true;
     [Icall("UnityEngine.Material::HasVectorImpl")] static object MHasV(object[] a) => true;
@@ -291,7 +303,20 @@ static class RenderIcalls
     // ---------------- Mesh ----------------
     static NMesh Me(object o) => N<NMesh>(o);
     [Icall("UnityEngine.Mesh::Internal_Create")] static object MeshCreate(object[] a) { Objects.Bind((UObject)a[0], new NMesh()); return null; }
-    [Icall("UnityEngine.Mesh::ClearImpl")] static object MeshClear(object[] a) { var m = Me(a[0]); if (m != null) { m.Pos = Array.Empty<Vector3>(); m.Col = null; m.Uv0 = null; m.Normals = null; m.Tan = null; m.Sub = new() { Array.Empty<int>() }; m.SubTopology = new() { 0 }; m.Version++; } return null; }
+    // kit #9 fidelity (stand-in fix "mesh", kit7-tests.md finding 10; the oracle's d-asset-mesh 300 / 300): Unity's Clear() keeps the mesh's
+    // bounds (kit #8: they fell back to the -- now empty -- vertices, a zero box); a mesh whose vertices are assigned while it has none gets
+    // its bounds recalculated at once (Unity: "RecalculateBounds is automatically invoked if no vertices have been assigned"); a new mesh's
+    // index format is UInt16 and reads back what was set (kit #8: always UInt32, set ignored). Off: kit #8.
+    [Icall("UnityEngine.Mesh::ClearImpl")] static object MeshClear(object[] a)
+    {
+        var m = Me(a[0]);
+        if (m != null)
+        {
+            if (K9Fidelity.FixMesh && !m.BoundsSet) { m.Recalc(); m.BoundsSet = true; }   // (the bounds as of now stay what bounds reads)
+            m.Pos = Array.Empty<Vector3>(); m.Col = null; m.Uv0 = null; m.Normals = null; m.Tan = null; m.Sub = new() { Array.Empty<int>() }; m.SubTopology = new() { 0 }; m.Version++;
+        }
+        return null;
+    }
     [Icall("UnityEngine.Mesh::get_vertexCount")] static object MeshVC(object[] a) => Me(a[0])?.VertexCount ?? 0;
     [Icall("UnityEngine.Mesh::get_subMeshCount")] static object MeshSubs(object[] a) => SubsBox.Of(Me(a[0])?.Sub.Count ?? 1);   // (menu-speed: a box per changed count)
     static readonly BoxCache SubsBox = new();
@@ -302,7 +327,7 @@ static class RenderIcalls
         while (m.Sub.Count > n) { m.Sub.RemoveAt(m.Sub.Count - 1); m.SubTopology.RemoveAt(m.SubTopology.Count - 1); }
         return null;
     }
-    [Icall("UnityEngine.Mesh::get_canAccess")] static object MeshAccess(object[] a) => Boxes.True;
+    [Icall("UnityEngine.Mesh::get_canAccess")] static object MeshAccess(object[] a) => Boxes.True;   // kit #9 E5 MIRROR: while Shepherd.Hooks.Mirror.On the stub answers Mirror.MeshCanAccess (true) itself (tools/Rewriter/TypedPass.cs) -- change this body and you must change that formula (Runtime/K9Typed.cs binds the mirror only while THIS method is the key's hook; SHEPHERD_K9_MIRROR=check compares them)
     [Icall("UnityEngine.Mesh::get_isReadable")] static object MeshReadable(object[] a) => true;
     [Icall("UnityEngine.Mesh::MarkDynamicImpl")] static object MeshDyn(object[] a) => null;
     [Icall("UnityEngine.Mesh::MarkModified")] static object MeshMod(object[] a) => null;
@@ -313,8 +338,8 @@ static class RenderIcalls
     [Icall("UnityEngine.Mesh::OptimizeImpl")] static object MeshOpt(object[] a) => null;
     [Icall("UnityEngine.Mesh::get_bounds_Injected")] static object MeshBounds(object[] a) { var m = Me(a[0]); if (m != null && !m.BoundsSet) m.Recalc(); a[1] = m?.Bounds ?? default; return null; }
     [Icall("UnityEngine.Mesh::set_bounds_Injected")] static object MeshSetBounds(object[] a) { var m = Me(a[0]); if (m != null) { m.Bounds = (Bounds)a[1]; m.BoundsSet = true; } return null; }
-    [Icall("UnityEngine.Mesh::get_indexFormat")] static object MeshIdxFmt(object[] a) => IndexFormat.UInt32;
-    [Icall("UnityEngine.Mesh::set_indexFormat")] static object MeshSetIdxFmt(object[] a) => null;
+    [Icall("UnityEngine.Mesh::get_indexFormat")] static object MeshIdxFmt(object[] a) => !K9Fidelity.FixMesh ? IndexFormat.UInt32 : Me(a[0])?.Get("indexFormat") is IndexFormat f ? f : IndexFormat.UInt16;
+    [Icall("UnityEngine.Mesh::set_indexFormat")] static object MeshSetIdxFmt(object[] a) { if (K9Fidelity.FixMesh) Me(a[0])?.Set("indexFormat", Conv.To(a[1], typeof(IndexFormat))); return null; }
     [Icall("UnityEngine.Mesh::HasVertexAttribute")] static object MeshHasAttr(object[] a)
     {
         var m = Me(a[0]); if (m == null) return false;
@@ -336,9 +361,12 @@ static class RenderIcalls
         {
             case VertexAttribute.Position:
             {
+                bool wasEmpty = m.Pos.Length == 0;
                 var r = Owned(m.Pos, count);
                 if (src is Vector3[] v3s && start >= 0) Array.Copy(v3s, start, r, 0, count); else for (int i = 0; i < count; i++) r[i] = src.GetValue(start + i) is Vector3 v ? v : default;
-                m.Pos = r; break;
+                m.Pos = r;
+                if (wasEmpty && m.BoundsSet && K9Fidelity.FixMesh) m.Recalc();   // kit #9 "mesh": vertices on an empty mesh recalculate its bounds (Unity)
+                break;
             }
             case VertexAttribute.Normal:
             {
@@ -459,8 +487,8 @@ static class RenderIcalls
         var ver = t.GetField("_version", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic); if (ver != null) ver.SetValue(list, (int)ver.GetValue(list) + 1);
         return null;
     }
-    [Icall("UnityEngine.UISystemProfilerApi::BeginSample")] static object UiBegin(object[] a) => null;
-    [Icall("UnityEngine.UISystemProfilerApi::EndSample")] static object UiEnd(object[] a) => null;
+    [Icall("UnityEngine.UISystemProfilerApi::BeginSample")] static object UiBegin(object[] a) => null;   // kit #9 E5 MIRROR: while Shepherd.Hooks.Mirror.On the stub answers (an empty body) itself (tools/Rewriter/TypedPass.cs) -- change this body and you must change that formula (Runtime/K9Typed.cs binds the mirror only while THIS method is the key's hook; SHEPHERD_K9_MIRROR=check compares them)
+    [Icall("UnityEngine.UISystemProfilerApi::EndSample")] static object UiEnd(object[] a) => null;   // kit #9 E5 MIRROR: while Shepherd.Hooks.Mirror.On the stub answers (an empty body) itself (tools/Rewriter/TypedPass.cs) -- change this body and you must change that formula (Runtime/K9Typed.cs binds the mirror only while THIS method is the key's hook; SHEPHERD_K9_MIRROR=check compares them)
     [Icall("UnityEngine.UISystemProfilerApi::AddMarker")] static object UiMarker(object[] a) => null;
 
     // ---------------- CanvasRenderer ----------------
@@ -618,5 +646,65 @@ static class RenderIcalls
     [Icall("UnityEngine.Canvas::get_scaleFactor")] static object CScale(object[] a) => Objects.Get(a[0])?.Get("scaleFactor") is { } v ? Conv.To(v, typeof(float)) : 1f;
     [Icall("UnityEngine.Canvas::set_scaleFactor")] static object CSetScale(object[] a) { var c = N<NComponent>(a[0]); c?.Set("scaleFactor", a[1]); Render.SceneRenderer.LayoutRootCanvasNow(c); return null; }
     [Icall("UnityEngine.Canvas::get_renderOrder")] static object CRenderOrder(object[] a) => 0;
+    // kit #9 fidelity (stand-in fix "canvas", kit7-tests.md finding 17; Runtime/K9Fidelity.cs): what a NESTED canvas reports, as Unity's
+    // native getters do (the oracle's d-ui-canvas: 300 / 300) -- sortingOrder = the nearest canvas up the chain that is the root or overrides
+    // sorting (its own stored value is not read while it does not override), renderMode = the root's effective mode (Screen Space - Camera
+    // with no camera at all reads Screen Space - Overlay), referencePixelsPerUnit = the root's, pixelPerfect = the nearest canvas up the chain
+    // that is the root or overrides pixelPerfect. Kit #8 read each canvas's own property bag (AutoProps): the switch-off path below. The
+    // stored values are untouched (the renderer reads the bags as before); only what scripts read changes. A camera reference the scene
+    // saved (a LazyRef) counts as a camera without being resolved here (no load from a getter); a saved reference to a missing object
+    // would still read Screen Space - Camera (Unity: Overlay) -- noted in kit9-fidelity.md.
+    static NComponent ParentCanvas(NComponent c)
+    {
+        for (var t = c?.Go?.Transform?.Parent; t != null; t = t.Parent) foreach (var p in t.Go.Components) if (p.Managed is Canvas && !p.Destroyed) return p;
+        return null;
+    }
+    static NComponent Inherit(NComponent c, string overrideKey)
+    {
+        for (int guard = 0; c != null && guard < 4096; guard++) { var p = ParentCanvas(c); if (p == null || (bool)Conv.To(c.Get(overrideKey), typeof(bool))) return c; c = p; }
+        return c;
+    }
+    [Icall("UnityEngine.Canvas::get_sortingOrder")] static object CSortOrder(object[] a)
+    {
+        if (!K9Fidelity.FixCanvas) return AutoProps.Read(a[0], "sortingOrder", typeof(int));
+        var c = N<NComponent>(a[0]); return c == null ? AutoProps.Read(a[0], "sortingOrder", typeof(int)) : AutoProps.Read(Inherit(c, "overrideSorting").Managed, "sortingOrder", typeof(int));
+    }
+    [Icall("UnityEngine.Canvas::get_pixelPerfect")] static object CPixelPerfect(object[] a)
+    {
+        if (!K9Fidelity.FixCanvas) return AutoProps.Read(a[0], "pixelPerfect", typeof(bool));
+        var c = N<NComponent>(a[0]); return c == null ? AutoProps.Read(a[0], "pixelPerfect", typeof(bool)) : AutoProps.Read(Inherit(c, "overridePixelPerfect").Managed, "pixelPerfect", typeof(bool));
+    }
+    [Icall("UnityEngine.Canvas::get_referencePixelsPerUnit")] static object CRefPpu(object[] a)
+    {
+        if (!K9Fidelity.FixCanvas) return AutoProps.Read(a[0], "referencePixelsPerUnit", typeof(float));
+        var c = N<NComponent>(a[0]); var root = c == null ? null : RootCanvasOf(c.Go) ?? c;
+        return AutoProps.Read(root?.Managed ?? a[0], "referencePixelsPerUnit", typeof(float));
+    }
+    [Icall("UnityEngine.Canvas::get_renderMode")] static object CRenderMode(object[] a)
+    {
+        if (!K9Fidelity.FixCanvas) return AutoProps.Read(a[0], "renderMode", typeof(RenderMode));
+        var c = N<NComponent>(a[0]); var root = c == null ? null : RootCanvasOf(c.Go) ?? c;
+        var m = AutoProps.Read(root?.Managed ?? a[0], "renderMode", typeof(RenderMode));
+        return m is RenderMode rm && rm == RenderMode.ScreenSpaceCamera && root != null && root.Get("worldCamera") == null ? RenderMode.ScreenSpaceOverlay : m;
+    }
     [Icall("UnityEngine.Canvas::SetExternalCanvasEnabled")] static object CExt(object[] a) => null;
+
+    // kit #9 track runtime (lever 10; Icalls/K9Reg.cs, Runtime/K9Typed.cs): the typed twins of the hooks above -- the same expressions, no
+    // object[] / boxes (a result goes back as Icalls.Ret<T> would give it: GetFloatImpl's Conv.To result through 'is float').
+    internal static void K9(K9Reg r)
+    {
+        r.Add("UnityEngine.CanvasRenderer::get_cull", (Func<object, bool>)(s => CR(s)?.Cull ?? false), CRCull);
+        r.Add("UnityEngine.Canvas::get_isRootCanvas", (Func<object, bool>)(s => { var c = N<NComponent>(s); return c != null && RootCanvasOf(c.Go) == c; }), CIsRoot);
+        r.Add("UnityEngine.Mesh::get_subMeshCount", (Func<object, int>)(s => Me(s)?.Sub.Count ?? 1), MeshSubs);
+        r.Add("UnityEngine.Material::GetFloatImpl", (Func<object, int, float>)((s, id) => Conv.To(Get(s, id) ?? 0f, typeof(float)) is float v ? v : 0f), MGetF);
+        r.Add("UnityEngine.Sprite::get_rect_Injected", (Shepherd.Hooks.TypedIcalls.DV4)((object s, out float x, out float y, out float w, out float h) =>
+            { var rc = S(s)?.Rect ?? default; x = rc.x; y = rc.y; w = rc.width; h = rc.height; }), SpRect);
+    }
+    /// <summary>kit #9 E5 (review fix): the constant / no-op mirrors of this class -- each key, the hook whose answer the stub copies, and that
+    /// answer (Runtime/K9Typed.cs binds the mirrors only while each key is bound to this very method, and compares the answer in check mode).</summary>
+    internal static IEnumerable<(string key, Shepherd.Hooks.IcallImpl hook, object value)> K9MirrorConsts() => new (string, Shepherd.Hooks.IcallImpl, object)[]
+    {
+        ("UnityEngine.Mesh::get_canAccess", MeshAccess, true), ("UnityEngine.Material::HasProperty", MHas, true),
+        ("UnityEngine.UISystemProfilerApi::BeginSample", UiBegin, null), ("UnityEngine.UISystemProfilerApi::EndSample", UiEnd, null),
+    };
 }

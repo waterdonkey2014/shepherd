@@ -13,6 +13,10 @@ static class MeshDecode
 
     public static void Fill(NMesh m, TypeTreeObject d, SerializedFile f)
     {
+        // kit #9 fidelity review (stand-in fix "mesh"): the asset's serialized index format, for Mesh.indexFormat -- the fix answers the record's
+        // "indexFormat" key, else UInt16, so a 32-bit-index asset must carry its key (Unity: UInt32; kit #8 answered UInt32 for every mesh);
+        // with the fix off nothing is stored (kit #8)
+        if (Runtime.K9Fidelity.FixMesh && I(d, "m_IndexFormat") == 1) m.Set("indexFormat", UnityEngine.Rendering.IndexFormat.UInt32);
         var vd = V(d, "m_VertexData") as TypeTreeObject; if (vd == null) return;
         int vc = I(vd, "m_VertexCount"); var data = V(vd, "m_DataSize") as byte[];
         if ((data == null || data.Length == 0) && V(d, "m_StreamData") is TypeTreeObject sd && I(sd, "size") > 0)

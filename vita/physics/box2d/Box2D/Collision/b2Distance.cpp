@@ -1,3 +1,8 @@
+// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2 = the Law of the Vita part 2): the GJK statistics
+// counters b2_gjkCalls / b2_gjkIters / b2_gjkMaxIters -- written by every b2Distance (so by every b2TestOverlap, which the parallel
+// narrowphase and trigger pass call from several threads), read by nothing in the library (only the testbed's extern) -- are compiled
+// only with B2_GJK_STATS=1, the default here (stock); the Shepherd build passes B2_GJK_STATS=0. The counters feed no arithmetic
+// (T1 8/8 with 0 and 1). Listed in vita/physics/box2d/PATCHES.md (row P3). The original notice follows unchanged.
 /*
 * Copyright (c) 2007-2009 Erin Catto http://www.box2d.org
 *
@@ -22,8 +27,15 @@
 #include <Box2D/Collision/Shapes/b2ChainShape.h>
 #include <Box2D/Collision/Shapes/b2PolygonShape.h>
 
+// Shepherd P3: B2_GJK_STATS=0 compiles the statistics counters out (stock = 1)
+#ifndef B2_GJK_STATS
+#define B2_GJK_STATS 1
+#endif
+
 // GJK using Voronoi regions (Christer Ericson) and Barycentric coordinates.
+#if B2_GJK_STATS
 int32 b2_gjkCalls, b2_gjkIters, b2_gjkMaxIters;
+#endif
 
 void b2DistanceProxy::Set(const b2Shape* shape, int32 index)
 {
@@ -445,7 +457,9 @@ void b2Distance(b2DistanceOutput* output,
 				b2SimplexCache* cache,
 				const b2DistanceInput* input)
 {
+#if B2_GJK_STATS
 	++b2_gjkCalls;
+#endif
 
 	const b2DistanceProxy* proxyA = &input->proxyA;
 	const b2DistanceProxy* proxyB = &input->proxyB;
@@ -541,7 +555,9 @@ void b2Distance(b2DistanceOutput* output,
 
 		// Iteration count is equated to the number of support point calls.
 		++iter;
+#if B2_GJK_STATS
 		++b2_gjkIters;
+#endif
 
 		// Check for duplicate support points. This is the main termination criteria.
 		bool duplicate = false;
@@ -564,7 +580,9 @@ void b2Distance(b2DistanceOutput* output,
 		++simplex.m_count;
 	}
 
+#if B2_GJK_STATS
 	b2_gjkMaxIters = b2Max(b2_gjkMaxIters, iter);
+#endif
 
 	// Prepare output.
 	simplex.GetWitnessPoints(&output->pointA, &output->pointB);

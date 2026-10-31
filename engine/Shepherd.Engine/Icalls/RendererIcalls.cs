@@ -112,8 +112,15 @@ public static class RendererIcalls
     [Icall("UnityEngine.MaterialPropertyBlock::SetTextureImpl")] static object SetT(object[] a) { B(a[0])[(int)a[1]] = a[2]; return null; }
     [Icall("UnityEngine.MaterialPropertyBlock::GetFloatImpl")] static object GetF(object[] a) => B(a[0]).TryGetValue((int)a[1], out var v) ? Conv.To(v, typeof(float)) : 0f;
     [Icall("UnityEngine.MaterialPropertyBlock::GetIntImpl")] static object GetI(object[] a) => B(a[0]).TryGetValue((int)a[1], out var v) ? Conv.To(v, typeof(int)) : 0;
-    [Icall("UnityEngine.MaterialPropertyBlock::GetVectorImpl_Injected")] static object GetV(object[] a) { a[2] = B(a[0]).TryGetValue((int)a[1], out var v) && v is Vector4 q ? q : Vector4.zero; return null; }
-    [Icall("UnityEngine.MaterialPropertyBlock::GetColorImpl_Injected")] static object GetC(object[] a) { a[2] = B(a[0]).TryGetValue((int)a[1], out var v) && v is Color c ? c : Color.white; return null; }
+    // kit #9 fidelity, second review ("propblock"; the oracle probe vita/tests/oracle/k9-seed-mpb): Unity keeps colours and vectors in ONE table --
+    // GetVector reads a value SetColor stored and GetColor one SetVector stored (in the oracle's Gamma project: the same bits; kit #8: zero /
+    // white). (In a Linear project Unity converts a colour at Set / Get -- not measured, the oracle player is Gamma; vita/notes/kit9-fidelity.md 13.5.)
+    [Icall("UnityEngine.MaterialPropertyBlock::GetVectorImpl_Injected")] static object GetV(object[] a) { a[2] = B(a[0]).TryGetValue((int)a[1], out var v) ? v is Vector4 q ? q : K9Fidelity.FixPropBlock && v is Color vc ? (Vector4)vc : Vector4.zero : Vector4.zero; return null; }
+    // kit #9 fidelity (stand-in fix "propblock", kit7-tests.md finding 11; the oracle's d-asset-propblock): a missing colour reads (0, 0, 0, 0)
+    // in Unity (kit #8: white), and HasFloat answers for a float (or SetInt's legacy float) the block holds (kit #8: the icall was missing ->
+    // false). Off: kit #8's answers.
+    [Icall("UnityEngine.MaterialPropertyBlock::GetColorImpl_Injected")] static object GetC(object[] a) { var has = B(a[0]).TryGetValue((int)a[1], out var v); a[2] = has && v is Color c ? c : K9Fidelity.FixPropBlock ? has && v is Vector4 cv ? (Color)cv : Color.clear : Color.white; return null; }
+    [Icall("UnityEngine.MaterialPropertyBlock::HasFloatImpl")] static object HasF(object[] a) => K9Fidelity.FixPropBlock && B(a[0]).TryGetValue((int)a[1], out var v) && v is float or int;
     [Icall("UnityEngine.MaterialPropertyBlock::GetTextureImpl")] static object GetT(object[] a) => B(a[0]).TryGetValue((int)a[1], out var v) ? v as Texture : null;
     [Icall("UnityEngine.MaterialPropertyBlock::HasPropertyImpl")] static object Has(object[] a) => B(a[0]).ContainsKey((int)a[1]);
     [Icall("UnityEngine.Renderer::Internal_SetPropertyBlock")] static object SetBlock(object[] a) { var r = R(a[0]); if (r != null) r.Set("__mpb", a[1] == null ? null : new Dictionary<int, object>(B(a[1]))); return null; }

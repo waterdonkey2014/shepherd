@@ -3,10 +3,20 @@ namespace Shepherd.Engine.Runtime;
 
 public static class Time
 {
-    public static int FrameCount, RenderedFrames;
-    public static float DeltaTime = 1f / 60f, UnscaledDeltaTime = 1f / 60f, SmoothDeltaTime = 1f / 60f, TimeScale = 1f, FixedDeltaTime = 0.02f, MaximumDeltaTime = 1f / 3f, CaptureDeltaTime;
-    public static double Now, UnscaledNow, FixedNow, FixedUnscaledNow, LevelLoadAt;
-    public static bool InFixedStep;
+    // Kit #9 (track runtime, E5 zero-hop mirrors; vita/notes/kit9-runtime.md): the state the mirrored Time getters read lives in
+    // Shepherd.Hooks.Mirror -- ONE copy, read and written here through these properties (same initial values, same arithmetic), and read
+    // by the rewritten Unity stubs directly when Mirror.On. With SHEPHERD_K9_MIRROR=0 the stubs ask the engine as in kit #8.
+    public static int FrameCount { get => Shepherd.Hooks.Mirror.FrameCount; set => Shepherd.Hooks.Mirror.FrameCount = value; }
+    public static int RenderedFrames;
+    public static float DeltaTime { get => Shepherd.Hooks.Mirror.DeltaTime; set => Shepherd.Hooks.Mirror.DeltaTime = value; }
+    public static float UnscaledDeltaTime { get => Shepherd.Hooks.Mirror.UnscaledDeltaTime; set => Shepherd.Hooks.Mirror.UnscaledDeltaTime = value; }
+    public static float TimeScale { get => Shepherd.Hooks.Mirror.TimeScale; set => Shepherd.Hooks.Mirror.TimeScale = value; }
+    public static float FixedDeltaTime { get => Shepherd.Hooks.Mirror.FixedDeltaTime; set => Shepherd.Hooks.Mirror.FixedDeltaTime = value; }
+    public static float SmoothDeltaTime = 1f / 60f, MaximumDeltaTime = 1f / 3f, CaptureDeltaTime;
+    public static double Now { get => Shepherd.Hooks.Mirror.Now; set => Shepherd.Hooks.Mirror.Now = value; }
+    public static double FixedNow { get => Shepherd.Hooks.Mirror.FixedNow; set => Shepherd.Hooks.Mirror.FixedNow = value; }
+    public static double UnscaledNow, FixedUnscaledNow, LevelLoadAt;
+    public static bool InFixedStep { get => Shepherd.Hooks.Mirror.InFixedStep; set => Shepherd.Hooks.Mirror.InFixedStep = value; }
     public static int TargetFrameRate = -1;
     static readonly Stopwatch Sw = Stopwatch.StartNew();
     /// <summary>Time.realtimeSinceStartup. V6 stage 2: in headless boots (Boot sets <see cref="VirtualRealtime"/> next to CaptureDeltaTime)
@@ -21,9 +31,9 @@ public static class Time
 
     /// <summary>kit3 play mode (vita/notes/play-mode.md): the game clock is the wall clock (Unity's), chosen once at boot by
     /// <see cref="PlayClock.Configure"/> (which also documents both clocks). False = the deterministic frame clock.</summary>
-    public static bool Wall;
+    public static bool Wall { get => Shepherd.Hooks.Mirror.Wall; set => Shepherd.Hooks.Mirror.Wall = value; }
     /// <summary>Wall mode: the fixed-step bookkeeping Unity keeps next to fixedTime (Time.fixedUnscaledDeltaTime).</summary>
-    public static float FixedUnscaledDeltaTime = 0.02f;
+    public static float FixedUnscaledDeltaTime { get => Shepherd.Hooks.Mirror.FixedUnscaledDeltaTime; set => Shepherd.Hooks.Mirror.FixedUnscaledDeltaTime = value; }
     internal static long WallFrames, ClampedFrames, FixedSteps; internal static double ClampedLost, WallStart = -1;
 
     /// <summary>Physics stage 0 (physics-plan-v2 C5): the headless frame clock's game time per frame, SHEPHERD_CAPTURE_DT (parsed by

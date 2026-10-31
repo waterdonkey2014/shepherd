@@ -126,6 +126,24 @@ VERSIONS = [
     dict(v="0.8", kit="kit #8", date="2026-10-21", commit="494db8e", since="20261021-215900",
          stamps={"20261021-215956", "20261021-220309", "20261021-220647", "20261021-221037", "20261021-221207",
                  "20261021-221534", "20261021-221703"}),
+    # kit #9: built from k9-integ f3b5024 (= the gated kit #9 integration c074ca1 + the integration review's fixes a612f59 + VERSION 0.9 / the kit
+    # scripts + main's notes; merged to main after the kit build) in a clean clone, 2026-10-27 local = 14:55-15:01 UTC stamps; 00099 00011
+    # 00097 (the JIT app) 00098 00095 + the launcher apps 00193 00194; + the untrimmed alternates alt-1..7 (the same commit, built 15:04-15:12
+    # UTC: the CoreLib trim's switch back, installed only if the owner is asked to)
+    dict(v="0.9", kit="kit #9", date="2026-10-27", commit="f3b5024", since="20261027-145500",
+         stamps={"20261027-145537", "20261027-145934", "20261027-145923", "20261027-145614", "20261027-150112",
+                 "20261027-145636", "20261027-145833",
+                 "20261027-150456", "20261027-151031", "20261027-151022", "20261027-150538", "20261027-151253",
+                 "20261027-150606", "20261027-150855"}),
+    # kit #10: built from k10-integ ecea164 (= the gated kit #10 integration c1 8576bc2 + the integration review's fixes f307cb6 (gated as c3) +
+    # VERSION 0.10 / the kit scripts ee294ab + the build fix ecea164; merged to main after the kit build) in a clean clone, 2026-10-29 local =
+    # 14:54-15:01 UTC stamps; 00011 00099 00097 (the JIT app) 00098 00095 + the launcher apps 00193 00194; + the no-cold alternates alt-1..7
+    # (the same commit, 15:07-15:14 UTC: the cold recipe's switch back, only if asked) + the optional learned-AOT 00095 (extra X3, 15:07 UTC)
+    dict(v="0.10", kit="kit #10", date="2026-10-29", commit="ecea164", since="20261029-145400",
+         stamps={"20261029-145809", "20261029-145451", "20261029-150138", "20261029-145534", "20261029-145735",
+                 "20261029-145556", "20261029-145759",
+                 "20261029-151120", "20261029-150755", "20261029-151455", "20261029-150841", "20261029-151039",
+                 "20261029-150905", "20261029-151105", "20261029-150735"}),
 ]
 
 # the probe logs no build stamp; its header names the probe's revision, and each revision shipped in one kit only
@@ -295,6 +313,12 @@ def parse_host(name, lines):
             if m: h["stamp"] = m.group(1)
             m = re.search(r"\b(SHPD\d{5})\b", l)
             if m: h["title"] = m.group(1)
+            continue
+        # kit #10: an env file's SHEPHERD_LOG_DIR moves this run's engine logs out of runtime/logs/<app>/ -- the host names the folder
+        # folder (every host prints the line; only a folder other than the app's own runtime/logs/<app>/ counts)
+        m = re.match(r"^H1 this app's engine logs \([^)]*\): ux0:data/shepherd/(runtime/logs/([^/\s]+))/", l)
+        if m:
+            if ENGINE_DIR_ALIAS.get(m.group(2), m.group(2)) != base: h["logdir"] = m.group(1)
             continue
         m = re.match(r"^=== shepherd-gldiag-\d+ build (\d{8}-\d{6})", l)
         if m:
@@ -480,15 +504,29 @@ def parse_folder(d):
         # clock as the host's) or its Main-entered time (UTC from the engine; the same unless the Vita's time zone is not the Mac's)
         lo, hi = x["mtime"] - x["span"] - 150, x["mtime"] + 60
         return any(t is not None and lo <= t <= hi for t in (e["mtime"], e.get("main_epoch")))
+    # kit #10 (device run 2026-10-29): a host log that names its engine-log folder (H1 line) pairs with that folder's engine log first;
+    # by app name a host is paired only with runtime/logs/<app>/ when it named no other folder (before: STEP 8's host log, its engine
+    # log in runtime/logs/k10-step8-measure/, took STEP 3's runtime/logs/menu_gl-measure/ engine log by name)
+    # (a dated folder: only a host whose run holds the engine's -- a later start with the same env file left on the card, cut short,
+    # names the same folder and must not take the earlier run's engine log)
     for e in engines:
+        h = [x for x in hosts if x.get("logdir") == os.path.dirname(e["rel"]) and "eng" not in x and (not mtime_ok or inside(x, e))]
+        h = max(h, key=lambda x: x["mtime"]) if h else None
+        if h is not None: h["eng"] = e; e["paired"] = True
+    for e in engines:
+        if e.get("paired"): continue
         h = None
         if e["app"]:
-            named = [x for x in hosts if x["base"] == e["app"] and "eng" not in x]
+            named = [x for x in hosts if x["base"] == e["app"] and "eng" not in x
+                     and x.get("logdir", os.path.dirname(e["rel"])) == os.path.dirname(e["rel"])]
             if mtime_ok:
                 fits = [x for x in named if inside(x, e)]
                 h = max(fits, key=lambda x: x["mtime"]) if fits else None
             else:   # a hand-copied folder: the file times are the copy's, only the names say which belongs to which
                 h = next((x for x in named if x["name"] == e["app"] + ".txt"), None)
+                # kit #10: the .txt's run kept its engine logs elsewhere (H1) -> the folder's engine log is the .prev.txt run's
+                if h is None and any(x["name"] == e["app"] + ".txt" and x.get("logdir") for x in hosts):
+                    h = next((x for x in named if x["name"] == e["app"] + ".prev.txt"), None)
         elif mtime_ok and "end_epoch" in e:
             cands = [x for x in hosts if x["base"].startswith(("menu", "play")) and abs(x["mtime"] - e["end_epoch"]) < 600]
             h = min(cands, key=lambda x: abs(x["mtime"] - e["end_epoch"])) if cands else None

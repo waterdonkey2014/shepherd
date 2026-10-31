@@ -1,0 +1,5 @@
+# device kit #9 (track jit, vita/notes/kit9-jit.md section 8): the JIT A/B, arm D (optional) -- kit #9's JIT without counter decay,
+# its own learning list, the profiler timing the game's logic over 100 Main Menu frames. The other apps ignore these lines.
+SHEPHERD_JIT_DECAY=0
+SHEPHERD_JIT_LEARN=ux0:data/shepherd/cache/jit-learn-k9d0.tsv
+SHEPHERD_K7_PROF=time,zones,win=m+300:m+399

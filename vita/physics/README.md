@@ -76,3 +76,13 @@ Kit #8 (Law of the Vita, part 1; `vita/notes/kit8-physics.md`): the play apps' e
 (`sp_host_memory`, `SHEPHERD_PHYS_BLOCK_MB`, default 1 MiB: the pool a quarter, B2's arena the rest; `t1_runner host` checks that the
 self-tests' hashes are the same with it) and points the engine at the owner folder's `data/physics2d-settings.bin` (the project's
 Physics2DSettings record, which the strict card pack lacks; `Shepherd.Assets.Cli phys2d`, `stage-owner.sh`).
+
+Kit #9 (Law of the Vita, part 2 = Stage 7 item 2; `vita/notes/kit9-physics.md`): **patch P3** (`box2d/PATCHES.md`) and the worker pool.
+While the pool runs (`sp_init_def.workers` / `sp_jobs_start`, 1..3 native threads, never attached to Mono; the Vita host gives its own
+threads through `sp_host_jobs`, the Mac uses pthreads, the QEMU harness has none), every `b2World::Step` may fork Collide's narrowphase,
+P1's final trigger pass and the island solve (`shim/sp_p3.cpp`; thresholds `sp_jobs_set`, default 16 / 16 / 4) and applies the results in
+Box2D's own serial order -- bit-identical to the serial step, which runs unchanged below the thresholds and whenever the pool is off.
+`shim/sp_jobs.cpp` is the pool (spin, then sleep; each fork carries the caller's FPSCR). Checks: `build.sh mac` runs T1 / S1 / S2 / S3 /
+S7 / the traces with 1, 2 and 3 workers (`t1_runner ... --workers N --jcheck`) against the serial hashes; `tests/sp_s7.cpp` (S7) builds
+worlds for the forked phases (Mac = QEMU); `build.sh tsan` = 0 ThreadSanitizer reports; `check-phys.sh` step 6 runs the engine's checks
+and drives with the workers.

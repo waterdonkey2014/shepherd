@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- kit #10 fidelity, STRETCH (vita/notes/kit10-fidelity.md "5. The physics oracle re-make for 1.5.26, prepared"): lists every
+       CompositeCollider2D of the install's bundles with its oracle signature and finds the composites of an existing oracle list
+       (physcheck's SHEPHERD_PHYSCHECK_COMPOSITE format) in the CURRENT install by that signature. Compiles the engine's Shepherd.Assets
+       sources (own obj/bin). Reads the install only; writes the list it is told to (owner-local: names game bundles). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <NoWarn>$(NoWarn);CS8632;CS0162</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../../engine/Shepherd.Assets/Shepherd.Assets/**/*.cs" Exclude="../../../../engine/Shepherd.Assets/Shepherd.Assets/obj/**;../../../../engine/Shepherd.Assets/Shepherd.Assets/bin/**" LinkBase="Assets" />
+  </ItemGroup>
+</Project>

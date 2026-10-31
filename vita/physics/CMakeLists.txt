@@ -1,4 +1,4 @@
-# vita/physics: libshepphys = vendored Box2D 2.3.1 (unmodified) + our flat C shim + the T1 determinism scenarios.
+# vita/physics: libshepphys = vendored Box2D 2.3.1 (patches P1 / P2 / P3 / P5: box2d/PATCHES.md) + our flat C shim + the T1 determinism scenarios.
 #   Mac (host toolchain):  libshepphys.dylib (engine P/Invoke later), libshepphys_s.a, t1_runner (record / check goldens)
 #   Vita (VITASDK toolchain file): libshepphys_vita.a, the T1 test eboot (shepherd_phys_t1 + eboot.bin + VPK)
 # Configure with the ~/src path (no spaces); build.sh does all of it, with build trees on $SHEPHERD_WORK.
@@ -9,6 +9,7 @@ set(SHEPPHYS_FP_CONTRACT "off" CACHE STRING "-ffp-contract mode (off is the cont
 set(SHEPPHYS_OPT "-O2" CACHE STRING "optimisation flag")
 option(SHEPPHYS_NDEBUG "compile Box2D's b2Assert out (NDEBUG)" ON)
 option(SHEPPHYS_PROF "Mac: keep Box2D's stock b2Timer (gettimeofday) for b2Profile phase splits -- the 'prof' build; OFF = B3" OFF)
+option(SHEPPHYS_GJK_STATS "P3: keep b2Distance.cpp's GJK statistics counters (stock; the Shepherd build compiles them out)" OFF)
 option(SHEPPHYS_B2 "B2: build without Box2D's b2Settings.cpp and route b2Alloc / b2Free to the arena (shim/sp_b2glue.cpp); OFF = stock" ON)
 
 if(VITA_BUILD)
@@ -20,6 +21,11 @@ endif()
 project(shepphys C CXX)
 
 set(B2 "${CMAKE_SOURCE_DIR}/box2d")
+if(SHEPPHYS_GJK_STATS)
+  set(SP_GJK_STATS 1)
+else()
+  set(SP_GJK_STATS 0)
+endif()
 file(GLOB_RECURSE B2_SRCS CONFIGURE_DEPENDS "${B2}/Box2D/*.cpp")
 list(LENGTH B2_SRCS B2_N)
 if(NOT B2_N EQUAL 46)
@@ -29,9 +35,11 @@ set(SHIM_SRCS "${CMAKE_SOURCE_DIR}/shim/shepphys.cpp" "${CMAKE_SOURCE_DIR}/shim/
   "${CMAKE_SOURCE_DIR}/shim/sp_core.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_trace.cpp"   # Stage 0: runtime + pool, settings check, trace
   "${CMAKE_SOURCE_DIR}/shim/sp_unity.cpp"                                          # Stage 1: the Unity layer
   "${CMAKE_SOURCE_DIR}/shim/sp_query.cpp"                                          # Stage 2: the Unity queries
-  "${CMAKE_SOURCE_DIR}/shim/sp_mesh3d.cpp")                                        # Stage 6: the 3D island-ground ray
+  "${CMAKE_SOURCE_DIR}/shim/sp_mesh3d.cpp"                                         # Stage 6: the 3D island-ground ray
+  "${CMAKE_SOURCE_DIR}/shim/sp_p3.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_jobs.cpp")     # Stage 7 item 2 (kit #9): patch P3's forked phases + the worker pool
 set(T1_SRCS "${CMAKE_SOURCE_DIR}/tests/sp_t1.cpp" "${CMAKE_SOURCE_DIR}/tests/sp_s0.c" "${CMAKE_SOURCE_DIR}/tests/sp_s1.cpp"
-  "${CMAKE_SOURCE_DIR}/tests/sp_s2.cpp" "${CMAKE_SOURCE_DIR}/tests/sp_s3.cpp" "${CMAKE_SOURCE_DIR}/tests/sp_s6.cpp")
+  "${CMAKE_SOURCE_DIR}/tests/sp_s2.cpp" "${CMAKE_SOURCE_DIR}/tests/sp_s3.cpp" "${CMAKE_SOURCE_DIR}/tests/sp_s6.cpp"
+  "${CMAKE_SOURCE_DIR}/tests/sp_s7.cpp")   # kit #9: patch P3's self-test
 
 # B3 (box2d/PATCHES.md; physics-plan-v2 section 1.2 item 5): the Mac library leaves out Box2D's Common/b2Timer.cpp and links
 # shim/sp_timer_stub.cpp -- the same empty bodies b2Timer.cpp's last branch gives the Vita build -- so b2Profile reads 0 and the Mac
@@ -97,12 +105,15 @@ endif()
 function(sp_core_objects name)
   add_library(${name} OBJECT ${B2_SRCS} ${TIMER_SRCS} ${B2GLUE_SRCS} ${SHIM_SRCS} ${T1_SRCS})
   target_include_directories(${name} PUBLIC "${B2}" "${CMAKE_SOURCE_DIR}/shim" "${CMAKE_SOURCE_DIR}/tests")
-  target_compile_definitions(${name} PRIVATE ${TRIG_DEFS} ${B2_DEFS} SHEPPHYS_FLAGS="${FLAGS_STR}")
+  # B2_GJK_STATS=0 (patch P3, box2d/PATCHES.md): b2Distance.cpp's GJK statistics counters compiled out (the altered file's default, 1, is
+  # stock); SHEPPHYS_GJK_STATS=ON keeps them (the T1 flag-off proof: build.sh verify's gjk-stats variant)
+  target_compile_definitions(${name} PRIVATE ${TRIG_DEFS} ${B2_DEFS} SHEPPHYS_FLAGS="${FLAGS_STR}" B2_GJK_STATS=${SP_GJK_STATS})
   set_source_files_properties(${B2_SRCS} PROPERTIES COMPILE_OPTIONS "-w;${TRIG_OPT}")
   # the shim and T1 C++ files include Box2D headers (b2Rot::Set is inline there), so they get the same trig routing;
   # sp_trig.c defines sp_sinf / sp_cosf and calls no libm
   set_source_files_properties("${CMAKE_SOURCE_DIR}/shim/shepphys.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_core.cpp"
-    "${CMAKE_SOURCE_DIR}/shim/sp_trace.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_unity.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_query.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_mesh3d.cpp" ${B2GLUE_SRCS} ${T1_SRCS} PROPERTIES
+    "${CMAKE_SOURCE_DIR}/shim/sp_trace.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_unity.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_query.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_mesh3d.cpp"
+    "${CMAKE_SOURCE_DIR}/shim/sp_p3.cpp" "${CMAKE_SOURCE_DIR}/shim/sp_jobs.cpp" ${B2GLUE_SRCS} ${T1_SRCS} PROPERTIES
     COMPILE_OPTIONS "-Wall;-Wextra;-Wno-unused-parameter;${TRIG_OPT}")
   if(TIMER_SRCS)
     set_source_files_properties(${TIMER_SRCS} PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;-Wno-unused-private-field")

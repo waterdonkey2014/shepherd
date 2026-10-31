@@ -1,0 +1,7 @@
+# kit #10 fidelity (vita/notes/kit10-fidelity.md section 3 + "Review fixes"): fixture rows NOT yet in every store -- the same columns as manifest.tsv.
+# run-fixtures.sh reads this file only for rows named on its command line ("run-fixtures.sh check load-walk") or with FIXTURES_K10=1, so a plain
+# "run-fixtures.sh check" stays kit #9's suite (manifest.tsv) and passes against the kit #9 store. load-walk's recording is owner-local in the track's
+# store ($SHEPHERD_WORK/kit10/fidelity-work/fixtures/expected-k10/load-walk). The integration: record it into the shared store
+# (FIXTURES_STORE=<store> run-fixtures.sh record load-walk, or copy the track's), then move the row into manifest.tsv (or gate with FIXTURES_K10=1).
+#name	frames	pack	pad	env	what
+load-walk	6100	intro	pads/load-walk.txt	SHEPHERD_STOP_SCENE=	kit #10 fidelity, the loading route: boot, Main Menu, New Game, QuoteScreen, Game Biome Intro (3 scene loads), the walk to the altar (Stage 0 here; vlx runs it with physics)

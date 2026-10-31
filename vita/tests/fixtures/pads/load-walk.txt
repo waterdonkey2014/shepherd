@@ -1,0 +1,24 @@
+# kit #10 fidelity (vita/notes/kit10-fidelity.md section 4): the LOADING ROUTE -- the boot, Main Menu, New Game, the QuoteScreen and the Game Biome
+# Intro loads (three scene loads after the boot), then the Lamb walks the intro room to the altar: physics Stage 1 acceptance #3's walk-wall drive
+# (kit #9 integration's walk; vita/notes/physics-stage1.md) unchanged. Frame-clock frames (60 per second); left stick lup/ldown/lleft/lright, two at once
+# = a diagonal; cross = menu / dialogue. Runs at a big partition on vlx (the Game Biome Intro load needs ~219 MiB of arena; the device has ~157).
+1050:cross
+1400:cross
+1600:cross
+3100:cross
+3160:cross
+3220:cross
+3280:cross
+3340:cross
+3400:lleft:240
+3640:lleft:180
+3640:lup:180
+3820:lleft:180
+3820:ldown:180
+4000:ldown:150
+4150:ldown:180
+4150:lright:180
+4330:ldown:180
+4330:lleft:180
+4510:lright:180
+4690:lup:1370

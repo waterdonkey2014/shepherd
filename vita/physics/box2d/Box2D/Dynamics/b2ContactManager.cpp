@@ -1,3 +1,6 @@
+// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): Collide and UpdateTriggers hand over to
+// CollideP3 / UpdateTriggersP3 (shim/sp_p3.cpp) while b2_unityJobs is set and they take the step (else the stock loops below run);
+// b2_unityJobs NULL = stock. Listed in vita/physics/box2d/PATCHES.md (row P3).
 // ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
 // runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
 // stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
@@ -133,6 +136,12 @@ void b2ContactManager::Destroy(b2Contact* c)
 // contact list.
 void b2ContactManager::Collide()
 {
+	// Shepherd P3: the forked narrowphase, applied in this loop's order (shim/sp_p3.cpp); not taken = the stock loop
+	if (b2_unityJobs && CollideP3())
+	{
+		return;
+	}
+
 	// Update awake contacts.
 	b2Contact* c = m_contactList;
 	while (c)
@@ -329,6 +338,11 @@ void b2ContactManager::AddPair(void* proxyUserDataA, void* proxyUserDataB)
 // of this step's solve. The same awake rule as Collide (a pair is updated when one body is awake and not static).
 void b2ContactManager::UpdateTriggers()
 {
+	// Shepherd P3: the forked overlap tests, applied in this loop's order (shim/sp_p3.cpp); not taken = the loop below
+	if (b2_unityJobs && UpdateTriggersP3())
+	{
+		return;
+	}
 	for (b2Contact* c = m_contactList; c; c = c->GetNext())
 	{
 		b2Fixture* fixtureA = c->GetFixtureA();

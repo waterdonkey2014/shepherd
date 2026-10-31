@@ -1,3 +1,5 @@
+// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): shared static bodies in islands solved at the
+// same time (m_p3Shared; 0 = stock, every stock path). Listed in vita/physics/box2d/PATCHES.md (row P3).
 // ALTERED for Shepherd: physics-plan-v2 patch P2 (the speed clamps as runtime values, physics E1), behind the runtime values
 // b2_unityMaxTranslation / b2_unityMaxRotation (b2Island.h); with both 0 this file behaves exactly as stock Box2D 2.3.1.
 // Listed in vita/physics/box2d/PATCHES.md (row P2). The original notice follows unchanged.
@@ -26,6 +28,11 @@
 #include <Box2D/Dynamics/b2Body.h>
 #include <Box2D/Dynamics/b2TimeStep.h>
 
+// Shepherd P3 (ALTERED): islands solved at the same time on several threads (shim/sp_p3.cpp) may hold the same static body (static
+// bodies stop the island search but join every island that touches them). With m_p3Shared set, Solve reads static bodies but writes
+// none of them (no c0 / copy-back / transform / sleep writes: the shim applies those afterwards in the serial island order), never
+// writes a static body's m_islandIndex (P3IndexOf finds a static body's slot in this island; the contact solver asks it), and records
+// whether the island fell asleep (m_p3Slept). m_p3Shared 0 (every stock path) = stock.
 // Shepherd P2 (ALTERED): the per-step speed clamps as runtime values; 0 = stock Box2D 2.3.1's compiled b2_maxTranslation /
 // b2_maxRotation (the default). The Shepherd shim sets them around each b2World::Step from the world's own clamps
 // (sp_world_set_clamps, shim/shepphys.cpp) and resets them to 0 after: Unity 2022.3 applies Physics2DSettings' maxTranslationSpeed
@@ -81,6 +88,23 @@ public:
 
 	void Report(const b2ContactVelocityConstraint* constraints);
 
+	// Shepherd P3: a body's slot in this island (non-static: its m_islandIndex; static: searched in m_p3Statics)
+	int32 P3IndexOf(const b2Body* body) const
+	{
+		if (body->m_type != b2_staticBody)
+		{
+			return body->m_islandIndex;
+		}
+		for (int32 i = 0; i < m_p3StaticCount; ++i)
+		{
+			if (m_bodies[m_p3Statics[i]] == body)
+			{
+				return m_p3Statics[i];
+			}
+		}
+		return -1;
+	}
+
 	b2StackAllocator* m_allocator;
 	b2ContactListener* m_listener;
 
@@ -98,6 +122,12 @@ public:
 	int32 m_bodyCapacity;
 	int32 m_contactCapacity;
 	int32 m_jointCapacity;
+
+	// Shepherd P3 (see above): 0 = stock
+	int32 m_p3Shared;
+	int32 m_p3Slept;
+	const int32* m_p3Statics;   // the static bodies' slots in m_bodies (m_p3StaticCount of them)
+	int32 m_p3StaticCount;
 };
 
 #endif

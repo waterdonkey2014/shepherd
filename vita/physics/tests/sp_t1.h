@@ -49,6 +49,9 @@ SP_API int32_t sp_s3_run(sp_t1_record_fn fn, void *user, sp_t1_result *out);
 /* Stage 6 self-test (tests/sp_s6.cpp): the 3D island-ground ray -- planes, the tilted Unity plane, culling, primitives, filters, the
  * closest / all / any modes, the +z fast path against the general path and the brute force (the Mac and QEMU must agree) */
 SP_API int32_t sp_s6_run(sp_t1_record_fn fn, void *user, sp_t1_result *out);
+/* Stage 7 item 2 self-test (tests/sp_s7.cpp, kit #9): worlds shaped for patch P3's forked phases -- the serial run is the reference, the
+ * worker pool (t1_runner s7 --workers N) must give the same hash, and QEMU the same as the Mac */
+SP_API int32_t sp_s7_run(sp_t1_record_fn fn, void *user, sp_t1_result *out);
 SP_API void *shepphys_t1_proc(const char *name);
 
 #ifdef __cplusplus

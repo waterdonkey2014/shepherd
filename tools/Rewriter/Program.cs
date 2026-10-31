@@ -100,6 +100,15 @@ for (int id = 0; id < icalls.Count; id++) {
     m.IsInternalCall = false;
     manifest.Add(Forward(asm, m, id, Key(m), null));
 }
+// Kit #9 (track runtime, vita/notes/kit9-runtime.md): --typed <list> puts a fast path in front of the listed stubs' kit #8 forwarder
+// (TypedPass below: lever 10 typed calls into Shepherd.Hooks.TypedIcalls, E5 zero-hop mirrors from Shepherd.Hooks.Mirror). Without the
+// flag nothing here runs and every output is what it always was. The ids (icalls.json) never change.
+var typedArg = Array.IndexOf(args, "--typed");
+if (typedArg >= 0)
+{
+    var res = TypedPass.Run(File.ReadAllLines(args[typedArg + 1]), icalls.Select((x, i) => (x.asm, x.m, i, Key(x.m))).ToList());
+    if (res != 0) { Console.Error.WriteLine("--typed: refused (see above); nothing written"); Environment.Exit(4); }
+}
 foreach (var (file, a) in mods) a.Write(Path.Combine(outDir, Path.GetFileName(file)));
 
 // Pass 2: platform SDKs the engine must never touch (Steam, GOG Galaxy): every P/Invoke becomes a managed stub that

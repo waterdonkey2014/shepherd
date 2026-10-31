@@ -42,6 +42,14 @@ namespace Shepherd.Hooks
             return null;
         }
 
+        /// <summary>Kit #9 (track runtime, K9Typed.cs): one hit of id counted exactly as <see cref="Call"/> counts it -- the typed fast paths call
+        /// this, so icall-hits.txt / MemReport see the same counts with or without them.</summary>
+        public static void Count(int id)
+        {
+            if (!Wide) { if (Interlocked.Increment(ref _lo[id]) >= FoldAt) Fold(id); }
+            else Interlocked.Increment(ref Hits[id]);
+        }
+
         /// <summary>Moves a 32-bit counter's hits into the 64-bit count (the counter restarts at 0; no hit is lost or counted twice:
         /// the exchange takes exactly the hits counted so far, and only folds add to <see cref="Hits"/> in this mode).</summary>
         static void Fold(int id)
@@ -54,8 +62,9 @@ namespace Shepherd.Hooks
             }
         }
 
-        /// <summary>The hits of id so far (the 64-bit count + the 32-bit counter not yet folded).</summary>
-        public static long HitCount(int id) => Interlocked.Read(ref Hits[id]) + (id < _lo.Length ? Volatile.Read(ref _lo[id]) : 0);
+        /// <summary>The hits of id so far (the 64-bit count + the 32-bit counter not yet folded + -- kit #9 review fix -- the calls the E5
+        /// mirrored stubs answered themselves, Mirror.Hits: a mirrored icall keeps its count).</summary>
+        public static long HitCount(int id) => Interlocked.Read(ref Hits[id]) + (id < _lo.Length ? Volatile.Read(ref _lo[id]) : 0) + (id < Mirror.Hits.Length ? Mirror.Hits[id] : 0);
         /// <summary>Every id's hits so far, as one array (what kit #5's Hits held).</summary>
         public static long[] HitCounts()
         {
@@ -69,6 +78,7 @@ namespace Shepherd.Hooks
         public static void Init(int count, string[] names)
         {
             Names = names; Table = new IcallImpl[count]; Hits = new long[count]; _lo = new int[count]; _missingSeen = new int[count];
+            Mirror.Hits = new long[count];   // (kit #9 review fix: the mirrored stubs' own counts, per id)
         }
     }
 }

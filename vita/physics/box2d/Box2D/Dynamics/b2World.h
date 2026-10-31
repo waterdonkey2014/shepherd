@@ -1,3 +1,5 @@
+// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): SolveP3 declared (shim/sp_p3.cpp), used only
+// while b2_unityJobs is set (NULL = stock). Listed in vita/physics/box2d/PATCHES.md (row P3). The original notice follows unchanged.
 /*
 * Copyright (c) 2006-2011 Erin Catto http://www.box2d.org
 *
@@ -226,6 +228,7 @@ private:
 
 	void Solve(const b2TimeStep& step);
 	void SolveTOI(const b2TimeStep& step);
+	bool SolveP3(const b2TimeStep& step);   // Shepherd P3 (shim/sp_p3.cpp): Solve with the islands forked; false = not taken (stock Solve)
 
 	void DrawJoint(b2Joint* joint);
 	void DrawShape(b2Fixture* shape, const b2Transform& xf, const b2Color& color);

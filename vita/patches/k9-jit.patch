@@ -1,0 +1,1911 @@
+diff --git a/src/mono/mono/mini/interp/interp.c b/src/mono/mono/mini/interp/interp.c
+index 5a87ef0..4b0dd0a 100644
+--- a/src/mono/mono/mini/interp/interp.c
++++ b/src/mono/mono/mini/interp/interp.c
+@@ -2790,6 +2790,29 @@ epilogue:
+ 	}
+ }
+ 
++/* SHEPHERD kit #9 (vita/notes/kit9-jit.md, JIT helper 4: calls from a trace into AOT code): MINT_JIT_CALL's body, for the baseline JIT
++ * tier -- a trace (and the recording walker) calls this instead of leaving at the call. It is the interpreter's own handler line for line
++ * (the same frame->state.ip, the same do_jit_call, the same error conversion and throw); only the jump to `resume` cannot happen here:
++ * it returns 1 when the interpreter must CHECK_RESUME_STATE (an exception / resume state after the call), and the trace then leaves with
++ * an odd result at the next instruction, where MINT_SJ_ENTER does exactly that. 0 = the call returned normally: the trace goes on. */
++int
++mono_shepjit_interp_jit_call (InterpFrame *frame, ThreadContext *context, const guint16 *ip, guchar *locals);
++int
++mono_shepjit_interp_jit_call (InterpFrame *frame, ThreadContext *context, const guint16 *ip, guchar *locals)
++{
++	ERROR_DECL (error);
++	InterpMethod *rmethod = (InterpMethod*)frame->imethod->data_items [ip [3]];
++	/* for calls, have ip pointing at the start of next instruction */
++	frame->state.ip = ip + 4;
++	do_jit_call (context, (stackval*)(locals + ip [1]), (stackval*)(locals + ip [2]), frame, rmethod, error);
++	if (!is_ok (error)) {
++		MonoException *call_ex = interp_error_convert_to_exception (frame, error, ip);
++		interp_throw_ex_general (call_ex, context, frame, ip, FALSE);   /* = THROW_EX (call_ex, ip) without its goto resume */
++		return 1;
++	}
++	return context->has_resume_state ? 1 : 0;
++}
++
+ static MONO_NEVER_INLINE void
+ do_debugger_tramp (void (*tramp) (void), InterpFrame *frame)
+ {
+@@ -7953,7 +7976,16 @@ MINT_IN_CASE(MINT_BRTRUE_I8_SP) SJOP_MINT_BRTRUE_I8_SP; MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_SJ_ENTER) {
+ 			SjTrace *sjt = (SjTrace*)(gsize)(guint32) READ32 (ip + 1);
+-			ip = (const guint16*) ((const guint8*) ip + sjt->fn (frame, locals, sjt));
++			/* SHEPHERD kit #9 (vita/notes/kit9-jit.md): the trace also gets the thread context (for the calls it makes), and an ODD
++			 * result is its slow exit -- a trap (a path the trace left out: counted, shepjit.c) or a call it made that left an exception /
++			 * resume state: the interpreter goes on exactly as after its own MINT_JIT_CALL (CHECK_RESUME_STATE) */
++			ptrdiff_t sjr = sjt->fn (frame, locals, sjt, context);
++			if (G_UNLIKELY (sjr & 1)) {
++				ip = (const guint16*) ((const guint8*) ip + mono_shepjit_slow_exit (sjt, sjr, frame, locals, context));
++				CHECK_RESUME_STATE (context);
++				MINT_IN_BREAK;
++			}
++			ip = (const guint16*) ((const guint8*) ip + sjr);
+ 			MINT_IN_BREAK;
+ 		}
+ 		MINT_IN_CASE(MINT_SJ_NOP)
+@@ -8978,6 +9010,7 @@ mono_ee_interp_init (const char *opts)
+ 
+ 	register_interp_stats ();
+ 
++	mono_shepjit_set_call_helper ((SjCallHelper) mono_shepjit_interp_jit_call);   /* SHEPHERD kit #9: JIT helper 4 (vita/notes/kit9-jit.md) */
+ 	mono_shepjit_init ();   /* SHEPHERD kit #8: SHEPHERD_JIT (vita/notes/kit8-jit.md) */
+ 
+ #ifdef HOST_WASI
+diff --git a/src/mono/mono/mini/interp/shepjit.c b/src/mono/mono/mini/interp/shepjit.c
+index ea21d66..18d1ad7 100644
+--- a/src/mono/mono/mini/interp/shepjit.c
++++ b/src/mono/mono/mini/interp/shepjit.c
+@@ -2,6 +2,9 @@
+  * shepjit.c: SHEPHERD-VITA device kit #8 (vita/notes/kit8-jit.md) -- the baseline JIT tier of the Mono interpreter: entry points,
+  * the copy-and-patch trace compiler, the ForVM code block, batched publishing, monitoring ('compile only the loops that pay off'), the
+  * lockstep check and the reports. See shepjit.h for the model.
++ * Kit #9 (vita/notes/kit9-jit.md; every part behind SHEPHERD_JIT9, 0 = kit #8's tier exactly): recorded paths + traps (compile only the
++ * paths actually seen), calls from a trace into AOT code (JIT helper 4), trivial getters as intrinsics (JIT helper 5), frame-based counter
++ * decay (tuning from the device data), a measurement mode (SHEPHERD_JIT_COUNT) and the reports' kit #9 fields.
+  *
+  * THREADS. Interpreter threads only count entry-point hits and queue a trace (mono_shepjit_queue). ONE compiler thread (pinned like the
+  * host's latency-tolerant workers: the 4th core when it is open) compiles, and it alone ever calls sceKernelOpenVMDomain / writes the
+@@ -10,14 +13,22 @@
+  * code visible to another core, 200 / 200). It publishes in BATCHES: everything it compiled since the last window goes into the block in
+  * one Open / copy / Sync / Close window (the console: an Open/Close pair ~11 us, write + Sync ~5.7 us per routine). Only then does an entry
+  * point switch to MINT_SJ_ENTER (after a barrier; the trace's fn pointer is valid at every moment, so a racing interpreter thread either
+- * runs the trace or keeps interpreting).
++ * runs the trace or keeps interpreting). Kit #9: the RECORDING (the interpreter's walker running an entry point and noting the
++ * instructions it reaches) and the trap exits' recording run on the interpreter threads, which then queue the trace like before; the
++ * code block is still written by the compiler thread alone, and published code is never rewritten (a recompiled trace is new code; the
++ * old code stays valid, so a thread still running it is safe).
+  *
+  * FIDELITY. A trace runs the interpreter's own opcode bodies (shepjit-ops.h, the same compiler and flags), on the interpreter's frame, in
+  * the interpreter's order; it stops BEFORE any instruction it does not compile and before any check that would throw / initialise a class
+- * / poll a safepoint, and the interpreter runs that instruction itself. No GC can happen inside a trace (coop suspend: a trace never polls;
+- * a pending safepoint makes it leave). SHEPHERD_JIT=lockstep compiles no heap store and runs every trace, then -- on the same frame,
+- * restored -- the interpreter's walker (the interpreter's own opcode bodies), compares both (exit point + every byte of the frame) and
+- * keeps the interpreter's result.
++ * / poll a safepoint, and the interpreter runs that instruction itself. No GC can happen inside a trace's own code (coop suspend: a trace
++ * never polls; a pending safepoint makes it leave). Kit #9: a JIT call inside a trace runs MINT_JIT_CALL's own body (interp.c,
++ * mono_shepjit_interp_jit_call: the same frame->state.ip, do_jit_call, error conversion and throw) with every value in the frame, exactly
++ * as the interpreter would at that instruction -- GC, exceptions and stack walks see the same interpreter frame; a trap is an exit to the
++ * interpreter at the instruction never seen, so it only changes where the trace stops; a getter intrinsic is the field load the callee's
++ * IL is (ldarg.0; ldfld; ret / ldsfld; ret / ldc; ret), and leaves to the interpreter's real call when 'this' is null or the class is not
++ * initialised. SHEPHERD_JIT=lockstep compiles no heap store and no real call (intrinsics stay) and runs every trace, then -- on the same
++ * frame, restored -- the interpreter's walker (the interpreter's own opcode bodies; the real JIT call for an intrinsic), compares both
++ * (exit point + every byte of the frame) and keeps the interpreter's result.
+  */
+ #include "config.h"
+ #include <string.h>
+@@ -36,6 +47,8 @@
+ #include <mono/metadata/object-internals.h>
+ #include <mono/metadata/gc-internals.h>
+ #include <mono/metadata/debug-helpers.h>
++#include <mono/metadata/class-internals.h>
++#include <mono/metadata/tabledefs.h>
+ #include "interp-internals.h"
+ #include "mintops.h"
+ #include "transform.h"
+@@ -65,11 +78,19 @@ extern void __aeabi_d2ulz (void);
+ static gpointer const sj_helper_addr [SJ_HELPER_COUNT] = { SJ_HELPERS (SJ_HELPER_ADDR) };
+ 
+ /* ------------------------------------------------------------------ the console's code memory (HENkaku ForVM) */
++#ifdef SJ_HARNESS
++/* (vita/jit/sjtest's publish modes only -- never in the runtime: the next n windows fail at Open, as a refused Open on the console would) */
++static int sj_harness_fail_open;
++#endif
+ #ifdef HOST_VITA
+ extern int sceKernelOpenVMDomain (void);
+ extern int sceKernelCloseVMDomain (void);
+ extern int sceKernelSyncVMDomain (int uid, void *data, unsigned int size);
++#ifdef SJ_HARNESS
++#define SJ_OPEN() (sj_harness_fail_open > 0 ? (sj_harness_fail_open--, -1) : sceKernelOpenVMDomain ())
++#else
+ #define SJ_OPEN() sceKernelOpenVMDomain ()
++#endif
+ #define SJ_CLOSE() sceKernelCloseVMDomain ()
+ #define SJ_SYNC(p, n) sceKernelSyncVMDomain (sj_block_uid, (p), (n))
+ #else
+@@ -77,6 +98,15 @@ extern int sceKernelSyncVMDomain (int uid, void *data, unsigned int size);
+ #define SJ_CLOSE() 0
+ #define SJ_SYNC(p, n) (__builtin___clear_cache ((char *) (p), (char *) (p) + (n)), 0)
+ #endif
++/* (review 2) lockstep: the frame copy as a pinning GC root (a NULL descriptor = scanned conservatively, every object it points at pinned)
++ * while the walker may make a real call. vita/jit/sjtest has no GC: no root there. */
++#ifdef SJ_HARNESS
++#define SJ_ROOT_ADD(p, n) FALSE
++#define SJ_ROOT_DEL(p) ((void) 0)
++#else
++#define SJ_ROOT_ADD(p, n) (mono_gc_register_root ((char *) (p), (size_t) (n), MONO_GC_DESCRIPTOR_NULL, MONO_ROOT_SOURCE_EXTERNAL, NULL, "shepjit lockstep frame copy") != 0)
++#define SJ_ROOT_DEL(p) mono_gc_deregister_root ((char *) (p))
++#endif
+ 
+ /* ------------------------------------------------------------------ configuration (environment, read once at init) */
+ int mono_shepjit_mode;                       /* 0 off, 1 on, 2 lockstep */
+@@ -89,11 +119,32 @@ static int sj_min_slots = 12;                /* SHEPHERD_JIT_MIN_SLOTS: average
+ static int sj_kinds = 7;                     /* SHEPHERD_JIT_KINDS: bit 0 method entry, 1 loop heads, 2 after calls */
+ static const char *sj_off_reason = "SHEPHERD_JIT unset";
+ static char *sj_learn_path;                  /* SHEPHERD_JIT_LEARN: the learning cache (default ux0:data/shepherd/cache/jit-learn.tsv; 0 = none) */
++/* kit #9 (vita/notes/kit9-jit.md) */
++static int sj_k9 = 1;                        /* SHEPHERD_JIT9: 0 = every kit #9 change off (kit #8's tier: its compile, entry points, cache, reports) */
++static int sj_calls = 1;                     /* SHEPHERD_JIT_CALLS: MINT_JIT_CALL inside traces (JIT helper 4) */
++static int sj_intrinsics = 1;                /* SHEPHERD_JIT_INTRINSICS: trivial getters called through MINT_JIT_CALL as their field load (helper 5) */
++static int sj_record_runs = 8;               /* SHEPHERD_JIT_RECORD: recorded runs before the first compile (0 = no record, no traps) */
++static int sj_trap_exits = 4;                /* SHEPHERD_JIT_TRAP_EXITS: exits of one trap site before its path is compiled in */
++static int sj_recompile_cap = 2;             /* SHEPHERD_JIT_RECOMPILES: recompiles per trace (then its traps stay traps) */
++static int sj_decay = 1;                     /* SHEPHERD_JIT_DECAY: heartbeats (50 frames each) per halving of the entry-point counters (0 = cumulative, kit #8;
++                                              * 1, the kit #9 default: with the threshold 200 only entry points hit ~2 times a frame or more compile) */
++static int sj_lock_traps = 1;                /* (review fix) SHEPHERD_JIT_LOCKSTEP_TRAPS: lockstep mode sends a trap exit the walker agreed with on
++                                              * through the slow exit (counted, recorded, recompiled: the lockstep start checks recompiled code too);
++                                              * 0 = the trap exit ends there (the first kit #9 build's lockstep) */
++static volatile gint32 sj_decay_pending;     /* (review fix) halvings the heartbeat asked for: the compiler thread does the walk */
++static int sj_count_mode;                    /* SHEPHERD_JIT_COUNT=1: every live trace runs through a counting wrapper (measurement only) */
++static int sj_count_from = -1, sj_count_to = -1;   /* SHEPHERD_JIT_COUNT_WIN=<from>:<to> (frames, heartbeat-exact) */
++static volatile int sj_count_win_on;
++static SjCallHelper sj_call_helper;          /* interp.c: mono_shepjit_interp_jit_call */
++static int sj_want_cmap;                     /* (vita/jit/sjtest: the harness walks kit #9 traces by their cmap too) */
++#define SJ_SEEN_MAX 1024                     /* the record covers at most this many IR slots from the entry point */
++#define SJ_REC_STEPS 1024                    /* instructions one recorded run may walk (a long inner loop is cut there: the interpreter goes on) */
+ 
+ static int sj_block_uid;
+ static guint8 *sj_block;
+ static guint32 sj_block_size, sj_block_used;  /* bump allocation (compiler thread) */
+ static void (*sj_pin) (const char *who);
++static guint32 sj_veneer_off = 0xffffffffu;  /* kit #9: the veneer island's offset in the block (the call helper's 8-byte veneer) */
+ 
+ /* opcode -> stencil */
+ static gint16 sj_stencil_of [MINT_LASTOP];
+@@ -106,6 +157,16 @@ static struct {
+ 	guint64 lock_runs, lock_mismatch, lock_sp_races, lock_first_races;
+ 	guint32 sp_guard, queue_full;
+ 	guint32 abort_hist [MINT_LASTOP];
++	/* kit #9 */
++	guint64 rec_runs, rec_ops, trap_exits, trap_recs, call_stops;
++	guint32 recorded, recompiled, traces_framed, calls, intrins, traps, trap_capped, decays, getters_seen, getters_ok;
++	guint32 veneer_restaged;   /* (review fix) the veneer island staged again after the window that held it failed */
++	guint64 lock_trap_exits;   /* (review fix) lockstep: trap exits that agreed with the walker and went on through the slow exit */
++	/* (review 2) a recompile that was not published -- the trace kept its old code: the block was full / its window failed / the trace was
++	 * switched off while it waited; a monitor verdict put off because the trace was queued for a recompile; lockstep runs whose frame copy
++	 * was a GC root */
++	guint32 keep_full, keep_window, keep_off, mon_deferred;
++	guint64 lock_rooted;
+ } sj_st;
+ 
+ static mono_mutex_t sj_lock;         /* the queue, the list of traces and the learning cache (every lookup and insert) */
+@@ -154,17 +215,34 @@ sj_put_branch (guint8 *p, gsize pc, gsize target, int cond)
+ 	wr16 (p, h1); wr16 (p + 2, h2);
+ 	return TRUE;
+ }
++/* kit #9: BL (T1, +-16 MiB) at code address pc to a Thumb target (the veneer island) */
++static gboolean
++sj_put_bl (guint8 *p, gsize pc, gsize target)
++{
++	gssize off = (gssize) target - (gssize) (pc + 4);
++	if ((off & 1) || off < -(1 << 24) || off >= (1 << 24))
++		return FALSE;
++	guint32 S = (off >> 24) & 1, I1 = (off >> 23) & 1, I2 = (off >> 22) & 1, J1 = (~I1 ^ S) & 1, J2 = (~I2 ^ S) & 1;
++	wr16 (p, (guint16) (0xf000 | (S << 10) | ((off >> 12) & 0x3ff)));
++	wr16 (p + 2, (guint16) (0xd000 | (J1 << 13) | (J2 << 11) | ((off >> 1) & 0x7ff)));
++	return TRUE;
++}
+ 
+ /* ------------------------------------------------------------------ fn pointers */
+ static ptrdiff_t
+-sj_skip (InterpFrame *frame, unsigned char *locals, SjTrace *t)
++sj_skip (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context)
+ {
+ 	return 3 * sizeof (guint16);   /* not (yet) compiled: step over the entry opcode, go on interpreting */
+ }
+-static ptrdiff_t sj_monitor (InterpFrame *frame, unsigned char *locals, SjTrace *t);
+-static ptrdiff_t sj_lockstep (InterpFrame *frame, unsigned char *locals, SjTrace *t);
++static ptrdiff_t sj_monitor (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context);
++static ptrdiff_t sj_lockstep (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context);
++static ptrdiff_t sj_record (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context);
++static ptrdiff_t sj_count (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context);
++static void sj_describe_callee (SjTrace *t);
+ 
+ static inline SjFn sj_code_fn (SjTrace *t) { return (SjFn) ((gsize) t->code | 1); }
++/* what a trace that went live runs: its code, or (SHEPHERD_JIT_COUNT=1) the counting wrapper */
++static inline SjFn sj_live_fn (SjTrace *t) { return sj_count_mode ? sj_count : sj_code_fn (t); }
+ 
+ static void
+ sj_set_opcode (SjTrace *t, guint16 op)
+@@ -206,6 +284,13 @@ sj_compiles (int op)
+ {
+ 	return op >= 0 && op < MINT_LASTOP && sj_stencil_of [op] >= 0;
+ }
++/* kit #9: what a trace may contain -- the stencils, and MINT_JIT_CALL when calls are on (lockstep mode: only as a getter intrinsic, which
++ * the transform-time scans below cannot know, so lockstep places entry points as if calls stayed out) */
++static inline gboolean
++sj_compiles9 (int op)
++{
++	return sj_compiles (op) || (sj_k9 && sj_calls && op == MINT_JIT_CALL && mono_shepjit_mode == 1);
++}
+ static inline gboolean
+ sj_marker (int op)
+ {
+@@ -230,6 +315,12 @@ sj_env_int (const char *name, int def, int lo, int hi)
+ 	return r;
+ }
+ 
++void
++mono_shepjit_set_call_helper (SjCallHelper h)
++{
++	sj_call_helper = h;
++}
++
+ void
+ mono_shepjit_init (void)
+ {
+@@ -261,6 +352,25 @@ mono_shepjit_init (void)
+ 	sj_monitor_runs = sj_env_int ("SHEPHERD_JIT_MONITOR", 32, 0, 1 << 20);
+ 	sj_min_slots = sj_env_int ("SHEPHERD_JIT_MIN_SLOTS", 12, 0, 1 << 20);
+ 	sj_kinds = sj_env_int ("SHEPHERD_JIT_KINDS", 7, 0, 7);
++	/* kit #9: SHEPHERD_JIT9=0 turns every kit #9 change off; each part has its own switch too */
++	sj_k9 = sj_env_int ("SHEPHERD_JIT9", 1, 0, 1);
++	sj_calls = sj_k9 && sj_call_helper ? sj_env_int ("SHEPHERD_JIT_CALLS", 1, 0, 1) : 0;
++	/* (review 2) getter intrinsics are OPT-IN (SHEPHERD_JIT_INTRINSICS=1; the first final build's default): no route compiles a site, so
++	 * no lockstep run has compared one with its real callee yet -- only sjtest's mock -- and fidelity first keeps what is not checked end
++	 * to end out of the default. With 0 no callee is classified at all (no metadata read ahead of the game's own calls). */
++	sj_intrinsics = sj_k9 && sj_call_helper ? sj_env_int ("SHEPHERD_JIT_INTRINSICS", 0, 0, 1) : 0;
++	sj_record_runs = sj_k9 ? sj_env_int ("SHEPHERD_JIT_RECORD", 8, 0, 4096) : 0;
++	sj_trap_exits = sj_env_int ("SHEPHERD_JIT_TRAP_EXITS", 4, 1, 1 << 16);
++	sj_recompile_cap = sj_env_int ("SHEPHERD_JIT_RECOMPILES", 2, 0, 200);
++	sj_decay = sj_k9 ? sj_env_int ("SHEPHERD_JIT_DECAY", 1, 0, 1 << 20) : 0;
++	sj_lock_traps = sj_k9 ? sj_env_int ("SHEPHERD_JIT_LOCKSTEP_TRAPS", 1, 0, 1) : 0;
++	sj_count_mode = sj_k9 ? sj_env_int ("SHEPHERD_JIT_COUNT", 0, 0, 1) : 0;
++	{
++		char *w = g_getenv ("SHEPHERD_JIT_COUNT_WIN");
++		if (w && sj_count_mode && sscanf (w, "%d:%d", &sj_count_from, &sj_count_to) != 2)
++			sj_count_from = sj_count_to = -1;
++		g_free (w);
++	}
+ 	if (mono_shepjit_mode && !sj_block) {
+ 		mono_shepjit_mode = 0;
+ 		sj_off_reason = "no code block (the host allocates it: SHEPHERD_JIT_MB)";
+@@ -298,11 +408,24 @@ mono_shepjit_set_pin (void (*pin) (const char *who))
+  * One line per entry point a previous session decided on: H = it was compiled and paid (it is compiled at its FIRST hit next time, so the
+  * hot list is compiled in the order this session first needs it), N = it did not pay (no entry point next time: no counting, no compile,
+  * no code space). Keyed by the method's full name (FNV-1a) and the entry point's IL offset; a cache made by another stencil table
+- * (SJ_TABLE_ID) is ignored. Only which traces are compiled -- and when -- changes: every trace runs the interpreter's own opcodes. */
++ * (SJ_TABLE_ID) is ignored. Only which traces are compiled -- and when -- changes: every trace runs the interpreter's own opcodes.
++ * Kit #9: with the kit #9 tier on, the header says "tab9" (calls change where entry points sit and which traces are short), so a kit #8
++ * cache is not read by it, and kit #8 (whose test is "table <id>") does not read a kit #9 cache. */
+ typedef struct { guint32 key; gint32 il; char verdict; guint32 order; } SjLearn;
+ static GHashTable *sj_learn;            /* (key ^ il * 2654435761) -> SjLearn* */
+ static gboolean sj_learn_dirty;
+ 
++static const char *
++sj_learn_tag (void)
++{
++	/* (review fix) a lockstep start places entry points as if calls stayed out and cuts its traces at heap stores and calls: its 'N'
++	 * (short) verdicts are not a normal start's, so its cache carries a tag of its own -- no normal start reads it, and it reads no normal
++	 * start's (strstr: neither tag contains the other) */
++	if (sj_k9 && mono_shepjit_mode == 2)
++		return "tab9 " SJ_TABLE_ID " lockstep";
++	return sj_k9 ? (sj_calls ? "tab9 " SJ_TABLE_ID " calls" : "tab9 " SJ_TABLE_ID " nocalls") : "table " SJ_TABLE_ID;
++}
++
+ static guint32
+ sj_fnv (const char *s)
+ {
+@@ -355,7 +478,7 @@ sj_learn_load (void)
+ 	if (!f)
+ 		return;
+ 	char line [256];
+-	gboolean ok = fgets (line, sizeof (line), f) && strstr (line, "table " SJ_TABLE_ID);
++	gboolean ok = fgets (line, sizeof (line), f) && strstr (line, sj_learn_tag ());
+ 	while (ok && fgets (line, sizeof (line), f)) {
+ 		char v = 0; unsigned key = 0, order = 0; int il = 0;
+ 		if (sscanf (line, "%c\t%x\t%d\t%u", &v, &key, &il, &order) != 4 || (v != 'H' && v != 'N'))
+@@ -391,7 +514,11 @@ sj_learn_save (void)
+ 	if (!sj_learn_path || !sj_learn_dirty)
+ 		return;
+ 	/* the text is built under the lock, the card is written without it (an interpreter thread may want the lock meanwhile) */
+-	GString *g = g_string_new ("# shepjit learning cache (vita/notes/kit8-jit.md): table " SJ_TABLE_ID "; H = compile at the first hit, N = no entry point\n");
++	GString *g = g_string_new (NULL);
++	if (sj_k9)
++		g_string_append_printf (g, "# shepjit learning cache (vita/notes/kit9-jit.md): %s; H = compile at the first hit, N = no entry point\n", sj_learn_tag ());
++	else
++		g_string_append (g, "# shepjit learning cache (vita/notes/kit8-jit.md): table " SJ_TABLE_ID "; H = compile at the first hit, N = no entry point\n");
+ 	mono_os_mutex_lock (&sj_lock);
+ 	GHashTableIter it;
+ 	gpointer k, v;
+@@ -438,7 +565,7 @@ sj_scan (InterpBasicBlock *bb, InterpInst *from)
+ 				continue;
+ 			if (op == MINT_MOV_SRC_OFF || op == MINT_MOV_DST_OFF)
+ 				op = MINT_MOV_4;   /* (emitted as a MOV_*: a compiled one) */
+-			if (!sj_compiles (op))
++			if (!sj_compiles9 (op))
+ 				return n;
+ 			if (++n >= sj_min_ops)
+ 				return n;
+@@ -507,7 +634,7 @@ sj_place_entry_points (InterpMethod *imethod, TransformData *td, guint32 key, gb
+ 		if (sj_kinds & 4) {
+ 			for (InterpInst *ins = bb->first_ins; ins && ins->next; ins = ins->next) {
+ 				int op = ins->opcode;
+-				if (sj_transparent (op) || op == MINT_MOV_SRC_OFF || op == MINT_MOV_DST_OFF || sj_compiles (op))
++				if (sj_transparent (op) || op == MINT_MOV_SRC_OFF || op == MINT_MOV_DST_OFF || sj_compiles9 (op))
+ 					continue;
+ 				InterpInst *nx = ins->next;
+ 				while (nx && sj_transparent (nx->opcode))
+@@ -562,45 +689,324 @@ mono_shepjit_insert_entry_points (InterpMethod *imethod, void *_td)
+ 		sj_st.methods++;
+ }
+ 
++/* ------------------------------------------------------------------ kit #9: trivial getters (JIT helper 5)
++ * A MINT_JIT_CALL whose callee's IL is exactly 'ldarg.0; ldfld F; ret' (an instance field of a class), 'ldsfld F; ret' (a static field of
++ * the callee's own class, not thread-static, not a literal) or 'ldc.i4 K; ret' -- after any leading nops -- is compiled as that load: the
++ * interpreter's own LDFLD / LDSFLD / LDC stencil with the call's return slot as destination and 'this' (the call's first argument) as the
++ * object. A null 'this' or a class not yet initialised leaves the trace AT the call: the interpreter then makes the real call, which
++ * throws / initialises exactly as before. The AOT code of such a method is that load too (the same IL), and the return value lands in the
++ * return slot the way do_jit_call leaves it (small integers widened to 32 bits by the stencil, as do_jit_call's epilogue does). The
++ * verdict per callee is worked out on an interpreter thread (it reads metadata) and kept; the compiler thread only reads it. */
++enum { SJI_NONE = 0, SJI_LDFLD, SJI_LDSFLD, SJI_LDC };
++typedef struct { guint8 kind; guint16 op; guint16 offset; gint32 k; gpointer vtable, addr; } SjIntrinsic;
++static GHashTable *sj_getters;   /* MonoMethod* -> SjIntrinsic* (kind SJI_NONE = not one); under sj_lock */
++
++static int
++sj_ldfld_op (MonoType *t)
++{
++	if (m_type_is_byref (t))
++		return -1;
++	switch (t->type) {
++	case MONO_TYPE_I1: return MINT_LDFLD_I1;
++	case MONO_TYPE_U1: case MONO_TYPE_BOOLEAN: return MINT_LDFLD_U1;
++	case MONO_TYPE_I2: return MINT_LDFLD_I2;
++	case MONO_TYPE_U2: case MONO_TYPE_CHAR: return MINT_LDFLD_U2;
++	case MONO_TYPE_I4: case MONO_TYPE_U4: case MONO_TYPE_I: case MONO_TYPE_U: case MONO_TYPE_PTR: case MONO_TYPE_FNPTR: return MINT_LDFLD_I4;
++	case MONO_TYPE_I8: case MONO_TYPE_U8: return MINT_LDFLD_I8;
++	case MONO_TYPE_R4: return MINT_LDFLD_R4;
++	case MONO_TYPE_R8: return MINT_LDFLD_R8;
++	case MONO_TYPE_STRING: case MONO_TYPE_CLASS: case MONO_TYPE_OBJECT: case MONO_TYPE_SZARRAY: case MONO_TYPE_ARRAY: return MINT_LDFLD_O;
++	case MONO_TYPE_GENERICINST: return mono_type_is_reference (t) ? MINT_LDFLD_O : -1;
++	default: return -1;
++	}
++}
++static int
++sj_ldsfld_op (int ldfld_op)
++{
++	switch (ldfld_op) {
++	case MINT_LDFLD_I1: return MINT_LDSFLD_I1;
++	case MINT_LDFLD_U1: return MINT_LDSFLD_U1;
++	case MINT_LDFLD_I2: return MINT_LDSFLD_I2;
++	case MINT_LDFLD_U2: return MINT_LDSFLD_U2;
++	case MINT_LDFLD_I4: return MINT_LDSFLD_I4;
++	case MINT_LDFLD_I8: return MINT_LDSFLD_I8;
++	case MINT_LDFLD_R4: return MINT_LDSFLD_R4;
++	case MINT_LDFLD_R8: return MINT_LDSFLD_R8;
++	case MINT_LDFLD_O: return MINT_LDSFLD_O;
++	}
++	return -1;
++}
++/* the field load a return type needs and the field holds must be the same storage (the getter returns the field as it is) */
++static gboolean
++sj_same_storage (MonoType *ret, MonoType *ft)
++{
++	int a = sj_ldfld_op (ret), b = sj_ldfld_op (ft);
++	return a >= 0 && a == b && (a != MINT_LDFLD_O || mono_type_is_reference (ret));
++}
++/* works the verdict out (an interpreter thread: metadata reads); the caller keeps it */
++static void
++sj_classify_getter (MonoMethod *m, SjIntrinsic *g)
++{
++	memset (g, 0, sizeof (*g));
++	ERROR_DECL (error);
++	MonoMethodSignature *sig = mono_method_signature_internal (m);
++	if (!sig || sig->param_count || sig->call_convention == MONO_CALL_VARARG || m->wrapper_type != MONO_WRAPPER_NONE)
++		return;
++	if ((m->iflags & (METHOD_IMPL_ATTRIBUTE_INTERNAL_CALL | METHOD_IMPL_ATTRIBUTE_RUNTIME | METHOD_IMPL_ATTRIBUTE_SYNCHRONIZED)) ||
++	    (m->flags & (METHOD_ATTRIBUTE_PINVOKE_IMPL | METHOD_ATTRIBUTE_ABSTRACT)))
++		return;
++	MonoClass *klass = m->klass;
++	if (sig->hasthis && m_class_is_valuetype (klass))
++		return;   /* ('this' is a managed pointer there: not this load) */
++	MonoMethodHeader *h = mono_method_get_header_internal (m, error);
++	if (!h || !is_ok (error)) {
++		mono_error_cleanup (error);
++		return;
++	}
++	const guint8 *c = h->code;
++	guint32 n = h->code_size, i = 0;
++	gboolean clauses = h->num_clauses != 0;
++	while (i < n && c [i] == 0x00)
++		i++;   /* nop */
++	sj_st.getters_seen++;
++	guint32 tok = 0;
++	int kind = SJI_NONE;
++	gint32 k = 0;
++	if (!clauses && sig->hasthis && n - i == 7 && c [i] == 0x02 && c [i + 1] == 0x7b && c [i + 6] == 0x2a) {   /* ldarg.0; ldfld; ret */
++		tok = c [i + 2] | (c [i + 3] << 8) | (c [i + 4] << 16) | ((guint32) c [i + 5] << 24);
++		kind = SJI_LDFLD;
++	} else if (!clauses && !sig->hasthis && n - i == 6 && c [i] == 0x7e && c [i + 5] == 0x2a) {           /* ldsfld; ret */
++		tok = c [i + 1] | (c [i + 2] << 8) | (c [i + 3] << 16) | ((guint32) c [i + 4] << 24);
++		kind = SJI_LDSFLD;
++	} else if (!clauses && n - i >= 2) {                                                                    /* ldc.i4.*; ret */
++		guint8 o = c [i];
++		if (o >= 0x15 && o <= 0x1e && n - i == 2 && c [i + 1] == 0x2a)
++			kind = SJI_LDC, k = (gint32) o - 0x16;
++		else if (o == 0x1f && n - i == 3 && c [i + 2] == 0x2a)
++			kind = SJI_LDC, k = (gint8) c [i + 1];
++		else if (o == 0x20 && n - i == 6 && c [i + 5] == 0x2a)
++			kind = SJI_LDC, k = (gint32) (c [i + 1] | (c [i + 2] << 8) | (c [i + 3] << 16) | ((guint32) c [i + 4] << 24));
++		if (kind == SJI_LDC) {
++			MonoType *rt = sig->ret;
++			if (m_type_is_byref (rt) || !(rt->type == MONO_TYPE_I4 || rt->type == MONO_TYPE_U4 || rt->type == MONO_TYPE_BOOLEAN ||
++						    rt->type == MONO_TYPE_I1 || rt->type == MONO_TYPE_U1 || rt->type == MONO_TYPE_I2 || rt->type == MONO_TYPE_U2 ||
++						    rt->type == MONO_TYPE_CHAR))
++				kind = SJI_NONE;
++			/* (a small return type: the JIT call leaves the constant widened as the IL's int32 is truncated and widened again -- only a
++			 * constant that survives the round trip unchanged is taken) */
++			else if ((rt->type == MONO_TYPE_I1 && k != (gint8) k) || ((rt->type == MONO_TYPE_U1 || rt->type == MONO_TYPE_BOOLEAN) && k != (guint8) k) ||
++				 (rt->type == MONO_TYPE_I2 && k != (gint16) k) || ((rt->type == MONO_TYPE_U2 || rt->type == MONO_TYPE_CHAR) && k != (guint16) k))
++				kind = SJI_NONE;
++			else
++				g->kind = SJI_LDC, g->op = MINT_LDC_I4, g->k = k;
++		}
++	}
++	mono_metadata_free_mh (h);
++	if (kind == SJI_LDFLD || kind == SJI_LDSFLD) {
++		MonoClass *fklass = NULL;
++		MonoGenericContext *gctx = m->is_inflated ? mono_method_get_context (m) : NULL;
++		MonoClassField *f = mono_field_from_token_checked (m_class_get_image (klass), tok, &fklass, gctx, error);
++		if (!f || !is_ok (error)) {
++			mono_error_cleanup (error);
++			return;
++		}
++		MonoType *ft = mono_field_get_type_internal (f);
++		gboolean is_static = (ft->attrs & FIELD_ATTRIBUTE_STATIC) != 0;
++		if ((kind == SJI_LDFLD) == is_static || (ft->attrs & FIELD_ATTRIBUTE_LITERAL) || !sj_same_storage (sig->ret, ft))
++			return;
++		MonoClass *parent = m_field_get_parent (f);
++		mono_class_init_internal (parent);
++		if (mono_class_has_failure (parent))
++			return;
++		int op = sj_ldfld_op (ft);
++		if (kind == SJI_LDFLD) {
++			/* the field must be the callee's own class's or a parent's (the object is 'this' of the callee's class) */
++			if (!mono_class_has_parent (klass, parent) || m_class_is_valuetype (parent) || !m_class_is_fields_inited (parent))
++				return;
++			int off = m_field_get_offset (f);
++			if (off <= 0 || off > 0xffff)
++				return;
++			g->kind = SJI_LDFLD; g->op = (guint16) op; g->offset = (guint16) off;
++		} else {
++			/* the callee's own class (its class init and the field's are then one check), never thread-static */
++			if (parent != klass || mono_class_field_is_special_static (f))
++				return;
++			MonoVTable *vt = mono_class_vtable_checked (parent, error);
++			if (!vt || !is_ok (error)) {
++				mono_error_cleanup (error);
++				return;
++			}
++			g->kind = SJI_LDSFLD; g->op = (guint16) sj_ldsfld_op (op); g->vtable = vt; g->addr = mono_static_field_get_addr (vt, f);
++			if (!g->addr) {
++				g->kind = SJI_NONE;
++				return;
++			}
++		}
++	}
++	if (g->kind)
++		sj_st.getters_ok++;
++}
++/* the verdict for the callee of a MINT_JIT_CALL (an interpreter thread: computed once per callee) */
++static void
++sj_note_call (InterpMethod *im, const guint16 *ip)
++{
++	if (!sj_intrinsics || *ip != MINT_JIT_CALL)
++		return;
++	InterpMethod *callee = (InterpMethod *) im->data_items [ip [3]];
++	if (!callee || !callee->method)
++		return;
++	mono_os_mutex_lock (&sj_lock);
++	if (!sj_getters)
++		sj_getters = g_hash_table_new (NULL, NULL);
++	gboolean known = g_hash_table_lookup (sj_getters, callee->method) != NULL;
++	mono_os_mutex_unlock (&sj_lock);
++	if (known)
++		return;
++	SjIntrinsic *g = g_new0 (SjIntrinsic, 1);
++	sj_classify_getter (callee->method, g);
++	mono_os_mutex_lock (&sj_lock);
++	if (!g_hash_table_lookup (sj_getters, callee->method))
++		g_hash_table_insert (sj_getters, callee->method, g);
++	else
++		g_free (g);
++	mono_os_mutex_unlock (&sj_lock);
++}
++/* (the compiler thread) the verdict for a MINT_JIT_CALL, copied out; FALSE = a real call */
++static gboolean
++sj_getter_of (InterpMethod *im, const guint16 *ip, SjIntrinsic *out)
++{
++	if (!sj_intrinsics || !sj_getters)
++		return FALSE;
++	InterpMethod *callee = (InterpMethod *) im->data_items [ip [3]];
++	if (!callee || !callee->method)
++		return FALSE;
++	mono_os_mutex_lock (&sj_lock);
++	SjIntrinsic *g = (SjIntrinsic *) g_hash_table_lookup (sj_getters, callee->method);
++	if (g)
++		*out = *g;
++	mono_os_mutex_unlock (&sj_lock);
++	return g && out->kind != SJI_NONE;
++}
++/* (review fix) an instruction's length in IR slots: MINT_SWITCH's is variable (mono_interp_oplen says 0 for it: 4 slots + 2 per case, as
++ * mono_interp_dis_mintop_len computes it) -- with 0 the walks below never got past a switch */
++static inline int
++sj_oplen (const guint16 *ip)
++{
++	int op = *ip;
++	return op == MINT_SWITCH ? MINT_SWITCH_LEN ((int) READ32 (ip + 2)) : mono_interp_oplen [op];
++}
++/* the JIT calls a trace may meet from its entry point (an interpreter thread, before it is queued): their callees are classified */
++static void
++sj_note_calls (SjTrace *t)
++{
++	if (!sj_intrinsics || !t->imethod || !t->imethod->jinfo)
++		return;
++	const guint16 *end = (const guint16 *) ((guint8 *) t->imethod->jinfo->code_start + t->imethod->jinfo->code_size);
++	const guint16 *ip = t->ip;
++	for (int n = 0; ip < end && n < 2 * sj_max_ops + 64; n++) {
++		int op = *ip;
++		if (op < 0 || op >= MINT_LASTOP)
++			break;
++		guint32 s = (guint32) (ip - t->ip);
++		if (t->x->seen && s >= t->x->seen_span)
++			break;
++		/* (review 2) with a record, only the calls the recorded runs reached (the game made those calls, and the recording walker classified
++		 * each callee at its call already): a callee on a path never taken is not classified -- no class init / field / vtable work ahead
++		 * of the game's own order. A trap's path, once recorded, classifies its calls the same way (sj_walk_rec). */
++		if (op == MINT_JIT_CALL && (!t->x->seen || ((t->x->seen [s >> 3] >> (s & 7)) & 1)))
++			sj_note_call (t->imethod, ip);
++		if (!t->x->seen && !sj_marker (op) && !sj_compiles9 (op))
++			break;   /* (a linear trace ends at the first instruction it does not compile) */
++		int len = sj_oplen (ip);
++		if (len <= 0)
++			break;
++		ip += len;
++	}
++}
++
+ /* ------------------------------------------------------------------ the queue (interpreter threads) */
+ static void sj_thread_start (void);
+ 
++/* the queue proper (sj_lock taken here); FALSE = full */
++static gboolean
++sj_enqueue (SjTrace *t)
++{
++	mono_os_mutex_lock (&sj_lock);
++	gboolean ok = sj_qtail - sj_qhead < SJ_QCAP;
++	if (ok) {
++		if (!t->order)
++			t->order = ++sj_order;
++		sj_q [sj_qtail++ % SJ_QCAP] = t;
++		sj_st.queued++;
++	} else
++		sj_st.queue_full++;
++	mono_os_mutex_unlock (&sj_lock);
++	if (ok) {
++		if (!sj_thread_started)
++			sj_thread_start ();
++		mono_os_sem_post (&sj_sem);
++	}
++	return ok;
++}
++
+ void
+ mono_shepjit_queue (SjTrace *t)
+ {
+ 	/* called by MINT_SJ_ENTRY when the hit count reaches the threshold; the handler stored ip / imethod first */
+-	if (mono_atomic_cas_i32 (&t->state, SJ_S_QUEUED, SJ_S_COUNTING) != SJ_S_COUNTING)
+-		return;
+ 	if (G_UNLIKELY (sj_thread_failed)) {
+-		/* (review fix) no compiler thread: this entry point stops counting (nothing would ever compile it) */
+-		t->state = SJ_S_OFF_NOTHREAD;
+-		sj_set_opcode (t, MINT_SJ_NOP);
++		if (mono_atomic_cas_i32 (&t->state, SJ_S_OFF_NOTHREAD, SJ_S_COUNTING) == SJ_S_COUNTING)
++			sj_set_opcode (t, MINT_SJ_NOP);   /* (review fix) no compiler thread: this entry point stops counting */
+ 		return;
+ 	}
++	if (sj_k9 && G_UNLIKELY (sj_block_used + 256 > sj_block_size)) {
++		/* (review 2) the code block is full: the compiler would refuse this trace (sj_compile_one's test, on the block's bump pointer, which
++		 * only grows) -- so no side struct, no record bitmap, no recorded runs for a trace that cannot be compiled. Kit #8's tier
++		 * (SHEPHERD_JIT9=0) queues it and the compiler says so, as before. */
++		if (mono_atomic_cas_i32 (&t->state, SJ_S_OFF_FULL, SJ_S_COUNTING) == SJ_S_COUNTING) {
++			sj_st.full_off++;
++			sj_set_opcode (t, MINT_SJ_NOP);
++		}
++		return;
++	}
++	if (sj_record_runs > 0 && mono_shepjit_mode) {
++		/* kit #9: record first -- the walker runs this entry point the next SHEPHERD_JIT_RECORD times (sj_record), then it is queued */
++		if (mono_atomic_cas_i32 (&t->state, SJ_S_RECORD, SJ_S_COUNTING) != SJ_S_COUNTING)
++			return;
++		if (!t->x)
++			t->x = g_new0 (SjTraceK9, 1);
++		if (!t->name)
++			t->name = mono_method_full_name (t->imethod->method, TRUE);
++		if (!t->key)
++			t->key = sj_fnv (t->name);
++		if (!t->x->seen) {
++			const guint16 *end = (const guint16 *) ((guint8 *) t->imethod->jinfo->code_start + t->imethod->jinfo->code_size);
++			guint32 span = (guint32) MIN (end - t->ip, SJ_SEEN_MAX);
++			t->x->seen = (guint8 *) g_malloc0 ((span + 7) / 8);
++			t->x->seen_span = (guint16) span;
++		}
++		t->x->rec_runs = 0;
++		t->fn = sj_record;
++		sj_set_opcode (t, MINT_SJ_ENTER);
++		return;
++	}
++	if (mono_atomic_cas_i32 (&t->state, SJ_S_QUEUED, SJ_S_COUNTING) != SJ_S_COUNTING)
++		return;
++	if (!t->x && sj_k9)
++		t->x = g_new0 (SjTraceK9, 1);   /* (kit #9: before the compiler can see the trace; review fix: SHEPHERD_JIT9=0 allocates none -- kit #8's
++		                                 * compile and publish then write t itself, as kit #8 did) */
+ 	if (!t->name)   /* (review fix: once -- a retry after a full queue used to build and leak it again on every hit) */
+ 		t->name = mono_method_full_name (t->imethod->method, TRUE);   /* (here, on the interpreter thread: the compiler never calls into the runtime) */
+ 	if (!t->key)
+ 		t->key = sj_fnv (t->name);
+-	mono_os_mutex_lock (&sj_lock);
+-	gboolean ok = sj_qtail - sj_qhead < SJ_QCAP;
+-	if (ok) {
+-		t->order = ++sj_order;
+-		sj_q [sj_qtail++ % SJ_QCAP] = t;
+-		sj_st.queued++;
+-	} else
+-		sj_st.queue_full++;
+-	mono_os_mutex_unlock (&sj_lock);
+-	if (!ok) {
++	if (sj_k9)
++		sj_note_calls (t);
++	if (!sj_enqueue (t)) {
+ 		/* the queue is full: count on, and try again only after another SHEPHERD_JIT_THRESHOLD hits (review fix: not on every hit) */
+ 		gint32 h = t->hits;
+ 		t->threshold = h < G_MAXINT32 - mono_shepjit_threshold ? h + mono_shepjit_threshold : G_MAXINT32;
+ 		mono_memory_barrier ();
+ 		t->state = SJ_S_COUNTING;
+-		return;
+ 	}
+-	if (!sj_thread_started)
+-		sj_thread_start ();
+-	mono_os_sem_post (&sj_sem);
+ }
+ 
+ /* ------------------------------------------------------------------ the compiler (the compiler thread only) */
+@@ -614,12 +1020,17 @@ static int sj_batch_n;
+ 
+ typedef struct { guint32 off; guint8 kind; guint8 cond; guint16 op; const guint16 *target; } SjFix;
+ typedef struct { const guint16 *ip; guint32 off; } SjMap;
++/* kit #9: one instruction of a trace's plan (every instruction from the entry on, in layout order) */
++enum { SJD_CODE = 0, SJD_CALL, SJD_INTR, SJD_EXIT, SJD_TRAP, SJD_MARK };
++typedef struct { const guint16 *ip; guint32 off; guint16 op; guint8 disp; guint8 odd; } SjPlan;
+ /* the compiler's work arrays (heap, sj_thread_start / the harness): one trace at a time */
+ #define SJ_W_MAP 1024          /* compiled instructions + markers in one trace (>= sj_max_ops + markers) */
+ #define SJ_W_FIX 4096          /* branch holes in one trace */
+ static SjMap *sj_w_map, *sj_w_stubs;
+ static guint32 *sj_w_op_off;
+ static SjFix *sj_w_fix;
++static SjPlan *sj_w_plan;
++static SjIntrinsic *sj_w_intr;
+ static void
+ sj_work_alloc (void)
+ {
+@@ -629,6 +1040,10 @@ sj_work_alloc (void)
+ 	sj_w_stubs = g_new0 (SjMap, SJ_W_MAP);
+ 	sj_w_op_off = g_new0 (guint32, SJ_W_MAP);
+ 	sj_w_fix = g_new0 (SjFix, SJ_W_FIX);
++	if (!sj_k9)
++		return;   /* (review fix) kit #9's compiler's arrays only for kit #9's compiler (SHEPHERD_JIT9=0: kit #8's memory) */
++	sj_w_plan = g_new0 (SjPlan, SJ_W_MAP);
++	sj_w_intr = g_new0 (SjIntrinsic, SJ_W_MAP);
+ }
+ 
+ static int
+@@ -654,7 +1069,8 @@ sj_emit_exit (guint8 *buf, int off, ptrdiff_t disp)
+ 	return off;
+ }
+ 
+-/* compile t into buf (its code will live at final address addr); returns the size, 0 = not compiled (t->state says why) */
++/* compile t into buf (its code will live at final address addr); returns the size, 0 = not compiled (t->state says why) -- KIT #8's
++ * compiler, unchanged: the trace runs from the entry point in layout order up to the first instruction it does not compile */
+ static int
+ sj_compile (SjTrace *t, guint8 *buf, int cap, gsize addr)
+ {
+@@ -722,7 +1138,10 @@ sj_compile (SjTrace *t, guint8 *buf, int cap, gsize addr)
+ 		return 0;
+ 	}
+ 	t->nops = (guint16) nops;
+-	t->full_slots = (guint32) (abort_ip - t->ip);
++	if (t->x)
++		t->x->pending_full_slots = (guint32) (abort_ip - t->ip);
++	else
++		t->full_slots = (guint32) (abort_ip - t->ip);   /* (SHEPHERD_JIT9=0: kit #8's line; the trace is not live before the window) */
+ 	guint32 stencil_bytes = (guint32) off;
+ 	/* the CONT of the last instruction goes to the abort exit, which comes right after it (a stripped CONT falls through into it) */
+ 	int abort_stub = off;
+@@ -765,17 +1184,401 @@ sj_compile (SjTrace *t, guint8 *buf, int cap, gsize addr)
+ 	return off;
+ }
+ 
++/* ------------------------------------------------------------------ kit #9's compiler
++ * The PLAN: every instruction from the entry point on, in layout order, gets what the trace does there --
++ *   CODE  a stencil (as kit #8);  CALL  MINT_JIT_CALL through the interpreter's handler body (the call sequence below);
++ *   INTR  MINT_JIT_CALL as its callee's trivial getter (a stencil with the call's slots);
++ *   EXIT  an instruction the trace does not compile that the recorded runs DID reach: the trace leaves there (an exit stub; with a record
++ *         the trace goes on compiling the reached instructions after it -- they are reached by branches around it);
++ *   TRAP  an instruction the recorded runs never reached: a trap stub (the same exit, with an odd result: counted by the slow exit);
++ *   MARK  another entry point: transparent (the disposition of the next instruction).
++ * Without a record (SHEPHERD_JIT_RECORD=0) the plan ends at the first EXIT, like kit #8's trace. The EMISSION lays the CODE / CALL / INTR
++ * instructions out in order (a stencil that falls through to an instruction that is not laid out next gets a B.W), the stubs after them.
++ * A trace with a CALL is FRAMED: its prologue pushes frame, locals and context (and lr), every exit pops them; the call sequence reloads
++ * them from the stack:  ldr r0,[sp] / ldr r1,[sp,#8] / movw+movt r2,=ip / ldr r3,[sp,#4] / bl <veneer: the helper> / cmp r0,#0 /
++ * bne.w <odd exit at the next instruction> / ldr r0,[sp,#4]  (26 bytes). */
++#define SJ_C_RECORD 1      /* compiled from a record (traps possible) */
++#define SJ_C_FRAMED 2      /* has calls: the framed prologue / exits */
++#define SJ_C_K9 4          /* kit #9's compiler */
++#define SJ_C_INTR_EVER 8   /* (review 2) some compile of this trace held a getter intrinsic -- sticky (never cleared: a recompile staged or
++                            * discarded cannot hide it): lockstep then registers its frame copy as a GC root (sj_lockstep) */
++
++static int
++sj_emit_exit9 (guint8 *buf, int off, ptrdiff_t disp, gboolean framed)
++{
++	guint32 d = (guint32) disp;
++	wr16 (buf + off, 0xf240); wr16 (buf + off + 2, 0x0000); sj_put_imm16 (buf + off, d & 0xffff); off += 4;          /* movw r0, #lo */
++	if (d >> 16) { wr16 (buf + off, 0xf2c0); wr16 (buf + off + 2, 0x0000); sj_put_imm16 (buf + off, d >> 16); off += 4; }   /* movt r0, #hi */
++	wr16 (buf + off, framed ? 0xbd0e : 0x4770); off += 2;                                                               /* pop {r1, r2, r3, pc} / bx lr */
++	return off;
++}
++
++static inline gboolean
++sj_seen_bit (const SjTrace *t, guint32 s)
++{
++	return s < t->x->seen_span && (t->x->seen [s >> 3] >> (s & 7)) & 1;
++}
++
++static int
++sj_plan_find (SjPlan *plan, int n, const guint16 *ip)
++{
++	int lo = 0, hi = n - 1;
++	while (lo <= hi) {
++		int mid = (lo + hi) / 2;
++		if (plan [mid].ip == ip) return mid;
++		if (plan [mid].ip < ip) lo = mid + 1; else hi = mid - 1;
++	}
++	return -1;
++}
++
++/* the holes of one stencil copied to buf + off, for the instruction v (an IR instruction, or a synthesized one for an intrinsic: its
++ * data-item slots then index items); its continuations go to succ, its exits to own */
++static gboolean
++sj_patch (guint8 *buf, int off, const SjStencil *st, const guint16 *v, gpointer const *items, int op, const guint16 *own, const guint16 *succ,
++	  SjFix *fix, int *nfix)
++{
++	for (int h = 0; h < st->nholes; h++) {
++		const SjHole *ho = &st->holes [h];
++		guint8 *p = buf + off + ho->off;
++		switch (ho->kind) {
++		case SJH_A16: sj_put_imm16 (p, v [ho->arg]); break;
++		case SJH_W32_LO: sj_put_imm16 (p, (guint32) READ32 (v + ho->arg) & 0xffff); break;
++		case SJH_W32_HI: sj_put_imm16 (p, (guint32) READ32 (v + ho->arg) >> 16); break;
++		case SJH_DATA_LO: sj_put_imm16 (p, (guint32) (gsize) items [v [ho->arg]] & 0xffff); break;
++		case SJH_DATA_HI: sj_put_imm16 (p, (guint32) (gsize) items [v [ho->arg]] >> 16); break;
++		case SJH_HELPER_LO: sj_put_imm16 (p, (guint32) (gsize) sj_helper_addr [ho->arg] & 0xffff); break;
++		case SJH_HELPER_HI: sj_put_imm16 (p, (guint32) (gsize) sj_helper_addr [ho->arg] >> 16); break;
++		case SJH_CONT: case SJH_TAKEN: case SJH_EXIT: {
++			if (*nfix >= SJ_W_FIX)
++				return FALSE;
++			SjFix *f = &fix [(*nfix)++];
++			f->off = (guint32) (off + ho->off); f->kind = ho->kind; f->cond = ho->arg; f->op = 0;
++			if (ho->kind == SJH_EXIT)
++				f->target = own;
++			else if (ho->kind == SJH_CONT)
++				f->target = succ;
++			else {
++				int len = mono_interp_oplen [op];
++				MintOpArgType at = mono_interp_opargtype [op];
++				f->target = (at == MintOpShortBranch || at == MintOpShortAndShortBranch) ? own + (gint16) v [len - 1] : own + (gint32) READ32 (v + len - 2);
++			}
++			break;
++		}
++		}
++	}
++	return TRUE;
++}
++
++static int
++sj_compile9 (SjTrace *t, guint8 *buf, int cap, gsize addr)
++{
++	SjPlan *plan = sj_w_plan;
++	SjIntrinsic *intr = sj_w_intr;
++	SjFix *fix = sj_w_fix;
++	SjMap *stubs = sj_w_stubs;
++	InterpMethod *im = t->imethod;
++	const guint16 *code_end = (const guint16 *) ((guint8 *) im->jinfo->code_start + im->jinfo->code_size);
++	gboolean rec = t->x->seen != NULL;
++	guint32 max_seen = 0;
++	if (rec)
++		for (guint32 s = 0; s < t->x->seen_span; s++)
++			if (sj_seen_bit (t, s))
++				max_seen = s;
++	/* ---- the plan */
++	int np = 0, nemit = 0, ncall = 0, nintr = 0;
++	const guint16 *ip = t->ip + 3;
++	int first_exit_op = -1;
++	const guint16 *first_exit_ip = NULL;
++	while (ip < code_end && np < SJ_W_MAP - 4) {
++		guint32 s = (guint32) (ip - t->ip);
++		if (rec && s > max_seen)
++			break;
++		int op = *ip;
++		if (op < 0 || op >= MINT_LASTOP)
++			break;
++		SjPlan *p = &plan [np];
++		p->ip = ip; p->op = (guint16) op; p->off = 0; p->odd = 0;
++		gboolean reached = !rec || sj_seen_bit (t, s);
++		if (sj_marker (op)) {
++			p->disp = SJD_MARK;
++		} else if (!reached) {
++			p->disp = SJD_TRAP;
++		} else if (nemit >= sj_max_ops) {
++			break;   /* (the rest is outside the trace: exits) */
++		} else if (sj_compiles (op)) {
++			p->disp = SJD_CODE; nemit++;
++		} else if (op == MINT_JIT_CALL && sj_k9 && sj_call_helper && (sj_calls || sj_intrinsics)) {
++			if (sj_getter_of (im, ip, &intr [np]) && sj_compiles (intr [np].op)) {
++				p->disp = SJD_INTR; nemit++; nintr++;
++			} else if (sj_calls && mono_shepjit_mode == 1) {
++				p->disp = SJD_CALL; nemit++; ncall++;
++			} else
++				p->disp = SJD_EXIT;
++		} else {
++			p->disp = SJD_EXIT;
++		}
++		if (p->disp == SJD_EXIT) {
++			if (first_exit_op < 0)
++				first_exit_op = op, first_exit_ip = ip;
++			if (!rec)
++				break;   /* a linear trace ends here (kit #8) */
++		}
++		int len = sj_oplen (ip);   /* (review fix: a switch's real length -- the plan went on past it, as past any other exit) */
++		if (len <= 0)
++			break;
++		np++;
++		ip += len;
++	}
++	const guint16 *end_ip = ip;   /* the first instruction not in the plan: outside the trace */
++	/* markers take the disposition of the next instruction (MARK as the last ones: they lead outside -> EXIT) */
++	for (int i = np - 1, next = -1; i >= 0; i--) {
++		if (plan [i].disp != SJD_MARK) { next = i; continue; }
++		plan [i].disp = next < 0 ? SJD_EXIT : (plan [next].disp == SJD_CALL || plan [next].disp == SJD_INTR || plan [next].disp == SJD_CODE) ? SJD_MARK : plan [next].disp;
++	}
++	t->abort_op = (guint16) (first_exit_op >= 0 ? first_exit_op : (end_ip < code_end ? *end_ip : MINT_LASTOP));
++	t->x->abort_slot = (guint16) MIN ((first_exit_op >= 0 ? first_exit_ip : end_ip) - t->ip, 0xffff);
++	if (t->abort_op < MINT_LASTOP)
++		sj_st.abort_hist [t->abort_op]++;
++	if (nemit < sj_min_ops) {
++		t->state = SJ_S_OFF_SHORT;
++		return 0;
++	}
++	gboolean framed = ncall > 0;
++	if (framed && sj_veneer_off == 0xffffffffu)
++		return t->state = SJ_S_OFF_SHORT, 0;   /* (no veneer island: cannot happen once the compiler thread runs) */
++	/* ---- the emission */
++	int nfix = 0, nstub = 0, off = 0, ntrap = 0;
++	if (framed) { wr16 (buf + off, 0xb50b); off += 2; }   /* push {r0, r1, r3, lr}: frame, locals, context, the return address */
++	wr16 (buf + off, 0x4608); off += 2;                   /* mov r0, r1: the stencils take the locals in r0 */
++	guint32 loop_off = (guint32) off;                     /* a back branch to the entry opcode lands here */
++	/* the prologue falls through to the first instruction after the entry opcode (a B.W when that one is not laid out: a trap / an exit) */
++	gboolean fall_pending = TRUE;                         /* the last laid-out code falls through to its successor */
++	const guint16 *fall_succ = t->ip + 3;
++	guint32 stencil_bytes = 0;
++	for (int i = 0; i < np; i++) {
++		SjPlan *p = &plan [i];
++		gboolean laid = p->disp == SJD_CODE || p->disp == SJD_CALL || p->disp == SJD_INTR;
++		if (p->disp == SJD_MARK) {
++			if (fall_pending && fall_succ == p->ip)
++				fall_succ = p->ip + 3;   /* (a marker before a laid-out instruction is nothing to run: fall on past it) */
++			continue;   /* (its offset: the next laid-out instruction's, below) */
++		}
++		if (fall_pending && (!laid || p->ip != fall_succ)) {
++			/* the previous instruction falls through to an instruction that is not laid out next: a B.W to wherever that leads */
++			if (nfix >= SJ_W_FIX || off + 4 > cap) return t->state = SJ_S_OFF_SHORT, 0;
++			wr16 (buf + off, 0xf000); wr16 (buf + off + 2, 0x9000);
++			SjFix *f = &fix [nfix++];
++			f->off = (guint32) off; f->kind = SJH_CONT; f->cond = 0; f->op = 0; f->target = fall_succ;
++			off += 4;
++		}
++		fall_pending = FALSE;
++		if (!laid)
++			continue;
++		const guint16 *succ = p->ip + mono_interp_oplen [p->op];
++		if (p->disp == SJD_CODE || p->disp == SJD_INTR) {
++			int op = p->disp == SJD_CODE ? p->op : intr [i].op;
++			const SjStencil *st = &sj_stencils [sj_stencil_of [op]];
++			if (off + st->len + 8 + 16 > cap) return t->state = SJ_S_OFF_SHORT, 0;
++			if (st->align4 && (off & 2)) { wr16 (buf + off, 0xbf00); off += 2; }   /* nop: its literal pool stays 4-aligned */
++			p->off = (guint32) off;
++			memcpy (buf + off, st->code, st->len);
++			gboolean ok;
++			if (p->disp == SJD_CODE)
++				ok = sj_patch (buf, off, st, p->ip, (gpointer const *) im->data_items, op, p->ip, succ, fix, &nfix);
++			else {
++				/* the getter as an instruction of its own: the call's return slot, its first argument ('this'), the field */
++				guint16 v [8] = { 0 };
++				gpointer items [2] = { intr [i].vtable, intr [i].addr };
++				v [0] = (guint16) op; v [1] = p->ip [1];
++				if (intr [i].kind == SJI_LDFLD) { v [2] = p->ip [2]; v [3] = intr [i].offset; }
++				else if (intr [i].kind == SJI_LDSFLD) { v [2] = 0; v [3] = 1; }
++				else { v [2] = (guint16) (guint32) intr [i].k; v [3] = (guint16) ((guint32) intr [i].k >> 16); }
++				ok = sj_patch (buf, off, st, v, items, op, p->ip, succ, fix, &nfix);
++			}
++			if (!ok) return t->state = SJ_S_OFF_SHORT, 0;
++			off += st->len;
++			stencil_bytes += st->len;
++			if (st->falls) { fall_pending = TRUE; fall_succ = succ; }
++		} else {
++			/* SJD_CALL: the call sequence (r0 = locals at every stencil boundary; [sp] frame, [sp+4] locals, [sp+8] context) */
++			if (off + 26 + 16 > cap || nfix + 2 > SJ_W_FIX) return t->state = SJ_S_OFF_SHORT, 0;
++			p->off = (guint32) off;
++			guint32 ipv = (guint32) (gsize) p->ip;
++			wr16 (buf + off, 0x9800); off += 2;                                                                     /* ldr r0, [sp] */
++			wr16 (buf + off, 0x9902); off += 2;                                                                     /* ldr r1, [sp, #8] */
++			wr16 (buf + off, 0xf240); wr16 (buf + off + 2, 0x0200); sj_put_imm16 (buf + off, ipv & 0xffff); off += 4;  /* movw r2, #lo(ip) */
++			wr16 (buf + off, 0xf2c0); wr16 (buf + off + 2, 0x0200); sj_put_imm16 (buf + off, ipv >> 16); off += 4;     /* movt r2, #hi(ip) */
++			wr16 (buf + off, 0x9b01); off += 2;                                                                     /* ldr r3, [sp, #4] */
++			if (!sj_put_bl (buf + off, addr + off, (gsize) sj_block + sj_veneer_off)) return t->state = SJ_S_OFF_SHORT, 0;   /* bl <helper veneer> */
++			off += 4;
++			wr16 (buf + off, 0x2800); off += 2;                                                                     /* cmp r0, #0 */
++			wr16 (buf + off, 0xf040); wr16 (buf + off + 2, 0x8000);                                                 /* bne.w <odd exit at succ> */
++			SjFix *f = &fix [nfix++];
++			f->off = (guint32) off; f->kind = SJH_EXIT; f->cond = 1; f->op = 1; f->target = succ;   /* (op 1: the odd exit of a call) */
++			off += 4;
++			wr16 (buf + off, 0x9801); off += 2;                                                                     /* ldr r0, [sp, #4] */
++			stencil_bytes += 26;
++			fall_pending = TRUE; fall_succ = succ;
++		}
++	}
++	/* markers: the offset of the next laid-out instruction */
++	for (int i = np - 1; i >= 0; i--)
++		if (plan [i].disp == SJD_MARK)
++			plan [i].off = i + 1 < np ? plan [i + 1].off : 0;
++	if (fall_pending) {
++		/* the last laid-out instruction falls through: the exit at its successor goes right here (as kit #8's abort exit) */
++		gboolean odd = FALSE;
++		int k = sj_plan_find (plan, np, fall_succ);
++		if (k >= 0 && plan [k].disp == SJD_TRAP)
++			odd = TRUE;
++		if (nstub >= SJ_W_MAP || off + 12 > cap) return t->state = SJ_S_OFF_SHORT, 0;
++		stubs [nstub].ip = (const guint16 *) ((gsize) fall_succ | (odd ? 1 : 0)); stubs [nstub++].off = (guint32) off;
++		off = sj_emit_exit9 (buf, off, (fall_succ - t->ip) * (ptrdiff_t) sizeof (guint16) | (odd ? 1 : 0), framed);
++		if (odd) ntrap++;
++	}
++	/* ---- the branches: in the trace, or to a stub (even = an exit, odd = a trap or a call's slow exit) */
++	SjTrap *traps = NULL;
++	for (int i = 0; i < nfix; i++) {
++		SjFix *f = &fix [i];
++		const guint16 *tip = f->target;
++		guint32 target_off = 0;
++		gboolean odd = FALSE, found = FALSE;
++		if (f->kind == SJH_EXIT) {
++			odd = f->op == 1;   /* a call's slow exit; else the instruction's own check: leave AT it (even) */
++		} else if (tip == t->ip) {
++			target_off = loop_off; found = TRUE;
++		} else {
++			int k = (tip >= t->ip && tip < end_ip) ? sj_plan_find (plan, np, tip) : -1;
++			if (k >= 0) {
++				int d = plan [k].disp;
++				if (d == SJD_CODE || d == SJD_CALL || d == SJD_INTR || d == SJD_MARK) { target_off = plan [k].off; found = TRUE; }
++				else odd = d == SJD_TRAP;
++			}
++		}
++		if (!found) {
++			const guint16 *key = (const guint16 *) ((gsize) tip | (odd ? 1 : 0));
++			int s;
++			for (s = 0; s < nstub; s++)
++				if (stubs [s].ip == key) break;
++			if (s == nstub) {
++				if (nstub >= SJ_W_MAP || off + 14 > cap) return t->state = SJ_S_OFF_SHORT, 0;
++				if (off & 2) { wr16 (buf + off, 0xbf00); off += 2; }
++				stubs [nstub].ip = key; stubs [nstub++].off = (guint32) off;
++				off = sj_emit_exit9 (buf, off, (tip - t->ip) * (ptrdiff_t) sizeof (guint16) | (odd ? 1 : 0), framed);
++				if (odd && f->op != 1)
++					ntrap++;
++			}
++			target_off = stubs [s].off;
++		}
++		if (!sj_put_branch (buf + f->off, addr + f->off, addr + target_off, f->cond))
++			return t->state = SJ_S_OFF_SHORT, 0;
++	}
++	if (off & 2) { wr16 (buf + off, 0xbf00); off += 2; }
++	/* the trap sites: the odd stubs at instructions the record never reached (traps [0].slot = how many) */
++	int nt = 0;
++	(void) ntrap;
++	for (int pass = 0; pass < 2; pass++) {
++		nt = 0;
++		for (int s = 0; s < nstub; s++)
++			if ((gsize) stubs [s].ip & 1) {
++				const guint16 *sip = (const guint16 *) ((gsize) stubs [s].ip & ~(gsize) 1);
++				int k = sj_plan_find (plan, np, sip);
++				if (k >= 0 && plan [k].disp == SJD_TRAP) {
++					nt++;
++					if (pass)
++						traps [nt].slot = (guint16) (sip - t->ip);
++				}
++			}
++		if (!nt)
++			break;
++		if (!pass) {
++			traps = g_new0 (SjTrap, nt + 1);
++			traps [0].slot = (guint16) nt;
++		}
++	}
++	/* lockstep: which instructions the trace runs itself (the walker stops at every other one) */
++	if (mono_shepjit_mode == 2 || sj_want_cmap) {
++		guint32 span = (guint32) (end_ip - t->ip);
++		guint8 *cm = (guint8 *) g_malloc0 ((span + 8) / 8);
++		cm [0] |= 1;   /* the entry opcode */
++		for (int i = 0; i < np; i++) {
++			int d = plan [i].disp;
++			if (d == SJD_CODE || d == SJD_INTR || d == SJD_CALL || d == SJD_MARK) {
++				guint32 s = (guint32) (plan [i].ip - t->ip);
++				cm [s >> 3] |= (guint8) (1 << (s & 7));
++			}
++		}
++		t->x->pending_cmap = cm;   /* (published with the code; the old one is never freed: a racing lockstep run may read it) */
++	}
++	t->nops = (guint16) nemit;
++	t->x->pending_full_slots = (guint32) (end_ip - t->ip);
++	t->x->ncalls = (guint16) ncall;
++	t->x->nintrins = (guint16) nintr;
++	t->x->cflags = (guint8) ((t->x->cflags & SJ_C_INTR_EVER) | SJ_C_K9 | (rec ? SJ_C_RECORD : 0) | (framed ? SJ_C_FRAMED : 0) | (nintr ? SJ_C_INTR_EVER : 0));
++	t->x->pending_traps = traps;
++	t->x->ntraps = (guint16) nt;
++	sj_st.ops += (guint64) nemit;
++	sj_st.stencil_bytes += stencil_bytes;
++	sj_st.stub_bytes += (guint64) (off - stencil_bytes);
++	sj_st.calls += (guint32) ncall;
++	sj_st.intrins += (guint32) nintr;
++	sj_st.traps += (guint32) nt;
++	if (framed)
++		sj_st.traces_framed++;
++	t->code_bytes = (guint16) MIN (off, 65535);
++	return off;
++}
++
+ static gint64
+ sj_now_us (void)
+ {
+ 	return mono_100ns_ticks () / 10;
+ }
+ 
++/* (review 2) J2's "live": each trace once (kit #8's traces go live once; a kit #9 trace goes live again after each recompile) */
++static inline void
++sj_count_live (SjTrace *t)
++{
++	if (!t->x || !t->x->live_counted) {
++		sj_st.live++;
++		if (t->x)
++			t->x->live_counted = 1;
++	}
++}
++
++/* (review 2) a RECOMPILE that will not be published (the block is full, its window failed): the trace keeps its old code -- published by
++ * an earlier window, valid, running all along -- in the state that goes with its fn (the monitor still measuring it, or running at full
++ * speed: the code, the count wrapper, lockstep). Kit #8's tier has no recompiles. */
++static void
++sj_keep_old (SjTrace *t)
++{
++	mono_memory_barrier ();
++	t->state = t->fn == sj_monitor ? SJ_S_MONITOR : SJ_S_LIVE;
++}
++
++/* (review 2) a staged recompile that will not be published: its tables were never seen by anyone (the slow exit, the wrappers and lockstep
++ * read only the published ones), so they are freed and the pending fields go back to the published code's */
++static void
++sj_drop_pending (SjTrace *t)
++{
++	SjTraceK9 *x = t->x;
++	if (x->pending_traps != x->traps)
++		g_free (x->pending_traps);
++	if (x->pending_cmap != x->cmap)
++		g_free (x->pending_cmap);
++	x->pending_traps = x->traps;
++	x->pending_cmap = x->cmap;
++	x->pending_code = t->code;
++	x->pending_full_slots = t->full_slots;
++}
++
+ /* publish the staged batch: ONE Open / copy / Sync / Close window, then switch the entry points */
++static void sj_stage_veneers (void);
++
+ static void
+ sj_publish (void)
+ {
+-	if (!sj_batch_n)
++	if (!sj_batch_n && !sj_stage_used)
+ 		return;
+ 	gint64 t0 = sj_now_us ();
+ 	int rc_open = SJ_OPEN ();
+@@ -795,41 +1598,93 @@ sj_publish (void)
+ 		sj_st.max_batch = (guint32) sj_batch_n;
+ 	for (int i = 0; i < sj_batch_n; i++) {
+ 		SjTrace *t = sj_batch [i];
++		/* (review 2) a recompile: the trace's old code is in the block (an earlier window published it) and has run all along */
++		gboolean recompile = t->x && t->code != NULL;
++		if (recompile && t->state != SJ_S_QUEUED) {
++			/* switched off while its recompile was staged (a lockstep mismatch on the old code): it stays off -- publishing would revive it */
++			sj_drop_pending (t);
++			sj_st.keep_off++;
++			continue;
++		}
+ 		if (!ok) {
++			if (recompile) {
++				/* (review 2) only the new code was lost: the old code keeps running (it used to be switched off here for good) */
++				sj_drop_pending (t);
++				sj_st.keep_window++;
++				sj_keep_old (t);
++				continue;
++			}
+ 			t->state = SJ_S_OFF_FULL;
+ 			sj_set_opcode (t, MINT_SJ_NOP);
+ 			continue;
+ 		}
++		/* the code is in the block now: what the wrappers and the slow exit read switches to it, then fn (kit #9: a recompiled trace ran its
++		 * old code until here; SHEPHERD_JIT9=0: no side struct -- kit #8's compile set code and full_slots itself) */
++		if (t->x) {
++			t->full_slots = t->x->pending_full_slots;
++			t->x->traps = t->x->pending_traps;
++			if (t->x->pending_cmap)
++				t->x->cmap = t->x->pending_cmap;
++			mono_memory_barrier ();
++			t->code = t->x->pending_code;
++			t->mon_runs = 0; t->mon_slots = 0;   /* (kit #9: a recompiled trace is measured again) */
++			mono_memory_barrier ();
++		}
+ 		if (mono_shepjit_mode == 2) {
+ 			t->fn = sj_lockstep;
+ 			t->state = SJ_S_LIVE;
+-			sj_st.live++;
++			sj_count_live (t);
+ 		} else if (sj_monitor_runs > 0) {
+ 			t->fn = sj_monitor;
+ 			t->state = SJ_S_MONITOR;
+ 		} else {
+-			t->fn = sj_code_fn (t);
++			t->fn = sj_live_fn (t);
+ 			t->state = SJ_S_LIVE;
+-			sj_st.live++;
++			sj_count_live (t);
+ 			sj_learn_note (t, 'H');
+ 		}
+ 		sj_set_opcode (t, MINT_SJ_ENTER);
+ 	}
+ 	if (!ok)
+ 		sj_st.windows_failed++;
++	/* (review fix) the veneer island in a window that failed never reached the block: stage it again at the start of the next window (the
++	 * traces of this batch -- the only ones that called the lost copy -- are off), so no later trace's BL lands in bytes never written */
++	gboolean veneer_lost = !ok && sj_veneer_off != 0xffffffffu && sj_veneer_off >= sj_stage_base && sj_veneer_off < sj_stage_base + sj_stage_used;
+ 	sj_stage_base += sj_stage_used;
+ 	sj_stage_used = 0;
+ 	sj_batch_n = 0;
++	if (veneer_lost) {
++		sj_veneer_off = 0xffffffffu;
++		sj_stage_veneers ();
++		sj_st.veneer_restaged++;
++	}
+ }
+ 
+ static void
+ sj_compile_one (SjTrace *t)
+ {
+ 	gint64 t0 = sj_now_us ();
++	/* kit #9: a RECOMPILE -- the trace runs published code (t->code is set only once a window has put it in the block; a trace is queued
++	 * again only from LIVE / MONITOR, so a staged first compile is never requeued). (review 2) Worked out first: every way a recompile can
++	 * fail keeps that old code */
++	gboolean recompile = t->x && t->code != NULL;
++	if (t->x && t->state != SJ_S_QUEUED) {
++		/* (review 2) switched off while it waited in the queue (a lockstep mismatch on its old code): nothing to compile, it stays off */
++		sj_st.keep_off++;
++		return;
++	}
+ 	guint32 used = sj_stage_base + sj_stage_used;   /* (= sj_block_used; review fix: the staged bytes were counted twice here) */
+ 	if (used + SJ_SCRATCH_CAP > sj_block_size) {
+ 		/* not enough room for a worst-case trace: compile into what is left, or give up */
+ 		if (used + 256 > sj_block_size) {
++			if (recompile) {
++				/* (review 2) the block is full: the trace keeps its old code (this used to switch it off for good) and its traps stay traps
++				 * (no more recorded paths for a recompile that cannot come) */
++				t->x->recompiles = (guint8) MAX ((int) t->x->recompiles, sj_recompile_cap);
++				sj_st.keep_full++;
++				sj_keep_old (t);
++				return;
++			}
+ 			t->state = SJ_S_OFF_FULL;
+ 			sj_st.full_off++;
+ 			sj_set_opcode (t, MINT_SJ_NOP);
+@@ -840,9 +1695,15 @@ sj_compile_one (SjTrace *t)
+ 		sj_publish ();
+ 	guint32 room = MIN ((guint32) SJ_SCRATCH_CAP, sj_block_size - (sj_stage_base + sj_stage_used));
+ 	gsize addr = (gsize) sj_block + sj_stage_base + sj_stage_used;
+-	int n = sj_compile (t, sj_scratch, (int) room, addr);
++	int n = sj_k9 ? sj_compile9 (t, sj_scratch, (int) room, addr) : sj_compile (t, sj_scratch, (int) room, addr);
+ 	sj_st.compile_us += (guint64) (sj_now_us () - t0);
+ 	if (n <= 0) {
++		if (recompile) {
++			/* kit #9: a recompile that came out short (cannot happen with more reached instructions; defensive): the old code stays
++			 * ((review 2) in the state that goes with its fn: sj_compile9 may have written OFF_SHORT) */
++			sj_keep_old (t);
++			return;
++		}
+ 		if (t->state == SJ_S_OFF_SHORT) {
+ 			sj_st.short_off++;
+ 			sj_learn_note (t, 'N');
+@@ -851,15 +1712,56 @@ sj_compile_one (SjTrace *t)
+ 		return;
+ 	}
+ 	memcpy (sj_stage + sj_stage_used, sj_scratch, (size_t) n);
+-	t->code = (gpointer) addr;
++	if (t->x)
++		t->x->pending_code = (gpointer) addr;   /* (t->code only after the window: a recompiled trace still runs its old code meanwhile) */
++	else
++		t->code = (gpointer) addr;   /* (SHEPHERD_JIT9=0: kit #8's line) */
+ 	sj_stage_used += (guint32) n;
+ 	sj_block_used = sj_stage_base + sj_stage_used;
+ 	sj_st.code_bytes += (guint64) n;
+ 	sj_st.compiled++;
++	if (recompile)
++		sj_st.recompiled++;
+ 	sj_batch [sj_batch_n++] = t;
+ }
+ 
+-static void sj_write_dump (void);
++/* kit #9: the veneer island at the start of the block (staged before the first trace, published with the first batch): the call helper's
++ * 8-byte veneer -- ldr.w pc, [pc, #0]; .word helper -- so a trace's call is one BL, never out of reach and never a per-trace thunk.
++ * (review fix) Staged at the start of a window: the block's start the first time; again at the next window's start if the window that held
++ * it failed (sj_publish). A BL reaches +-16 MiB, the block is at most 16 MiB: any place in it is in reach (sj_put_bl checks anyway). */
++static void
++sj_stage_veneers (void)
++{
++	if (!sj_k9 || !sj_call_helper || sj_veneer_off != 0xffffffffu || sj_stage_used || sj_stage_base + 8 > sj_block_size)
++		return;
++	guint8 *p = sj_stage;
++	wr16 (p, 0xf8df); wr16 (p + 2, 0xf000);
++	guint32 a = (guint32) (gsize) sj_call_helper;
++	memcpy (p + 4, &a, 4);
++	sj_stage_used = 8;
++	sj_block_used = sj_stage_base + 8;
++	sj_veneer_off = sj_stage_base;
++}
++
++static void sj_write_dump (gboolean end);
++
++/* kit #9 counter decay: halve every COUNTING entry point's counter n times. (review fix) Off the main thread: the compiler thread runs it
++ * when the heartbeat asks (mono_shepjit_frame) -- it reads every entry point (6,000-8,400 of them, ~2-3 cache lines each), which cost the
++ * main thread an unmeasured few ms every heartbeat under sj_lock. The list's head is taken under the lock; the walk runs without it: an
++ * entry point is linked at the head under sj_lock and never unlinked or freed, so every node reachable from that head (and its next_all)
++ * was written before it was linked. Racy with the interpreter's increments, as kit #8's counters always were (a heat estimate): a lost
++ * increment or a lost halving changes when a trace compiles, never what it runs. */
++static void
++sj_decay_walk (int n)
++{
++	mono_os_mutex_lock (&sj_lock);
++	SjTrace *head = sj_all;
++	mono_os_mutex_unlock (&sj_lock);
++	for (SjTrace *t = head; t; t = t->next_all)
++		if (t->state == SJ_S_COUNTING && t->threshold > 1)
++			t->hits >>= n;
++	sj_st.decays += (guint32) n;
++}
+ 
+ static void *
+ sj_thread (void *arg)
+@@ -869,6 +1771,11 @@ sj_thread (void *arg)
+ 	gint64 last_dump = sj_now_us ();
+ 	for (;;) {
+ 		mono_os_sem_timedwait (&sj_sem, 10000, MONO_SEM_FLAGS_NONE);
++		gint32 dp = sj_decay_pending;
++		if (dp > 0) {
++			mono_atomic_add_i32 (&sj_decay_pending, -dp);
++			sj_decay_walk (MIN (dp, 31));   /* (review fix) the heartbeat's halvings, here instead of on the main thread */
++		}
+ 		if (sj_batch_ms > 0)
+ 			g_usleep ((gulong) sj_batch_ms * 1000);   /* gather a batch: the next requests of the same frame come in meanwhile */
+ 		for (;;) {
+@@ -879,13 +1786,14 @@ sj_thread (void *arg)
+ 			mono_os_mutex_unlock (&sj_lock);
+ 			if (!t)
+ 				break;
++			sj_stage_veneers ();
+ 			sj_compile_one (t);
+ 		}
+ 		sj_publish ();
+ 		if (sj_now_us () - last_dump > 60 * 1000 * 1000) {   /* (the tables and the learning cache, from this thread: never the main one) */
+ 			/* (review fix) one writer at a time: the end's dump (mono_shepjit_dump, the main thread) holds the lock -- skip this round */
+ 			if (mono_os_mutex_trylock (&sj_dump_lock) == 0) {
+-				sj_write_dump ();
++				sj_write_dump (FALSE);
+ 				sj_learn_save ();
+ 				mono_os_mutex_unlock (&sj_dump_lock);
+ 			}
+@@ -925,32 +1833,58 @@ sj_thread_start (void)
+ 
+ /* ------------------------------------------------------------------ monitoring: compile only the loops that pay off */
+ static ptrdiff_t
+-sj_monitor (InterpFrame *frame, unsigned char *locals, SjTrace *t)
++sj_monitor (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context)
+ {
+-	ptrdiff_t r = sj_code_fn (t) (frame, locals, t);
++	ptrdiff_t r = sj_code_fn (t) (frame, locals, t, context);
+ 	/* (review fix) a run that leaves backwards (a loop's back edge out of the trace: a negative result, which used to become ~4e9 slots
+ 	 * and keep any trace live) or forward beyond the trace counts as reaching the trace's end -- at most full_slots per run */
+-	ptrdiff_t s = r / (ptrdiff_t) sizeof (guint16);
++	ptrdiff_t s = (r & ~(ptrdiff_t) 1) / (ptrdiff_t) sizeof (guint16);
+ 	guint32 slots = (s < 0 || s > (ptrdiff_t) t->full_slots) ? t->full_slots : (guint32) s;
+ 	t->mon_slots += slots > 3 ? slots - 3 : 0;
+-	if (++t->mon_runs == (guint32) sj_monitor_runs) {
+-		guint64 avg = t->mon_slots / t->mon_runs;
+-		if ((int) avg < sj_min_slots) {
+-			t->state = SJ_S_OFF_PENALTY;
+-			t->fn = sj_skip;
+-			sj_set_opcode (t, MINT_SJ_NOP);
+-			sj_st.penalty_off++;
+-			sj_learn_note (t, 'N');
+-		} else {
+-			t->fn = sj_code_fn (t);
+-			t->state = SJ_S_LIVE;
+-			sj_st.live++;
++	/* (review 2) the verdict only from MONITOR (a CAS): a kit #9 trap exit may have queued the trace for a RECOMPILE meanwhile (its state
++	 * QUEUED, its fn still this wrapper) -- writing LIVE over that let the next trap exit queue it a second time, and writing OFF_PENALTY
++	 * was undone when the recompile was published. The verdict is then put off: the recompile's publish starts the measurement again
++	 * (mon_runs = 0), and a recompile that is not published gives the trace back in MONITOR, where the next run (>=) gives the verdict.
++	 * Kit #8's tier (SHEPHERD_JIT9=0) has no recompiles: the CAS always succeeds there, on the 32nd run as before. */
++	if (++t->mon_runs >= (guint32) sj_monitor_runs) {
++		if (t->state != SJ_S_MONITOR) {
++			if (t->mon_runs == (guint32) sj_monitor_runs && t->state == SJ_S_QUEUED)
++				sj_st.mon_deferred++;   /* (queued for a recompile: the verdict waits) */
++		} else if ((int) (t->mon_slots / t->mon_runs) < sj_min_slots) {
++			if (mono_atomic_cas_i32 (&t->state, SJ_S_OFF_PENALTY, SJ_S_MONITOR) == SJ_S_MONITOR) {
++				t->fn = sj_skip;
++				sj_set_opcode (t, MINT_SJ_NOP);
++				sj_st.penalty_off++;
++				sj_learn_note (t, 'N');
++			}
++		} else if (mono_atomic_cas_i32 (&t->state, SJ_S_LIVE, SJ_S_MONITOR) == SJ_S_MONITOR) {
++			t->fn = sj_live_fn (t);
++			sj_count_live (t);
+ 			sj_learn_note (t, 'H');
+ 		}
+ 	}
+ 	return r;
+ }
+ 
++/* ------------------------------------------------------------------ kit #9: the measurement mode (SHEPHERD_JIT_COUNT=1) */
++static ptrdiff_t
++sj_count (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context)
++{
++	ptrdiff_t r = sj_code_fn (t) (frame, locals, t, context);
++	ptrdiff_t s = (r & ~(ptrdiff_t) 1) / (ptrdiff_t) sizeof (guint16);
++	guint32 slots = (s < 0 || s > (ptrdiff_t) t->full_slots) ? t->full_slots : (guint32) s;
++	if (G_UNLIKELY (!t->x->runs++))
++		sj_describe_callee (t);
++	t->x->slots_run += slots > 3 ? slots - 3 : 0;
++	if (s == (ptrdiff_t) t->full_slots)
++		t->x->end_runs++;
++	if (sj_count_win_on) {
++		t->x->win_runs++;
++		t->x->win_slots += slots > 3 ? slots - 3 : 0;
++	}
++	return r;
++}
++
+ /* ------------------------------------------------------------------ lockstep: the interpreter's walker (the interpreter's primitives) */
+ #define SJ_IP(n) ip [n]
+ #define SJ_IP32(n) READ32 (ip + n)
+@@ -990,9 +1924,168 @@ sj_walk (InterpFrame *frame, unsigned char *locals, const guint16 *ip, const gui
+ 	}
+ }
+ 
++/* kit #9: the same walker over a kit #9 trace -- it stops wherever the trace does not run the instruction itself (t->x->cmap, lockstep mode:
++ * an exit, a trap, an instruction outside the trace), and runs a MINT_JIT_CALL the trace compiled as a getter intrinsic as the REAL call
++ * (the interpreter's handler body: so the lockstep compares each intrinsic with its callee). *stop = the call left a resume state. */
++static const guint16 *
++sj_walk9 (InterpFrame *frame, unsigned char *locals, ThreadContext *context, SjTrace *t, const guint16 *ip, int *stop)
++{
++	const guint16 *lo = t->ip, *hi = t->ip + t->full_slots;
++	for (;;) {
++		if (ip < lo || ip >= hi)
++			return ip;
++		guint32 s = (guint32) (ip - lo);
++		if (t->x->cmap && !((t->x->cmap [s >> 3] >> (s & 7)) & 1))
++			return ip;
++		switch (*ip) {
++		case MINT_SJ_ENTRY: case MINT_SJ_ENTER: case MINT_SJ_NOP:
++			ip += 3;
++			break;
++		SJ_OPS (SJ_WALK_CASE)
++		case MINT_JIT_CALL: {
++			if (!sj_call_helper)
++				return ip;
++			/* a getter intrinsic leaves AT the call where its stencil would (a null 'this', a class not initialised): the interpreter
++			 * then makes the call; otherwise the real call, whose result the lockstep compares with the intrinsic's load */
++			SjIntrinsic g;
++			if (sj_getter_of (frame->imethod, ip, &g)) {
++				if (g.kind == SJI_LDFLD && !LOCAL_VAR (ip [2], gpointer))
++					return ip;
++				if (g.kind == SJI_LDSFLD && !((MonoVTable *) g.vtable)->initialized)
++					return ip;
++			}
++			if (sj_call_helper (frame, context, ip, locals)) {
++				*stop = 1;
++				return ip + 4;
++			}
++			ip += 4;
++			break;
++		}
++		default:
++			return ip;
++		}
++	}
++}
++
++/* kit #9: the RECORDING walker -- runs the interpreter's bodies (for real: its result is the program's) from ip, marking every instruction
++ * it reaches in t->x->seen, until an instruction no trace compiles, the entry opcode again (a loop's next round: the interpreter dispatches
++ * it), the end of the record, or SJ_REC_STEPS instructions; a MINT_JIT_CALL runs through the interpreter's handler body when calls are
++ * on (*stop = it left a resume state: the interpreter must CHECK_RESUME_STATE). Returns where the interpreter goes on. */
++static const guint16 *
++sj_walk_rec (InterpFrame *frame, unsigned char *locals, ThreadContext *context, SjTrace *t, const guint16 *ip, int *stop)
++{
++	const guint16 *base = t->ip;
++	const guint16 *code_end = (const guint16 *) ((guint8 *) t->imethod->jinfo->code_start + t->imethod->jinfo->code_size);
++	guint8 *seen = t->x->seen;
++	int steps = 0;
++	for (;;) {
++		if (ip < base || ip >= code_end)
++			return ip;
++		guint32 s = (guint32) (ip - base);
++		if (s >= t->x->seen_span)
++			return ip;
++		seen [s >> 3] |= (guint8) (1 << (s & 7));
++		if (s == 0 || ++steps > SJ_REC_STEPS)
++			return ip;
++		switch (*ip) {
++		case MINT_SJ_ENTRY: case MINT_SJ_ENTER: case MINT_SJ_NOP:
++			ip += 3;
++			break;
++		SJ_OPS (SJ_WALK_CASE)
++		case MINT_JIT_CALL:
++			/* (the interpreter's own handler body: whether traces compile calls or not, the record goes on past it) */
++			if (!sj_call_helper)
++				return ip;
++			sj_note_call (t->imethod, ip);
++			if (sj_call_helper (frame, context, ip, locals)) {
++				*stop = 1;
++				return ip + 4;
++			}
++			ip += 4;
++			break;
++		default:
++			return ip;
++		}
++	}
++}
++
++/* kit #9: fn while the entry point is being recorded */
++static ptrdiff_t
++sj_record (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context)
++{
++	if (t->state != SJ_S_RECORD)
++		return 3 * sizeof (guint16);   /* (another thread finished the record meanwhile: go on interpreting) */
++	int stop = 0;
++	const guint16 *nip = sj_walk_rec (frame, locals, context, t, t->ip + 3, &stop);
++	ptrdiff_t r = (nip - t->ip) * (ptrdiff_t) sizeof (guint16);
++	sj_st.rec_runs++;
++	sj_st.rec_ops += (guint64) (nip > t->ip ? nip - t->ip : 0);
++	if (++t->x->rec_runs >= sj_record_runs && mono_atomic_cas_i32 (&t->state, SJ_S_QUEUED, SJ_S_RECORD) == SJ_S_RECORD) {
++		t->fn = sj_skip;
++		sj_st.recorded++;
++		if (sj_intrinsics)
++			sj_note_calls (t);
++		if (!sj_enqueue (t)) {
++			/* the queue is full: record a few more runs and try again */
++			t->x->rec_runs = (guint16) (sj_record_runs / 2);
++			mono_memory_barrier ();
++			t->state = SJ_S_RECORD;
++			t->fn = sj_record;
++		}
++	}
++	return stop ? (r | 1) : r;   /* (odd: the walker's JIT call left a resume state -- MINT_SJ_ENTER's slow exit checks it) */
++}
++
++/* kit #9: MINT_SJ_ENTER's slow exit (an odd result) */
++ptrdiff_t
++mono_shepjit_slow_exit (SjTrace *t, ptrdiff_t r, InterpFrame *frame, unsigned char *locals, ThreadContext *context)
++{
++	r &= ~(ptrdiff_t) 1;
++	if (G_UNLIKELY (!t->x))
++		return r;   /* (SHEPHERD_JIT9=0: kit #8's traces never leave odd -- defensive) */
++	if (context->has_resume_state) {
++		t->x->call_stops++;
++		sj_st.call_stops++;
++		return r;   /* a call inside the trace left an exception / resume state: the interpreter goes there (CHECK_RESUME_STATE) */
++	}
++	ptrdiff_t slot = r / (ptrdiff_t) sizeof (guint16);
++	SjTrap *tr = t->x->traps;   /* (one load: [0] = the count, then the sites) */
++	int n = tr ? tr [0].slot : 0;
++	int i;
++	for (i = 1; i <= n; i++)
++		if (tr [i].slot == slot)
++			break;
++	if (!tr || i > n) {
++		t->x->call_stops++;   /* (an odd result that is no trap of this code: an older code's, or a call's slow exit) */
++		sj_st.call_stops++;
++		return r;
++	}
++	t->x->trap_exits++;
++	sj_st.trap_exits++;
++	int st = t->state;
++	gboolean live = st == SJ_S_LIVE || st == SJ_S_MONITOR;
++	if (live && t->x->seen && t->x->recompiles < sj_recompile_cap && slot > 0 && (guint32) slot < t->x->seen_span) {
++		/* record the path the trap took (the walker runs on from the trap instruction, for real: the interpreter goes on where it stops) */
++		int stop = 0;
++		const guint16 *nip = sj_walk_rec (frame, locals, context, t, t->ip + slot, &stop);
++		r = (nip - t->ip) * (ptrdiff_t) sizeof (guint16);
++		sj_st.trap_recs++;
++		if (++tr [i].exits >= (guint16) sj_trap_exits && !stop &&
++		    mono_atomic_cas_i32 (&t->state, SJ_S_QUEUED, st) == st) {
++			t->x->recompiles++;
++			if (!sj_enqueue (t)) {
++				t->x->recompiles--;
++				mono_memory_barrier ();
++				t->state = st;   /* (the queue is full: the next exit tries again) */
++			}
++		}
++	} else if (live && t->x->recompiles >= sj_recompile_cap && tr [i].exits < 0xffff && ++tr [i].exits == (guint16) sj_trap_exits)
++		sj_st.trap_capped++;   /* (capped: this trap stays a trap) */
++	return r;
++}
+ 
+ static ptrdiff_t
+-sj_lockstep (InterpFrame *frame, unsigned char *locals, SjTrace *t)
++sj_lockstep (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context)
+ {
+ 	/* both on the REAL frame, one after the other (a pointer into the frame, and anything computed from it, is then the same in both;
+ 	 * lockstep traces compile nothing that writes through a pointer -- no heap store, no block copy / fill -- so restoring the frame
+@@ -1001,25 +2094,42 @@ sj_lockstep (InterpFrame *frame, unsigned char *locals, SjTrace *t)
+ 	 * runs: a disagreement is therefore run again (frame restored, trace, frame restored, walker) up to twice; one that agrees on a repeat
+ 	 * is counted as such a race, one that never agrees is a MISMATCH (logged; the trace is switched off). (review fix) Every race is
+ 	 * logged too (the first 64), with the trace's run number: a race on a trace's FIRST run is what stale code or a publishing fault
+-	 * would look like (wrong once, right when repeated), so those are counted on their own ("on a first run", J2). */
++	 * would look like (wrong once, right when repeated), so those are counted on their own ("on a first run", J2).
++	 * Kit #9: a kit #9 trace is walked by sj_walk9 (its cmap; a getter intrinsic against the real call); a trap's odd result is compared
++	 * without its odd bit; a walker's call that left a resume state ends the comparison (the program goes on with it: no retry). */
+ 	guint32 sz = t->imethod->alloca_size;
+-	guint8 *before = (guint8 *) g_malloc (2 * (gsize) sz + 16);   /* (a test mode: one allocation per run) */
++	gboolean k9 = t->x && (t->x->cflags & SJ_C_K9) != 0;
++	/* (review 2) a trace that holds (or held) a getter intrinsic: the walker makes the REAL call there (sj_walk9 -> the interpreter's
++	 * MINT_JIT_CALL body -> do_jit_call -> the AOT callee), and a coop GC of another thread can run at the callee's safepoint while the only
++	 * copy of the frame as it was -- the one a retry restores -- is in this buffer, which no GC scans: a reference only it still holds could
++	 * be moved or freed, and a moved object makes the trace's copy and the walker disagree. So for such traces the buffer (the frame before,
++	 * the trace's frame after) is a PINNING root for the run, registered here -- before the trace runs, while the frame itself still holds
++	 * every reference in it (a GC during the registration pins them through the frame). Other traces call nothing between the save and
++	 * the restore (kit #8's lockstep), so they need no root. */
++	gboolean want_root = k9 && (t->x->cflags & SJ_C_INTR_EVER) != 0;
++	guint8 *before = (guint8 *) (want_root ? g_malloc0 (2 * (gsize) sz + 16) : g_malloc (2 * (gsize) sz + 16));   /* (a test mode: one allocation per run) */
+ 	guint8 *after = before + sz + 8;
+ 	memcpy (before, locals, sz);
++	gboolean rooted = want_root && SJ_ROOT_ADD (before, 2 * (gsize) sz + 16);
++	if (rooted)
++		sj_st.lock_rooted++;
+ 	const guint16 *end = t->ip + t->full_slots;
+-	ptrdiff_t r_trace = 0, r_interp = 0, r_trace0 = 0, r_interp0 = 0;
++	ptrdiff_t r_trace = 0, r_raw = 0, r_interp = 0, r_trace0 = 0, r_interp0 = 0;
+ 	const guint16 *wip = NULL;
+-	int diff_at = -1, diff_at0 = -1, attempt;
++	int diff_at = -1, diff_at0 = -1, attempt, stop = 0;
+ 	guint32 run = ++t->mon_runs;   /* (racy: a report only) */
+ 	sj_st.lock_runs++;
+ 	for (attempt = 0; attempt < 3; attempt++) {
+ 		if (attempt)
+ 			memcpy (locals, before, sz);
+-		r_trace = sj_code_fn (t) (frame, locals, t);
++		r_raw = sj_code_fn (t) (frame, locals, t, context);
++		r_trace = r_raw & ~(ptrdiff_t) 1;
+ 		memcpy (after, locals, sz);
+ 		memcpy (locals, before, sz);
+-		wip = sj_walk (frame, locals, t->ip, t->ip, end);
++		wip = k9 ? sj_walk9 (frame, locals, context, t, t->ip, &stop) : sj_walk (frame, locals, t->ip, t->ip, end);
+ 		r_interp = (wip - t->ip) * (ptrdiff_t) sizeof (guint16);
++		if (stop)
++			break;   /* (the real call threw: its effects cannot be undone -- the interpreter's result stands, nothing compared) */
+ 		diff_at = -1;
+ 		for (guint32 i = 0; i < sz && diff_at < 0; i++)
+ 			if (after [i] != locals [i])
+@@ -1030,7 +2140,9 @@ sj_lockstep (InterpFrame *frame, unsigned char *locals, SjTrace *t)
+ 			r_trace0 = r_trace; r_interp0 = r_interp; diff_at0 = diff_at;
+ 		}
+ 	}
+-	if (attempt > 0 && attempt < 3) {
++	if (stop) {
++		/* nothing to count */
++	} else if (attempt > 0 && attempt < 3) {
+ 		guint64 nr = ++sj_st.lock_sp_races;   /* agreed when repeated: another thread raced the pair (shared memory or a safepoint request) */
+ 		if (run == 1)
+ 			sj_st.lock_first_races++;
+@@ -1048,8 +2160,39 @@ sj_lockstep (InterpFrame *frame, unsigned char *locals, SjTrace *t)
+ 		sj_set_opcode (t, MINT_SJ_NOP);
+ 		sj_st.lockstep_off++;
+ 	}
++	if (rooted)
++		SJ_ROOT_DEL (before);
+ 	g_free (before);
+-	return r_interp;   /* the program goes on with the interpreter's result */
++	/* (review fix) a trap exit the walker agreed with goes on through MINT_SJ_ENTER's slow exit, as in the shipped tier: counted, its path
++	 * recorded from the trap on (the walker, for real), the trace recompiled at the site's SHEPHERD_JIT_TRAP_EXITS-th exit -- so the lockstep
++	 * start checks recompiled code and the publishing of its staged tables too (a recompiled trace's first runs count under "on a first
++	 * run"). The walker's own result is where the trap left (the cmap stops it there), so the program still goes on with the interpreter's
++	 * result. SHEPHERD_JIT_LOCKSTEP_TRAPS=0: the trap exit ends here (no recompile in lockstep). */
++	gboolean trap = !stop && attempt < 3 && sj_lock_traps && k9 && (r_raw & 1) && r_trace == r_interp;
++	if (trap)
++		sj_st.lock_trap_exits++;
++	return (stop || trap) ? (r_interp | 1) : r_interp;   /* the program goes on with the interpreter's result */
++}
++
++/* ------------------------------------------------------------------ kit #9: the host's heartbeat (every 50 frames) */
++void
++mono_shepjit_frame (int frame)
++{
++	if (!mono_shepjit_mode)
++		return;
++	if (sj_count_from >= 0)
++		sj_count_win_on = frame >= sj_count_from && frame < sj_count_to;
++	static int beats;
++	if (sj_decay > 0 && ++beats % sj_decay == 0) {
++		/* counter decay (HotSpot's): an entry point that runs a few times a frame never reaches the threshold; a hot loop does at once.
++		 * (review fix) The walk runs on the compiler thread (sj_decay_walk): this thread only asks -- one atomic add and a semaphore post.
++		 * Before the compiler thread exists (nothing queued yet) it runs here, as it did; with no compiler thread at all nothing compiles. */
++		if (sj_thread_started) {
++			mono_atomic_inc_i32 (&sj_decay_pending);
++			mono_os_sem_post (&sj_sem);
++		} else if (!sj_thread_failed)
++			sj_decay_walk (1);
++	}
+ }
+ 
+ /* ------------------------------------------------------------------ reports */
+@@ -1082,29 +2225,101 @@ mono_shepjit_report (char *buf, int len)
+ 	if (mono_shepjit_mode == 2 && n > 0 && n < len)
+ 		n += g_snprintf (buf + n, (gulong) (len - n), "; lockstep runs %llu, MISMATCHES %llu (disagreed 3 times), races %llu (disagreed once, agreed when repeated: another thread or a safepoint request between the two runs), on a first run %llu (stale-code signature: must be 0)",
+ 			(unsigned long long) sj_st.lock_runs, (unsigned long long) sj_st.lock_mismatch, (unsigned long long) sj_st.lock_sp_races, (unsigned long long) sj_st.lock_first_races);
++	/* kit #9 (vita/notes/kit9-jit.md): its own fields, after kit #8's (read-logs.sh keeps parsing the line as before) */
++	if (n > 0 && n < len) {
++		if (!sj_k9)
++			n += g_snprintf (buf + n, (gulong) (len - n), "; kit #9 off (SHEPHERD_JIT9=0: kit #8's tier)");
++		else
++			n += g_snprintf (buf + n, (gulong) (len - n),
++				"; kit #9: record %d runs (%u entry points recorded, %llu runs, %llu slots), traps %u (%llu exits, %llu recorded, recompiled %u, capped %u; "
++				"exits %d / recompiles %d), calls %s: %u in %u framed traces (%llu slow exits), getter intrinsics %s: %u (%u of %u callees trivial), "
++				"decay %d (%u halvings); interpreter transforms %lld methods, %lld ms (the interpreter's own counters: the transform-cache question)%s",
++				sj_record_runs, sj_st.recorded, (unsigned long long) sj_st.rec_runs, (unsigned long long) sj_st.rec_ops, sj_st.traps,
++				(unsigned long long) sj_st.trap_exits, (unsigned long long) sj_st.trap_recs, sj_st.recompiled, sj_st.trap_capped, sj_trap_exits, sj_recompile_cap,
++				sj_calls ? "on" : "off", sj_st.calls, sj_st.traces_framed, (unsigned long long) sj_st.call_stops,
++				sj_intrinsics ? "on" : "off", sj_st.intrins, sj_st.getters_ok, sj_st.getters_seen, sj_decay, sj_st.decays,
++				(long long) mono_interp_stats.methods_transformed, (long long) (mono_interp_stats.transform_time / 10000),
++				sj_count_mode ? "; COUNT MODE (measurement: every live trace counted)" : "");
++		/* (review fix) the lockstep's trap exits sent on through the slow exit, and a veneer island staged again after a failed window */
++		if (sj_k9 && mono_shepjit_mode == 2 && n > 0 && n < len)
++			n += g_snprintf (buf + n, (gulong) (len - n), "; lockstep trap exits through the slow exit %llu (SHEPHERD_JIT_LOCKSTEP_TRAPS=%d), frame copies rooted %llu",
++				(unsigned long long) sj_st.lock_trap_exits, sj_lock_traps, (unsigned long long) sj_st.lock_rooted);
++		if (sj_k9 && sj_st.veneer_restaged && n > 0 && n < len)
++			n += g_snprintf (buf + n, (gulong) (len - n), "; veneer island staged again %u times (its window failed)", sj_st.veneer_restaged);
++		/* (review 2) recompiles that kept the old code, monitor verdicts put off while a recompile was queued */
++		if (sj_k9 && n > 0 && n < len)
++			n += g_snprintf (buf + n, (gulong) (len - n), "; old code kept: block full %u, window failed %u, off while queued %u; monitor verdicts put off %u",
++				sj_st.keep_full, sj_st.keep_window, sj_st.keep_off, sj_st.mon_deferred);
++	}
+ 	return n;
+ }
+ 
++/* (count mode) the call a trace stops at: callee, IL bytes, getter verdict -- worked out on an INTERPRETER thread (sj_count's first run: it
++ * reads metadata, which the host's own threads must not) and kept as text for the dump */
++static void
++sj_describe_callee (SjTrace *t)
++{
++	const guint16 *aip = t->ip + t->x->abort_slot;
++	int op = t->abort_op;
++	char *d = NULL;
++	if (!t->imethod || op >= MINT_LASTOP || (op != MINT_CALL && op != MINT_JIT_CALL && op != MINT_CALLVIRT_FAST) || *aip != op)
++		d = g_strdup ("\t-\t-\t-");
++	else {
++		InterpMethod *callee = (InterpMethod *) t->imethod->data_items [aip [3]];
++		if (!callee || !callee->method)
++			d = g_strdup ("\t?\t-\t-");
++		else {
++			MonoMethod *m = callee->method;
++			char *nm = mono_method_full_name (m, TRUE);
++			int il = -1;
++			if (!(m->iflags & (METHOD_IMPL_ATTRIBUTE_INTERNAL_CALL | METHOD_IMPL_ATTRIBUTE_RUNTIME)) && !(m->flags & (METHOD_ATTRIBUTE_PINVOKE_IMPL | METHOD_ATTRIBUTE_ABSTRACT)) &&
++			    m->wrapper_type == MONO_WRAPPER_NONE) {
++				ERROR_DECL (error);
++				MonoMethodHeader *h = mono_method_get_header_internal (m, error);
++				if (h) { il = (int) h->code_size; mono_metadata_free_mh (h); } else mono_error_cleanup (error);
++			}
++			SjIntrinsic gi;
++			sj_classify_getter (m, &gi);
++			d = g_strdup_printf ("\t%s\t%d\t%s", nm ? nm : "?", il, gi.kind == SJI_LDFLD ? "getter-field" : gi.kind == SJI_LDSFLD ? "getter-static" : gi.kind == SJI_LDC ? "getter-const" : "no");
++			g_free (nm);
++		}
++	}
++	mono_memory_barrier ();
++	t->x->callee_desc = d;
++}
++
+ static void
+-sj_write_dump (void)
++sj_write_dump (gboolean end)
+ {
+ 	char path [512];
+ 	char *d = g_getenv ("SHEPHERD_LOG_DIR");
+ 	const char *dir = d ? (d [0] == '/' ? d + 1 : d) : "ux0:data/shepherd/runtime/logs";
+-	char line [1024];
++	char line [2048];
+ 	mono_shepjit_report (line, sizeof (line));
+ 	GString *g = g_string_new (NULL);
+ 	g_string_append_printf (g, "# %s\n", line);
+-	g_string_append (g, "#order\tstate\tkind\thits\tops\tbytes\tfull_slots\tmon_runs\tmon_avg_slots\tabort\tentry\til\tmethod\n");
++	g_string_append (g, "#order\tstate\tkind\thits\tops\tbytes\tfull_slots\tmon_runs\tmon_avg_slots\tabort\tentry\til\tmethod");
++	if (sj_k9)
++		g_string_append (g, "\tcflags\tcalls\tintrinsics\ttraps\ttrap_exits\tslow_exits\trecompiles\truns\tavg_slots\tend_runs\twin_runs\twin_slots\tcallee\tcallee_il\tcallee_getter");
++	g_string_append (g, "\n");
+ 	/* the text is built under the lock, the card is written without it */
++	(void) end;
+ 	mono_os_mutex_lock (&sj_lock);
+ 	for (SjTrace *t = sj_all; t; t = t->next_all) {
+ 		if (t->state == SJ_S_COUNTING)
+ 			continue;
+-		g_string_append_printf (g, "%u\t%d\t%s\t%d\t%u\t%u\t%u\t%u\t%llu\t%s\t%d\t%d\t%s\n", t->order, t->state, sj_kind_name (t->kind), t->hits, t->nops, t->code_bytes,
++		g_string_append_printf (g, "%u\t%d\t%s\t%d\t%u\t%u\t%u\t%u\t%llu\t%s\t%d\t%d\t%s", t->order, t->state, sj_kind_name (t->kind), t->hits, t->nops, t->code_bytes,
+ 			 t->full_slots, t->mon_runs, t->mon_runs ? (unsigned long long) (t->mon_slots / t->mon_runs) : 0ull,
+ 			 t->abort_op < MINT_LASTOP ? mono_interp_opname (t->abort_op) : "end",
+ 			 t->imethod && t->imethod->jinfo ? (int) (t->ip - (guint16 *) t->imethod->jinfo->code_start) : -1, t->il_offset, t->name ? t->name : "?");
++		if (sj_k9 && t->x)
++			g_string_append_printf (g, "\t%u\t%u\t%u\t%u\t%u\t%u\t%u\t%llu\t%.1f\t%u\t%llu\t%llu%s\n", t->x->cflags, t->x->ncalls, t->x->nintrins, t->x->ntraps, t->x->trap_exits, t->x->call_stops,
++				t->x->recompiles, (unsigned long long) t->x->runs, t->x->runs ? (double) t->x->slots_run / (double) t->x->runs : 0.0, t->x->end_runs,
++				(unsigned long long) t->x->win_runs, (unsigned long long) t->x->win_slots, t->x->callee_desc ? t->x->callee_desc : "\t-\t-\t-");
++		else if (sj_k9)
++			g_string_append (g, "\t0\t0\t0\t0\t0\t0\t0\t0\t0.0\t0\t0\t0\t-\t-\t-\n");
++		else
++			g_string_append (g, "\n");
+ 	}
+ 	mono_os_mutex_unlock (&sj_lock);
+ 	g_snprintf (path, sizeof (path), "%s/shepjit-traces.tsv", dir);
+@@ -1133,7 +2348,7 @@ mono_shepjit_dump (void)
+ {
+ 	if (mono_shepjit_mode) {
+ 		mono_os_mutex_lock (&sj_dump_lock);   /* (review fix) waits for a periodic dump of the compiler thread to finish */
+-		sj_write_dump ();
++		sj_write_dump (TRUE);
+ 		sj_learn_save ();
+ 		mono_os_mutex_unlock (&sj_dump_lock);
+ 	}
+diff --git a/src/mono/mono/mini/interp/shepjit.h b/src/mono/mono/mini/interp/shepjit.h
+index abfb533..f693452 100644
+--- a/src/mono/mono/mini/interp/shepjit.h
++++ b/src/mono/mono/mini/interp/shepjit.h
+@@ -9,6 +9,13 @@
+  * continues exactly where the trace stopped. SHEPHERD_JIT (environment, read once at init): unset / 0 / off = no entry points at all (the
+  * kit #7 interpreter + AOT path: the same IR, the same instructions); 1 / on = the tier; lockstep = the tier checked against the
+  * interpreter on every trace run (the interpreter's result is kept).
++ *
++ * KIT #9 (vita/notes/kit9-jit.md; SHEPHERD_JIT9=0 = kit #8's tier exactly): an entry point that reaches its threshold is first RECORDED
++ * (the interpreter's walker runs it SHEPHERD_JIT_RECORD times and notes every instruction it reaches) and compiled from that record --
++ * the paths never seen become traps (one exit each, counted; a site that exits SHEPHERD_JIT_TRAP_EXITS times has its path recorded and
++ * the trace recompiled, at most SHEPHERD_JIT_RECOMPILES times) and the trace runs on past instructions it does not compile that were
++ * never reached; MINT_JIT_CALL (interpreted code calling AOT code) runs INSIDE the trace through the interpreter's own handler body
++ * (SHEPHERD_JIT_CALLS), or -- when the callee's IL is a trivial getter -- as the field load itself (SHEPHERD_JIT_INTRINSICS).
+  */
+ #ifndef __MONO_MINI_SHEPJIT_H__
+ #define __MONO_MINI_SHEPJIT_H__
+@@ -16,7 +23,10 @@
+ #include "interp-internals.h"
+ 
+ typedef struct SjTrace SjTrace;
+-typedef ptrdiff_t (*SjFn) (InterpFrame *frame, unsigned char *locals, SjTrace *t);
++/* kit #9: the trace also gets the thread context (r3: the calls it makes need it); an ODD result is a slow exit (mono_shepjit_slow_exit) */
++typedef ptrdiff_t (*SjFn) (InterpFrame *frame, unsigned char *locals, SjTrace *t, ThreadContext *context);
++/* kit #9 (JIT helper 4): MINT_JIT_CALL's body (interp.c: mono_shepjit_interp_jit_call); 0 = go on, 1 = CHECK_RESUME_STATE */
++typedef int (*SjCallHelper) (InterpFrame *frame, ThreadContext *context, const guint16 *ip, unsigned char *locals);
+ 
+ enum {
+ 	SJ_S_COUNTING = 0,   /* MINT_SJ_ENTRY counts hits */
+@@ -29,10 +39,44 @@ enum {
+ 	SJ_S_OFF_LOCKSTEP,   /* lockstep mode: a run differed from the interpreter (logged) */
+ 	SJ_S_OFF_LEARNED,    /* the learning cache says: not worth it (a previous session's verdict) */
+ 	SJ_S_OFF_NOTHREAD,   /* (review fix) not compiled: the compiler thread could not be created (the tier switched itself off) */
++	SJ_S_RECORD,         /* kit #9: the interpreter's walker runs this entry point and records the instructions it reaches (the paths
++	                      * actually seen); then it is queued and compiled from that record -- unseen paths become traps */
+ };
+ 
++/* kit #9: a trap site of a compiled trace -- an instruction the recorded runs never reached; the trace leaves there with an odd result */
++typedef struct { guint16 slot; guint16 exits; } SjTrap;
++
+ enum { SJ_K_ENTRY = 0, SJ_K_LOOP, SJ_K_RESUME };
+ 
++/* kit #9: the per-trace data kit #9 adds (SjTrace.x) */
++typedef struct SjTraceK9 SjTraceK9;
++struct SjTraceK9 {
++	guint8 *seen;                /* the record: one bit per IR slot from ip on, set where a recorded run reached an instruction (NULL = none: kit #8's linear trace) */
++	guint8 *cmap;                /* lockstep mode only: one bit per slot, set where the trace runs the instruction itself (the walker stops elsewhere) */
++	guint16 seen_span;           /* slots the record covers */
++	guint16 rec_runs;            /* recorded runs (this round) */
++	guint8 recompiles;           /* recompiled after a trap site exited SHEPHERD_JIT_TRAP_EXITS times (capped: SHEPHERD_JIT_RECOMPILES) */
++	guint8 cflags;               /* how the current code was compiled: SJ_C_* (shepjit.c) */
++	guint16 ntraps;              /* trap sites of the current code (reports) */
++	SjTrap *traps;               /* the current code's trap sites: traps [0].slot = how many, the sites from traps [1] on (ONE pointer, so a
++	                              * slow exit racing a recompile reads one consistent table; written before the code is published) */
++	guint16 abort_slot;          /* the first instruction the trace leaves at because it does not compile it (slots from ip; reports) */
++	guint8 live_counted;         /* (review 2) counted in J2's "live" once: a recompiled trace goes live again without counting twice (in padding) */
++	/* kit #9: what the compiler made but has not published yet -- a RECOMPILED trace keeps running its old code (and its monitor / count
++	 * wrapper keeps reading code, traps, cmap, full_slots) until the window that publishes the new code has closed */
++	gpointer pending_code;
++	SjTrap *pending_traps;
++	guint8 *pending_cmap;
++	guint32 pending_full_slots;
++	char *callee_desc;           /* SHEPHERD_JIT_COUNT=1: the call the trace stops at (callee, IL bytes, getter verdict), taken on an interpreter thread */
++	guint16 ncalls, nintrins;    /* JIT calls / getter intrinsics compiled into the current code */
++	guint32 trap_exits, call_stops;   /* odd results seen (reports) */
++	guint64 runs, slots_run;     /* SHEPHERD_JIT_COUNT=1 only (a measurement mode): runs and IR slots advanced */
++	guint32 end_runs;            /* SHEPHERD_JIT_COUNT=1: runs that reached the trace's last instruction's exit */
++	guint64 win_runs, win_slots; /* SHEPHERD_JIT_COUNT=1: the same inside the counted frame window */
++};
++
++
+ struct SjTrace {
+ 	SjFn fn;                     /* what MINT_SJ_ENTER calls: sj_skip (go on interpreting) -> the monitor -> the code */
+ 	InterpMethod *imethod;
+@@ -50,6 +94,9 @@ struct SjTrace {
+ 	guint32 key;                 /* the learning cache's key: FNV-1a of the method's full name (0 = not computed) */
+ 	gint32 il_offset;            /* the entry point's basic block (IL offset: stable across runtime builds, unlike IR offsets) */
+ 	SjTrace *next_all;
++	/* kit #9 (vita/notes/kit9-jit.md): everything else kit #9 keeps per trace lives in x, allocated when the entry point is first queued or
++	 * recorded -- the ~2/3 of entry points that never get there cost 4 bytes, not ~100 (newlib) */
++	struct SjTraceK9 *x;
+ };
+ 
+ /* SHEPHERD_JIT mode: 0 off, 1 on, 2 lockstep */
+@@ -64,5 +111,12 @@ MONO_API void mono_shepjit_set_block (int uid, void *base, guint32 size);
+ MONO_API void mono_shepjit_set_pin (void (*pin) (const char *who));
+ MONO_API int mono_shepjit_report (char *buf, int len);
+ MONO_API void mono_shepjit_dump (void);
++/* kit #9 */
++void mono_shepjit_set_call_helper (SjCallHelper h);
++/* MINT_SJ_ENTER's slow exit (an odd result): counts a trap exit (and records the path it took), returns the even displacement where the
++ * interpreter goes on; the handler then does CHECK_RESUME_STATE (a call inside the trace may have left an exception) */
++ptrdiff_t mono_shepjit_slow_exit (SjTrace *t, ptrdiff_t r, InterpFrame *frame, unsigned char *locals, ThreadContext *context);
++/* the host's heartbeat (every 50 frames, vita/shepherd/k8_jit_host.inc.c): frame-based tuning (counter decay) and the count window */
++MONO_API void mono_shepjit_frame (int frame);
+ 
+ #endif

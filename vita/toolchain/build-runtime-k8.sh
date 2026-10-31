@@ -6,6 +6,10 @@
 #   build-runtime-k8.sh jit <out>      the JIT app's runtime -> <out>/obj (vita/shepherd/build.sh SHEPHERD_JIT_APP=1 links it; its
 #                                      SHEPHERD_JIT env switch = 0 runs the kit #7 interpreter + AOT path): + vita/patches/k8-jit-ops.patch
 #                                      (the one definition: the compiled opcodes' bodies moved to shepjit-ops.h) + k8-baseline-jit.patch
+#                                      + (kit #9, vita/notes/kit9-jit.md) vita/patches/k9-jit.patch -- JIT round 2: records + traps, calls
+#                                      into AOT code, getter intrinsics, counter decay, the count mode; its env switch SHEPHERD_JIT9=0 = kit
+#                                      #8's tier (the same compile, entry points, cache and reports)
+#   build-runtime-k8.sh jit8 <out>     kit #8's JIT runtime exactly (the two k8 patches, no k9-jit.patch): the reference / byte-exact way back
 #   build-runtime-k8.sh ops <out>      kit #5's LLVM runtime + k8-jit-ops.patch ONLY: the gate of the one definition -- the interpreter's
 #                                      object code must be kit #5's byte for byte (interp.c.obj: debug info only)
 #   build-runtime-k8.sh census <out>   kit #5's LLVM runtime + vita/jit/census/opcensus.patch (the opcode census: a measurement build,
@@ -31,19 +35,20 @@ set -euo pipefail
 HERE=${0:a:h}; V=${HERE:h}
 export VITASDK=${VITASDK:-$HOME/vitasdk} PATH="${VITASDK:-$HOME/vitasdk}/bin:$PATH" TMPDIR=${TMPDIR:-${SHEPHERD_WORK:-$HOME/shepherd-work}/tmp}
 B=${SHEPHERD_WORK:-$HOME/shepherd-work}
-KIND=${1:?usage: build-runtime-k8.sh jit|ops|census|jit-census|plain <out dir>}; OUT=${2:?usage: build-runtime-k8.sh jit|ops|census|jit-census|plain <out dir>}
+KIND=${1:?usage: build-runtime-k8.sh jit|jit8|ops|census|jit-census|plain <out dir>}; OUT=${2:?usage: build-runtime-k8.sh jit|jit8|ops|census|jit-census|plain <out dir>}
 R=${SHEPHERD_RUNTIME_BASE:-$B/runtime}; K5RT=${SHEPHERD_K5_RUNTIMES:-$B/kit5/runtimes}; RT=$K5RT/llvm/obj
 PATCHES=($V/patches/k5-interp-cicache.patch $V/llvm/fork-eh-vfp.patch)
 case $KIND in
-  jit)    PATCHES+=($V/patches/k8-jit-ops.patch $V/patches/k8-baseline-jit.patch); EXPECT="interp.c.obj mintops.c.obj transform.c.obj"; NEWM="shepjit.c.obj" ;;
+  jit)    PATCHES+=($V/patches/k8-jit-ops.patch $V/patches/k8-baseline-jit.patch $V/patches/k9-jit.patch); EXPECT="interp.c.obj mintops.c.obj transform.c.obj"; NEWM="shepjit.c.obj" ;;
+  jit8)   PATCHES+=($V/patches/k8-jit-ops.patch $V/patches/k8-baseline-jit.patch); EXPECT="interp.c.obj mintops.c.obj transform.c.obj"; NEWM="shepjit.c.obj" ;;
   ops)    PATCHES+=($V/patches/k8-jit-ops.patch); EXPECT=""; NEWM="" ;;
-  jit-census) PATCHES+=($V/patches/k8-jit-ops.patch $V/patches/k8-baseline-jit.patch $V/jit/census/opcensus.patch); EXPECT="interp.c.obj mintops.c.obj transform.c.obj"; NEWM="shepjit.c.obj" ;;
+  jit-census) PATCHES+=($V/patches/k8-jit-ops.patch $V/patches/k8-baseline-jit.patch $V/patches/k9-jit.patch $V/jit/census/opcensus.patch); EXPECT="interp.c.obj mintops.c.obj transform.c.obj"; NEWM="shepjit.c.obj" ;;
   census) PATCHES+=($V/jit/census/opcensus.patch); EXPECT="interp.c.obj"; NEWM="" ;;
   plain)  EXPECT=""; NEWM="" ;;
-  *) echo "usage: build-runtime-k8.sh jit|ops|census|jit-census|plain <out dir>"; exit 2 ;;
+  *) echo "usage: build-runtime-k8.sh jit|jit8|ops|census|jit-census|plain <out dir>"; exit 2 ;;
 esac
 mkdir -p "$OUT"; OUT=${OUT:a}
-for p in "${R:a}" "${K5RT:a}" "$B/obj" "$B/runtime" "$B/gameaot" "$B/kit5" "$B/kit6" "$B/kit7"; do
+for p in "${R:a}" "${K5RT:a}" "$B/obj" "$B/runtime" "$B/gameaot" "$B/kit5" "$B/kit6" "$B/kit7" "$B/kit8"; do
   case $OUT/ in "$p"/*) echo "refusing to write into a shared tree ($p): $OUT"; exit 1 ;; esac
 done
 [ -f "$RT/mono/mini/libmonosgen-2.0.a" ] && [ -f "$K5RT/llvm/K5-RUNTIME.txt" ] || { echo "no kit #5 LLVM runtime at $RT (vita/toolchain/build-runtime-k5.sh llvm $K5RT/llvm)"; exit 1; }
@@ -57,7 +62,7 @@ SHEPHERD_RUNTIME=$S SHEPHERD_VITA_RUNTIME_OBJ=$OUT/obj nice -n 10 sh "$HERE/buil
   || { tail -20 "$OUT/build-runtime.log"; exit 1; }
 rm -f "$OUT/K8-RUNTIME.txt" "$OUT/obj/EH-VFP-RUNTIME.txt"
 STENCILS=""
-if [[ $KIND == jit || $KIND == jit-census ]]; then
+if [[ $KIND == jit || $KIND == jit8 || $KIND == jit-census ]]; then
   # the stencil table must be what interp.c's own compiler and flags make of shepjit-stencils.c (no hand edits, no other compiler)
   INC=$S/src/mono/mono/mini/interp/shepjit-stencils.inc
   zsh "$V/jit/stencils/build-stencils.sh" "$OUT/obj" "$S" "$OUT/stencils/shepjit-stencils.inc" "$OUT/stencils" > "$OUT/stencils.log" 2>&1 \

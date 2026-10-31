@@ -42,6 +42,10 @@ RT=${RT:-$B/obj/vita-runtime}
 HOST=${2:-$W/obj/host.o}; OUT=${3:-$O/$APP-vlx.elf}
 # kit #4 M2: a host.o with the GC.Collect governor is linked as the eboot is (--wrap of GC.Collect's icall); older ones as before
 GCGOV_LD=(); arm-vita-eabi-nm "$HOST" 2>/dev/null | grep -q ' T __wrap_ves_icall_System_GC_InternalCollect$' && GCGOV_LD=(-Wl,--wrap=ves_icall_System_GC_InternalCollect)
+# kit #10 boot track: a host.o with the boot screen's display wrap (k10_boot.inc.c) is linked as the eboot is (--wrap of sceDisplaySetFrameBuf;
+# in a launcher run the launcher's own splash calls go through the wrapper too -- it passes them on: the boot screen starts after the splash)
+# (grep without -q: with pipefail an early grep exit fails the pipeline through nm's SIGPIPE)
+arm-vita-eabi-nm "$HOST" 2>/dev/null | grep ' T __wrap_sceDisplaySetFrameBuf$' > /dev/null && GCGOV_LD+=(-Wl,--wrap=sceDisplaySetFrameBuf)
 [[ -f $O/vlx.o ]] || zsh "$HERE/build.sh"
 case $APP in hello) MAP=$W/obj/hello.map ;; menu) MAP=$W/obj/shepherd_menu.map ;; esac
 LLVM=${VLX_LLVM:-auto}

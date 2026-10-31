@@ -39,7 +39,7 @@ public static class SpineBake
     static readonly string CheckDir = Environment.GetEnvironmentVariable("SHEPHERD_SPINE_BAKE_CHECK");
     static readonly float Hz = float.TryParse(Environment.GetEnvironmentVariable("SHEPHERD_SPINE_BAKE_HZ"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var hz) && hz > 0 ? hz : 60f;
     static readonly bool CacheSim = Environment.GetEnvironmentVariable("SHEPHERD_SPINE_BAKE_CACHESIM") == "1";
-    public static readonly bool On = BakeDir != null || CheckDir != null;
+    public static readonly bool On = BakeDir != null || CheckDir != null || SpineCheck.On;   // (kit #9 fidelity: the rebuilt check, Diag/SpineCheck.cs, runs from here)
     const BindingFlags I = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
     static readonly HashSet<object> _baked = new(ReferenceEqualityComparer.Instance);
 
@@ -105,6 +105,7 @@ public static class SpineBake
         {
             if (BakeDir != null) BakeNew(frame);
             if (CheckDir != null) Check(frame);
+            if (SpineCheck.On) SpineCheck.After(frame);   // kit #9 fidelity: SHEPHERD_SPINE_CHECK=<dir> (per skin, steady replay + per-skin bake, per-clip verdicts)
         }
         catch (Exception e) { Log.Exception(e, "SpineBake"); }
     }
@@ -595,6 +596,7 @@ public static class SpineBake
 
     public static void Summary()
     {
+        SpineCheck.Summary();   // kit #9 fidelity (no-op unless SHEPHERD_SPINE_CHECK)
         if (_totAssets > 0) Log.Info($"[spinebake] bake totals: {_totAssets} assets, {_totBytes / 1048576.0:F2} MiB as v{Format} (v1 {_totV1 / 1048576.0:F2} MiB, {(double)_totV1 / Math.Max(1, _totBytes):F1}x); round trip: {_totRt} values differ");
         if (CheckDir == null || _stats.Count == 0) { if (CheckDir != null) Log.Info($"[spinebake] check: nothing checked ({_notOne} skeleton-frames with mixing / several tracks, {_notBaked} without a bake)"); return; }
         Log.Info($"[spinebake] check at {_loaded.Values.FirstOrDefault(x => x != null)?.Rate} Hz: {_checked:N0} skeleton-frames compared ({_notOne:N0} skipped: mixing or several tracks; {_notApplied:N0} before the entry's first apply; {_notBaked:N0} without a bake; {_offScreen:N0} point pairs off the screen not measured); decode cache {_cache.Hits:N0} hits / {_cache.Misses:N0} misses");

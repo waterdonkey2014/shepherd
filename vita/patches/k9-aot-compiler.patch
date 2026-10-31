@@ -1,0 +1,363 @@
+--- a/src/mono/mono/mini/aot-compiler.c
++++ b/src/mono/mono/mini/aot-compiler.c
+@@ -9462,7 +9462,246 @@
+  *   AOT compile a given method.
+  * This function might be called by multiple threads, so it must be thread-safe.
+  */
++/*
++ * SHEPHERD-VITA device kit #9, track runtime (vita/patches/k9-aot-compiler.patch, vita/notes/kit9-runtime.md). Every addition is off
++ * unless its environment variable is set (the compiler's output is then the unpatched compiler's, byte for byte):
++ *
++ * R5 "profile-ordered AOT code layout" -- SHEPHERD_AOT_ORDER=<file>: one symbol name per line, hottest first (from the VLX_PROF samples
++ *   of the kit's routes). The methods named there are emitted first, in that order -- the LLVM module's functions right after
++ *   llvm_code_start (mini-llvm.c, mini-llvm-cpp.cpp), the Mono-backend methods first in the .s -- the rest keep their order behind them.
++ *   Layout only: no method's code, name or table entry changes; the runtime finds methods through its tables, whatever their order.
++ *
++ * R3 "AOT dedup" -- the dead copies of generic instances. The runtime looks an inflated method up in the image that defines its generic
++ *   type FIRST (aot-runtime.c find_aot_method: "Try the method's module first"); a copy compiled into another image is reached only when
++ *   the defining image has none. So when the defining image (compiled earlier in the build: CoreLib, then the BCL) already holds an
++ *   instance, every later image's copy of it is never run. SHEPHERD_AOT_INSTANCES_OUT=<file>: each inflated non-wrapper method this image
++ *   compiles whose generic type it defines is written there (key: the defining image, the full name, every type argument assembly-
++ *   qualified). SHEPHERD_AOT_SKIP_INSTANCES=<file>[:<file>...]: an inflated non-wrapper method whose key is in those files and whose
++ *   defining image is NOT this one is not compiled here (calls to inflated methods go through the PLT, so they reach the defining image's
++ *   copy, exactly the code that ran before).
++ *
++ * CoreLib method-level trimming -- SHEPHERD_AOT_KEEP=<file>: lines "<image name><TAB><method token, hex>" (the methods the kit's routes
++ *   call: the VLX first-call traces). In an image named there, a non-generic, non-wrapper method whose token is not listed is not
++ *   compiled (it runs in the interpreter, which gives the same answers); generic instances and every wrapper are compiled as before.
++ *   An image the file does not name is untouched.
++ */
++static GHashTable *k9_order;        /* symbol -> rank + 1 */
++static int k9_order_read;
++static GHashTable *k9_skip;         /* instance key -> 1 */
++static int k9_skip_read, k9_skipped, k9_logged;
++static FILE *k9_inst_out;
++static GHashTable *k9_keep;         /* "image\ttoken" -> 1 */
++static int k9_keep_read, k9_keep_dropped, k9_keep_image;   /* k9_keep_image: -1 not this image, 1 this image is named */
++
++static GHashTable *
++k9_read_lines (const char *files, gboolean ranked)
++{
++	GHashTable *t = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++	char **fs = g_strsplit (files, ":", 0);
++	int n = 0;
++	for (char **f = fs; *f; ++f) {
++		FILE *fp = fopen (*f, "r");
++		if (!fp) {
++			fprintf (stderr, "SHEPHERD kit #9: cannot read %s\n", *f);
++			exit (1);
++		}
++		char line [8192];
++		while (fgets (line, sizeof (line), fp)) {
++			size_t l = strlen (line);
++			while (l && (line [l - 1] == '\n' || line [l - 1] == '\r'))
++				line [--l] = 0;
++			if (!l || line [0] == '#' || g_hash_table_lookup (t, line))
++				continue;
++			g_hash_table_insert (t, g_strdup (line), GINT_TO_POINTER (ranked ? ++n : 1));
++		}
++		fclose (fp);
++	}
++	g_strfreev (fs);
++	return t;
++}
++
++gboolean
++mono_shepherd_aot_order_active (void)
++{
++	if (!k9_order_read) {
++		k9_order_read = 1;
++		const char *f = g_getenv ("SHEPHERD_AOT_ORDER");
++		if (f && *f)
++			k9_order = k9_read_lines (f, TRUE);
++	}
++	return k9_order != NULL;
++}
++
++int
++mono_shepherd_aot_order_rank_cb (const char *name, void *data)
++{
++	gpointer r = k9_order ? g_hash_table_lookup (k9_order, name) : NULL;
++	return r ? GPOINTER_TO_INT (r) - 1 : -1;
++}
++
++void
++mono_shepherd_aot_order_note (const char *what, int n)
++{
++	printf ("SHEPHERD kit #9 R5: %d %s methods placed first (SHEPHERD_AOT_ORDER, %d names)\n", n, what, k9_order ? (int) g_hash_table_size (k9_order) : 0);
++}
++
++static int
++k9_rank_cmp (const void *a, const void *b)
++{
++	/* (qsort is not stable: the old position is in the low 32 bits, so no two keys are equal) */
++	gint64 ra = *(gint64 *) a, rb = *(gint64 *) b;
++	return ra < rb ? -1 : ra > rb ? 1 : 0;
++}
++
++/* R5, the Mono-backend methods (the .s): method_order stably sorted by rank of each method's symbol */
+ static void
++k9_order_methods (MonoAotCompile *acfg)
++{
++	if (!mono_shepherd_aot_order_active () || !acfg->method_order)
++		return;
++	guint len = acfg->method_order->len;
++	gint64 *keys = g_new0 (gint64, len);
++	int ranked = 0;
++	for (guint i = 0; i < len; ++i) {
++		guint idx = GPOINTER_TO_UINT (g_ptr_array_index (acfg->method_order, i));
++		MonoCompile *cfg = acfg->cfgs [idx];
++		int r = (cfg && cfg->asm_symbol && !cfg->compile_llvm) ? mono_shepherd_aot_order_rank_cb (cfg->asm_symbol, NULL) : -1;
++		if (r >= 0)
++			ranked++;
++		gint64 rk = r >= 0 ? r : 0x3fffffff;
++		keys [i] = (rk << 32) | i;
++	}
++	if (ranked) {
++		gint64 *sorted = g_new (gint64, len);
++		memcpy (sorted, keys, len * sizeof (gint64));
++		qsort (sorted, len, sizeof (gint64), k9_rank_cmp);
++		GPtrArray *old = g_ptr_array_sized_new (len);
++		for (guint i = 0; i < len; ++i)
++			g_ptr_array_add (old, g_ptr_array_index (acfg->method_order, i));
++		for (guint i = 0; i < len; ++i)
++			g_ptr_array_index (acfg->method_order, i) = g_ptr_array_index (old, (guint) (sorted [i] & 0xffffffff));
++		g_ptr_array_free (old, TRUE);
++		g_free (sorted);
++	}
++	g_free (keys);
++	mono_shepherd_aot_order_note ("Mono-backend", ranked);
++}
++
++/* R3: only fully concrete instances take part: a generic argument that is (or contains) a type parameter -- a gsharedvt instance's
++ * T_GSHAREDVT, an open instance -- names a parameter of the CALLER's own generic method or type, so the defining image's "same" instance
++ * (its own T) is a different method the runtime will not match (kit #9 trace check: List<T>.Grow / AddWithResize / set_Capacity /
++ * Enumerator.get_Current went from AOT to the interpreter until this rule). Shared instances over System.__Canon are concrete types. */
++static gboolean
++k9_concrete_instance (MonoMethod *method)
++{
++	MonoGenericContext *ctx = mono_method_get_context (method);
++	for (int k = 0; ctx && k < 2; ++k) {
++		MonoGenericInst *gi = k == 0 ? ctx->class_inst : ctx->method_inst;
++		if (!gi)
++			continue;
++		for (guint i = 0; i < gi->type_argc; ++i)
++			if (mono_class_is_open_constructed_type (gi->type_argv [i]))
++				return FALSE;
++	}
++	return TRUE;
++}
++
++/* R3: the key of an inflated method -- the image defining its generic type, its full name, and its type arguments assembly-qualified */
++static char *
++k9_instance_key (MonoMethod *method)
++{
++	MonoClass *klass = method->klass;
++	GString *s = g_string_new (m_class_get_image (klass)->assembly_name);
++	char *fn = mono_method_get_full_name (method);
++	g_string_append_c (s, '\t');
++	g_string_append (s, fn);
++	g_free (fn);
++	MonoGenericContext *ctx = mono_method_get_context (method);
++	for (int k = 0; ctx && k < 2; ++k) {
++		MonoGenericInst *gi = k == 0 ? ctx->class_inst : ctx->method_inst;
++		if (!gi)
++			continue;
++		for (guint i = 0; i < gi->type_argc; ++i) {
++			char *tn = mono_type_get_name_full (gi->type_argv [i], MONO_TYPE_NAME_FORMAT_ASSEMBLY_QUALIFIED);
++			g_string_append_printf (s, "\t%c%s", k == 0 ? 'C' : 'M', tn);
++			g_free (tn);
++		}
++	}
++	return g_string_free (s, FALSE);
++}
++
++static gboolean
++k9_skip_instance (MonoAotCompile *acfg, MonoMethod *method)
++{
++	if (!k9_skip_read) {
++		k9_skip_read = 1;
++		const char *f = g_getenv ("SHEPHERD_AOT_SKIP_INSTANCES");
++		if (f && *f)
++			k9_skip = k9_read_lines (f, FALSE);
++	}
++	if (!k9_skip || !method->is_inflated || method->wrapper_type != MONO_WRAPPER_NONE)
++		return FALSE;
++	if (m_class_get_image (method->klass) == acfg->image || !k9_concrete_instance (method))
++		return FALSE;   /* this image defines it (its copy is the one the runtime finds first) / not a concrete instance */
++	char *key = k9_instance_key (method);
++	gboolean skip = g_hash_table_lookup (k9_skip, key) != NULL;
++	g_free (key);
++	if (skip)
++		k9_skipped++;
++	return skip;
++}
++
++static gboolean
++k9_keep_drop (MonoAotCompile *acfg, MonoMethod *method)
++{
++	if (!k9_keep_read) {
++		k9_keep_read = 1;
++		const char *f = g_getenv ("SHEPHERD_AOT_KEEP");
++		if (f && *f) {
++			k9_keep = k9_read_lines (f, FALSE);
++			char *pre = g_strdup_printf ("%s\t", acfg->image->assembly_name);
++			GHashTableIter it; gpointer k, v;
++			k9_keep_image = -1;
++			g_hash_table_iter_init (&it, k9_keep);
++			while (g_hash_table_iter_next (&it, &k, &v))
++				if (g_str_has_prefix ((const char *) k, pre)) { k9_keep_image = 1; break; }
++			g_free (pre);
++		}
++	}
++	if (!k9_keep || k9_keep_image != 1 || method->is_inflated || method->wrapper_type != MONO_WRAPPER_NONE || m_class_get_image (method->klass) != acfg->image)
++		return FALSE;
++	char key [600];
++	snprintf (key, sizeof (key), "%s\t%08x", acfg->image->assembly_name, mono_method_get_token (method));
++	if (g_hash_table_lookup (k9_keep, key))
++		return FALSE;
++	k9_keep_dropped++;
++	return TRUE;
++}
++
++static void
++k9_log_instance (MonoAotCompile *acfg, MonoMethod *method)
++{
++	if (!k9_inst_out) {
++		static int opened;
++		const char *f = g_getenv ("SHEPHERD_AOT_INSTANCES_OUT");
++		if (opened || !f || !*f)
++			return;
++		opened = 1;
++		k9_inst_out = fopen (f, "w");
++		if (!k9_inst_out) {
++			fprintf (stderr, "SHEPHERD kit #9: cannot write %s\n", f);
++			exit (1);
++		}
++	}
++	if (!method->is_inflated || method->wrapper_type != MONO_WRAPPER_NONE || m_class_get_image (method->klass) != acfg->image || !k9_concrete_instance (method))
++		return;
++	char *key = k9_instance_key (method);
++	fprintf (k9_inst_out, "%s\n", key);
++	g_free (key);
++	k9_logged++;
++}
++
++static void
+ compile_method (MonoAotCompile *acfg, MonoMethod *method)
+ {
+ 	MonoCompile *cfg;
+@@ -9502,6 +9741,11 @@
+ 	if (method->wrapper_type == MONO_WRAPPER_COMINTEROP)
+ 		return;
+ 
++	if (k9_skip_instance (acfg, method))   /* SHEPHERD-VITA kit #9 R3: a dead copy (the defining image has this instance) */
++		return;
++	if (k9_keep_drop (acfg, method))   /* SHEPHERD-VITA kit #9 CoreLib trimming: not on the routes -> interpreted */
++		return;
++
+ 	if (acfg->aot_opts.profile_only && !g_hash_table_lookup (acfg->profile_methods, method)) {
+ 		if (acfg->aot_opts.llvm_only) {
+ 			gboolean keep = FALSE;
+@@ -9683,6 +9927,8 @@
+ 	if (!cfg->compile_llvm)
+ 		acfg->has_jitted_code = TRUE;
+ 
++	k9_log_instance (acfg, method);   /* SHEPHERD-VITA kit #9 R3: SHEPHERD_AOT_INSTANCES_OUT */
++
+ 	if (method->is_inflated && acfg->aot_opts.log_instances) {
+ 		if (acfg->instances_logfile)
+ 			fprintf (acfg->instances_logfile, "%s ### %d\n", mono_method_get_full_name (method), cfg->code_size);
+@@ -10943,6 +11189,15 @@
+ 	emit_section_change (acfg, ".text", 0);
+ 	emit_alignment_code (acfg, 8);
+ 	emit_info_symbol (acfg, "jit_code_start", TRUE);
++
++	k9_order_methods (acfg);   /* SHEPHERD-VITA kit #9 R5: SHEPHERD_AOT_ORDER */
++	if (k9_skip || k9_inst_out)   /* SHEPHERD-VITA kit #9 R3: the dead instance copies left out / this image's instances logged */
++		printf ("SHEPHERD kit #9 R3: %d inflated methods not compiled here (the defining image holds them: SHEPHERD_AOT_SKIP_INSTANCES, %d keys); %d of this image's own instances logged (SHEPHERD_AOT_INSTANCES_OUT)\n",
++			k9_skipped, k9_skip ? (int) g_hash_table_size (k9_skip) : 0, k9_logged);
++	if (k9_inst_out)
++		fflush (k9_inst_out);
++	if (k9_keep && k9_keep_image == 1)   /* SHEPHERD-VITA kit #9 CoreLib trimming */
++		printf ("SHEPHERD kit #9 trim: %d non-generic methods of %s not compiled (not in SHEPHERD_AOT_KEEP, %d entries)\n", k9_keep_dropped, acfg->image->assembly_name, (int) g_hash_table_size (k9_keep));
+ 
+ 	/*
+ 	 * Emit some padding so the local symbol for the first method doesn't have the
+--- a/src/mono/mono/mini/mini-llvm-cpp.cpp
++++ b/src/mono/mono/mini/mini-llvm-cpp.cpp
+@@ -817,3 +817,34 @@
+ 	return wrap (t);
+ }
+ #endif
++
++/* SHEPHERD-VITA kit #9 R5 (profile-ordered AOT code layout): llc lays functions out in module order, so moving the profile's hot methods
++ * to the front of the method region (between llvm_code_start and llvm_code_end, which the runtime takes as the image's LLVM code range)
++ * packs them into the fewest pages / cache lines. Only the order changes: every function, its body and its name stay as they are. */
++int
++mono_llvm_cpp_reorder_functions (LLVMModuleRef module, LLVMValueRef start, LLVMValueRef end, int (*rank) (const char *name, void *data), void *data)
++{
++	llvm::Module *m = llvm::unwrap (module);
++	llvm::Function *fs = llvm::unwrap<llvm::Function> (start), *fe = llvm::unwrap<llvm::Function> (end);
++	auto &fl = m->getFunctionList ();
++	std::vector<std::pair<int, llvm::Function *>> ranked;
++	bool inside = false;
++	for (auto &f : fl) {
++		if (&f == fs) { inside = true; continue; }
++		if (&f == fe) break;
++		if (!inside) continue;
++		int r = rank (f.getName ().str ().c_str (), data);
++		if (r >= 0)
++			ranked.push_back ({ r, &f });
++	}
++	if (!inside || ranked.empty ())
++		return 0;
++	std::stable_sort (ranked.begin (), ranked.end (), [] (const std::pair<int, llvm::Function *> &a, const std::pair<int, llvm::Function *> &b) { return a.first < b.first; });
++	/* right after llvm_code_start, in rank order; the unranked keep their order behind them */
++	auto pos = std::next (fs->getIterator ());
++	for (auto &e : ranked) {
++		if (e.second->getIterator () == pos) { ++pos; continue; }
++		fl.splice (pos, fl, e.second->getIterator ());
++	}
++	return (int) ranked.size ();
++}
+--- a/src/mono/mono/mini/mini-llvm-cpp.h
++++ b/src/mono/mono/mini/mini-llvm-cpp.h
+@@ -236,6 +236,11 @@
+ LLVMTypeRef
+ mono_llvm_get_ptr_type (void);
+ 
++/* SHEPHERD-VITA kit #9 R5 (vita/patches/k9-aot-compiler.patch): stable reorder of the functions strictly between start and end in the
++ * module's function list by rank (rank (name) >= 0: first, by rank; < 0: after them, in their old order); returns how many were ranked */
++int
++mono_llvm_cpp_reorder_functions (LLVMModuleRef module, LLVMValueRef start, LLVMValueRef end, int (*rank) (const char *name, void *data), void *data);
++
+ G_END_DECLS
+ 
+ #endif /* __MONO_MINI_LLVM_CPP_H__ */
+--- a/src/mono/mono/mini/mini-llvm.c
++++ b/src/mono/mono/mini/mini-llvm.c
+@@ -33,6 +33,10 @@
+ #include "llvm-c/Analysis.h"
+ 
+ #include "mini-llvm-cpp.h"
++/* SHEPHERD-VITA kit #9 R5 (aot-compiler.c) */
++gboolean mono_shepherd_aot_order_active (void);
++int mono_shepherd_aot_order_rank_cb (const char *name, void *data);
++void mono_shepherd_aot_order_note (const char *what, int n);
+ #include "llvm-jit.h"
+ #include "aot-compiler.h"
+ #include "mini-llvm.h"
+@@ -14326,6 +14330,12 @@
+ 		}
+ 	}
+ #endif
++
++	/* SHEPHERD-VITA kit #9 R5: SHEPHERD_AOT_ORDER=<file> -- the hot methods first (aot-compiler.c mono_shepherd_aot_order_rank) */
++	if (mono_shepherd_aot_order_active ()) {
++		int n = mono_llvm_cpp_reorder_functions (module->lmodule, module->code_start, module->code_end, mono_shepherd_aot_order_rank_cb, NULL);
++		mono_shepherd_aot_order_note ("llvm", n);
++	}
+ 
+ 	/* Note: You can still dump an invalid bitcode file by running `llvm-dis`
+ 	 * in a debugger, set a breakpoint on `LLVMVerifyModule` and fake its

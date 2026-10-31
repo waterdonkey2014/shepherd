@@ -149,6 +149,13 @@ static uint64_t g_boot_us;
 static unsigned g_disp_sets, g_disp_nulls; static uint32_t g_disp_hash = 2166136261u; static uint32_t g_disp_last;
 static void disp_line (const char *why);
 static int g_avc_mod; static unsigned g_avc_fail_at;
+/* kit #9 device track: the decoder's output delay (VLX_AVC_DELAY; kit #10 boot track: default 4 = the device's, MEASURED by kit #9's run
+ * on both logos -- kit #9's default was 1), the library's PHYCONT (VLX_AVC_LIB_KIB, default 6144), a suspension (VLX_SUSPEND=<at s>:<for s>,
+ * VLX_SUSPEND_CLK=0 keeps the clocks) -- the sections below */
+static unsigned g_avc_delay = 4, g_avc_lib_kib = 6144;
+static unsigned g_susp_at_s, g_susp_dur_s; static int g_susp_clk; static volatile int g_susp_fired; static uint64_t g_rtc_off_us;
+static void vlx_susp_poll (void);
+static int g_clk [4] = { 333, 222, 0, 111 };   /* the clocks (scePower stand-ins below); launch values = the PCH-2000's report at launch */
 #define EPOCH_TICK 62135596800000000ULL   /* SceRtcTick (us since 0001-01-01) of 1970-01-01 */
 
 static int64_t days_from_civil (int y, unsigned m, unsigned d)
@@ -236,10 +243,13 @@ typedef struct vthread {
 	volatile int ctid; volatile int state; int exit_status; SceSize arglen; void *argcopy; int linux_tid;
 	unsigned start_guess; int stack_reported, stack_accounted; uint64_t created_us;   /* kit5 mem: VLX_STACK_REPORT / VLX_STACK_ACCOUNT */
 	int prof_timer;   /* kit #6 fps: VLX_PROF's CPU timer of this thread + 1 (0: none) */
+	unsigned tls_calls;   /* kit #9 runtime review: this thread's sceKernelGetTLSAddr calls (VLX_TLS_FOREIGN's lazy writer) */
 	void *tls [0x100];
 	char altstack [8192];
 } vthread;
 enum { TS_DORMANT = 0, TS_RUNNING = 1, TS_DEAD = 2 };
+static int g_tls_foreign_slot = -1; static unsigned g_tls_foreign_after = 100000;   /* kit #9 runtime review: VLX_TLS_FOREIGN (sceKernelGetTLSAddr) */
+#define VLX_TLS_FOREIGN_VALUE ((void *) 0x5EC0F00D)
 
 #define MAX_OBJ 8192
 #define MAX_THR 256
@@ -396,9 +406,15 @@ static void prof_dump (void)
 static void thread_altstack (vthread *t) { struct { void *sp; int flags; size_t size; } ss = { t->altstack, 0, sizeof (t->altstack) }; sys2 (NR_sigaltstack, &ss, 0); }
 
 /* ------------------------------------------------------------------ threads */
+/* kit #10 fidelity (vita/notes/kit10-fidelity.md section 1): VLX_THREAD_FPSCR=<hex> -- every thread (the main thread too) starts with that FPSCR,
+ * as on the device, whose kernel starts every thread with 0x03000000 (FZ 1 DN 1: kit #9's device FP lines); unset = qemu-user's own rule (a new
+ * thread inherits its creator's FPSCR; the first thread starts with 0). qemu honours FZ / DN (the host's self-test line shows it). */
+static unsigned g_thread_fpscr; static int g_thread_fpscr_on;
 static void thread_tramp (void *arg)
 {
 	vthread *t = arg;
+	if (g_thread_fpscr_on)
+		__asm__ volatile ("vmsr fpscr, %0" : : "r" (g_thread_fpscr) : "memory");
 	thread_altstack (t);
 	t->linux_tid = (int) sys0 (NR_gettid);
 	prof_thread ();
@@ -432,6 +448,7 @@ SceUID sceKernelCreateThread (const char *name, SceKernelThreadEntry entry, int 
 	if (g_live_threads > g_live_threads_peak) g_live_threads_peak = g_live_threads;
 	if (g_live_stack > g_live_stack_peak) { g_live_stack_peak = g_live_stack; g_live_stack_peak_us = mono_us () - g_boot_us; }
 	vmemset (t, 0, sizeof (*t));
+	if (g_tls_foreign_slot >= 0 && !g_tls_foreign_after) t->tls [g_tls_foreign_slot] = VLX_TLS_FOREIGN_VALUE;   /* kit #9 runtime review */
 	t->created_us = mono_us () - g_boot_us; t->stack_accounted = acct;
 	t->o.type = T_THREAD; t->o.idx = i; t->o.uid = UID_THR (i); vstrlcpy (t->o.name, name, sizeof (t->o.name)); t->o.attr = attr;
 	t->entry = entry; t->init_prio = t->prio = initPriority; t->affinity = cpuAffinityMask; t->stack_size = sz;
@@ -547,7 +564,18 @@ int sceKernelDelayThread (SceUInt delay)
 	} while (delay);
 	return 0;
 }
-void *sceKernelGetTLSAddr (int key) { if (key < 0 || key >= 0x100) return 0; return &self ()->tls [key]; }
+/* kit #9 runtime review (the fast TLS slots, vita/patches/k9-fast-tls.patch): VLX_TLS_FOREIGN=<slot>[,<n>] models a system module that keeps
+ * per-thread state in TLS slot <slot> (hex 0x.. or decimal): with n = 0 every thread is born with the value 0x5EC0F00D there; with n > 0
+ * (default 100000) each thread gets it written at its n-th sceKernelGetTLSAddr call (the module first called on that thread later on).
+ * Unset (every gate run): the slots are a private zeroed array per thread, as before. */
+void *sceKernelGetTLSAddr (int key)
+{
+	if (key < 0 || key >= 0x100) return 0;
+	vthread *t = self ();
+	if (g_tls_foreign_slot >= 0 && g_tls_foreign_after && t->tls_calls < g_tls_foreign_after && ++t->tls_calls == g_tls_foreign_after)
+		t->tls [g_tls_foreign_slot] = VLX_TLS_FOREIGN_VALUE;
+	return &t->tls [key];
+}
 void *sceKernelGetThreadTLSAddr (SceUID thid, int key) { vthread *t = thr_get (thid); if (!t || key < 0 || key >= 0x100) return 0; return &t->tls [key]; }
 
 /* ------------------------------------------------------------------ semaphores, mutexes, lw mutexes, event flags, msg pipes */
@@ -882,6 +910,8 @@ int sceIoPread (SceUID fd, void *data, SceSize size, SceOff offset)
 	if (r > 0) card_cost (r);
 	return r < 0 ? fail ("sceIoPread", lerr (r)) : (int) r;
 }
+/* device kit #10 io (vita/shepherd/k10_io.inc.c, SHEPHERD_K10_DMA): the DMA copy's stand-in -- a plain copy (timing means nothing here) */
+int sceDmacMemcpy (void *dst, const void *src, SceSize size) { vmemcpy (dst, src, size); return 0; }
 int sceIoPwrite (SceUID fd, const void *data, SceSize size, SceOff offset)
 {
 	int f = uid_fd (fd); if (f < 0) return fail ("sceIoPwrite", (int) 0x80010009);
@@ -1061,20 +1091,38 @@ int sceIoDclose (SceUID fd)
 /* ------------------------------------------------------------------ process, time, rtc, misc */
 SceUInt64 sceKernelGetProcessTimeWide (void) { return mono_us () - g_boot_us; }
 SceUInt32 sceKernelGetProcessTimeLow (void) { return (SceUInt32) (mono_us () - g_boot_us); }
+/* kit #9 device track: a SUSPENSION as the owner's Vita has it (kit #7 / #8 STEP 9: no SUSP line although the PS button and POWER were
+ * pressed) -- the PROCESS clock stops while the app is suspended and the RTC (the wall clock) runs on. VLX_SUSPEND=<at s>:<for s>: at <at>
+ * s of process time the RTC jumps <for> s ahead (the process clock does not move: no thread sees a gap); the clocks are KEPT, as the device's
+ * STEP 9 log shows (kit #8.1 "play-gaot 2.txt": every P line after the PS button and POWER presses reads arm 444 bus 222 gpu 222, the 5 s
+ * clock watch logged no change, CLK end 444/222/222/166 -- kit #9 review fix, finding 6: the first version lowered them by default).
+ * VLX_SUSPEND_CLK=1 = a standby that drops them to the system's launch values 333/222/0/111 (NOT seen on the device: a test of kit #7's
+ * CLK resume path only). Unset: no suspension (every RTC reading is the Mac's, as before). */
+static void vlx_susp_poll (void)
+{
+	if (!g_susp_at_s || g_susp_fired || mono_us () - g_boot_us < (uint64_t) g_susp_at_s * 1000000u) return;
+	if (!__sync_bool_compare_and_swap (&g_susp_fired, 0, 1)) return;
+	g_rtc_off_us += (uint64_t) g_susp_dur_s * 1000000u;
+	if (g_susp_clk) { g_clk [0] = 333; g_clk [1] = 222; g_clk [2] = 0; g_clk [3] = 111; }
+	vlog ("[vlx] VLX_SUSPEND: suspended for %u s at %u s of process time -- the process clock stops (it does not move), the RTC jumps %u s ahead%s\n",
+	      g_susp_dur_s, g_susp_at_s, g_susp_dur_s, g_susp_clk ? "; VLX_SUSPEND_CLK=1: the standby left the clocks at 333/222/0/111 (not seen on the device)" : "; the clocks kept (as the device's STEP 9)");
+}
+static uint64_t rtc_us (void) { vlx_susp_poll (); return real_us () + g_rtc_off_us; }
 int sceKernelLibcGettimeofday (SceKernelTimeval *tv, SceKernelTimezone *tz)
 {
-	uint64_t us = real_us (); if (tv) { tv->sec = (SceInt32) (us / 1000000u); tv->usec = (SceInt32) (us % 1000000u); } if (tz) tz->value = 0; return 0;
+	uint64_t us = rtc_us (); if (tv) { tv->sec = (SceInt32) (us / 1000000u); tv->usec = (SceInt32) (us % 1000000u); } if (tz) tz->value = 0; return 0;
 }
 SceUID sceKernelGetProcessId (void) { return 0x40010003; }
 int sceKernelPowerTick (SceKernelPowerTickType type) { (void) type; return 0; }
 /* clocks (every host sets 444/222/222/166 at start since 2026-10-13): nothing to set here; remembered, so a host's CLK lines read
  * back what it asked for. Launch values = what the PCH-2000 reports at launch (probe/physbench 2026-10-09: 333/222/0/111). */
-static int g_clk [4] = { 333, 222, 0, 111 };
+/* (g_clk: defined above the time section -- kit #9's suspension model lowers it) */
 /* kit #7 (track probes): VLX_PLUGIN_ARM=<s>:<MHz> models a plugin (PSVshell) that changes the ARM clock <s> seconds after the start, outside
  * the app (the reported clock changes; the app's watchdog must log it); VLX_LAUNCH_ARM=<MHz> (below, at boot) a plugin's launch clock */
 static unsigned g_plugin_arm_s, g_plugin_arm_mhz;
 int scePowerGetArmClockFrequency (void)
 {
+	vlx_susp_poll ();   /* kit #9 */
 	if (g_plugin_arm_mhz && mono_us () - g_boot_us >= (uint64_t) g_plugin_arm_s * 1000000u) { g_clk [0] = (int) g_plugin_arm_mhz; g_plugin_arm_mhz = 0; }
 	return g_clk [0];
 }
@@ -1094,7 +1142,8 @@ int sceKernelGetRandomNumber (void *output, SceSize size)
 {
 	char *p = output; while (size) { long r = sys3 (NR_getrandom, p, size, 0); if (r <= 0) return fail ("sceKernelGetRandomNumber", SCE_KERNEL_ERROR_ERROR); p += r; size -= (SceSize) r; } return 0;
 }
-int sceRtcGetCurrentClock (SceDateTime *time, int time_zone) { tick_to_dt (real_us () + EPOCH_TICK + (int64_t) time_zone * 60000000, time); return 0; }
+int sceRtcGetCurrentClock (SceDateTime *time, int time_zone) { tick_to_dt (rtc_us () + EPOCH_TICK + (int64_t) time_zone * 60000000, time); return 0; }
+int sceRtcGetCurrentTick (SceRtcTick *tick) { if (!tick) return (int) 0x80251000; tick->tick = rtc_us () + EPOCH_TICK; return 0; }   /* kit #9: the P3 watch */
 int sceRtcGetCurrentClockLocalTime (SceDateTime *time) { return sceRtcGetCurrentClock (time, 0); }   /* kit #8 play (save backups' names): the Mac's UTC as local time */
 int sceRtcGetTick (const SceDateTime *time, SceRtcTick *tick) { if (!time || !tick) return (int) 0x80251000; tick->tick = dt_to_tick (time); return 0; }
 int sceRtcSetTick (SceDateTime *time, const SceRtcTick *tick) { if (!time || !tick) return (int) 0x80251000; tick_to_dt (tick->tick, time); return 0; }
@@ -1163,14 +1212,84 @@ SceSize sceClibStrnlen (const char *s, SceSize max) { SceSize n = 0; while (n < 
  * they got. VLX_AVC_FAIL=<n>: the n-th decode (1-based) refuses (0x8062000D: an invalid stream), the decode error path. */
 #include <psp2/videodec.h>
 static int g_avc_lib; static unsigned g_avc_need, g_avc_decodes, g_avc_handles;
+/* kit #9 device track: the library's own memory -- on the owner's PCH-2000 sceVideodecInitLibrary (960 x 544, 3 refs) takes 6,144 KiB of
+ * PHYCONT (the kit #8.1 launcher's MEM start / MEM k8-released lines), and with every PHYCONT page gone to vitaGL (glrec_vlx.c models its
+ * init taking them) it refuses 0x80024302 NO_FREE_PHYSICAL_PAGE, as the engine's real video was refused on the device. VLX_AVC_LIB_KIB=<KiB>
+ * (default 6144; 0 = no memory modelled, kit #8's stand-in). */
+static unsigned g_avc_lib_taken;
+/* kit #9 review (finding 4): VLX_AVC_DEC_KIB=<KiB> -- PHYCONT taken by sceAvcdecCreateDecoder itself (default 0: the device's 6,144 KiB were
+ * measured with the decoder created, so how they split between the library and the decoder is unknown; e.g. VLX_AVC_LIB_KIB=4096
+ * VLX_AVC_DEC_KIB=2048 tests the split); refused 0x80024302 when it is not there, given back by sceAvcdecDeleteDecoder */
+static unsigned g_avc_dec_kib, g_avc_dec_taken;
 int sceVideodecInitLibrary (SceVideodecType codec, const SceVideodecQueryInitInfoHwAvcdec *init)
 {
 	if (!g_avc_mod) return fail ("sceVideodecInitLibrary (the AVCDEC sysmodule is not loaded)", (int) 0x8062080B);
 	if (codec != SCE_VIDEODEC_TYPE_HW_AVCDEC || !init || init->size != sizeof (*init) || !init->horizontal || !init->vertical || (init->horizontal & 15) || (init->vertical & 15) || init->numOfStreams != 1)
 		return fail ("sceVideodecInitLibrary(param)", (int) 0x80620802);
+	if (g_avc_lib) return fail ("sceVideodecInitLibrary (already initialised)", (int) 0x80620801);
+	unsigned need = g_avc_lib_kib * 1024u;
+	klock ();
+	if (need && g_used [2] + need > g_budget [2]) {
+		unsigned freek = (g_budget [2] - g_used [2]) / 1024u;
+		kunlock ();
+		vlog ("[vlx] sceVideodecInitLibrary: NO_FREE_PHYSICAL_PAGE (0x80024302) -- the library needs %u KiB of PHYCONT, %u KiB free (VLX_AVC_LIB_KIB; the device's figure)\n", g_avc_lib_kib, freek);
+		return (int) 0x80024302;
+	}
+	g_used [2] += need; g_avc_lib_taken = need;
+	kunlock ();
 	g_avc_lib = 1; return 0;
 }
-int sceVideodecTermLibrary (SceVideodecType codec) { (void) codec; if (!g_avc_lib) return fail ("sceVideodecTermLibrary", (int) 0x8062080C); g_avc_lib = 0; return 0; }
+int sceVideodecTermLibrary (SceVideodecType codec)
+{
+	(void) codec; if (!g_avc_lib) return fail ("sceVideodecTermLibrary", (int) 0x8062080C);
+	klock (); g_used [2] -= g_avc_lib_taken; g_avc_lib_taken = 0; kunlock ();
+	g_avc_lib = 0; return 0;
+}
+/* kit #9 device track: the decoder's OUTPUT DELAY -- on the owner's Vita the first access unit returned no picture (kit #8.1: "frame 0: the
+ * decoder gave no picture"); the hardware hands pictures back some access units after it got them. The stand-in keeps the last
+ * VLX_AVC_DELAY pictures (kit #10: default 4, the device's; 0 = kit #8's stand-in: a picture per access unit) and returns the oldest one
+ * with each later access unit, in order, written into the buffer of THAT call.
+ * Kit #10 boot track: sceAvcdecDecodeStop REFUSES by default, as the device did in kit #9's run (0x80620002 SCE_AVCDEC_ERROR_INVALID_PARAM,
+ * 0 pictures, the pictures still held: the launcher with 4 buffers offered, the engine with up to 12) -- VLX_AVC_STOP=all is kit #9's
+ * stand-in (as many held pictures as the array has room for), one / one-only / drop / hang the review's variants; one-only = refused unless
+ * the array has ONE element, then one picture per call (kit #10's stop1 reading of the refusal, a test only: the device never showed it).
+ * VLX_AVC_IDR=bump: an access unit holding an IDR picture first makes every held picture due (H.264's bumping at an IDR with
+ * no_output_of_prior_pics_flag 0): they come out one per call before the delay rule applies again (default: the plain fixed-delay pipe, where
+ * an IDR is just another access unit) -- kit #10's drain feeds the clip's own access units again from its IDR, so both models must give
+ * every picture. The decoded-picture word of every flush picture is its own access unit's, so a picture of the second copy shown by mistake
+ * shows up in the display / texture records. Kit #9's defaults: VLX_AVC_DELAY=1 VLX_AVC_STOP=all. */
+#define VLX_AVC_RING 32
+static uint32_t g_avc_pend [VLX_AVC_RING]; static unsigned g_avc_pend_n, g_avc_pend_r, g_avc_drained;
+static int g_avc_idr_bump; static unsigned g_avc_due;   /* kit #10: VLX_AVC_IDR=bump -- held pictures made due by an IDR */
+/* kit #10 review fix (finding 5): every held picture keeps its access unit's time stamp and hands it back in SceAvcdecPicture.info.pts (as a
+ * decoder does), so the host's second-copy check (k8_avc.h K10_AVC_TAG) can be tested; and the two decoder models the review named, in which
+ * a refed IDR does NOT bring every held picture out: VLX_AVC_IDR=drop -- an IDR access unit DROPS every held picture; VLX_AVC_IDR=one -- an
+ * IDR access unit hands back the oldest held picture and drops the rest (one picture array, several pictures due). With either, the flush
+ * access units after the IDR bring out pictures of the clip's second copy: the host must not count or show them. */
+static SceVideodecTimeStamp g_avc_pend_pts [VLX_AVC_RING];
+static int g_avc_idr_drop;   /* 1 = drop, 2 = one */
+/* kit #10 integration review: VLX_AVC_PTS=0 -- a decoder that hands back NO time stamps (SceAvcdecPicture.info.pts left as the caller set it):
+ * the host's second-copy check must then say it checked nothing; VLX_AVC_IDR=hang -- an IDR access unit fed while pictures are held (the
+ * refeed's first flush access unit) does not come back for 40 s, then returns no picture: the engine's bounded refeed (and the launcher's
+ * 15 s release cap) are tested with it */
+static int g_avc_pts = 1, g_avc_idr_hang;
+static unsigned g_avc_idr_dropped;
+static int avc_has_idr (const unsigned char *b, unsigned n)
+{
+	for (unsigned i = 0; i + 3 < n; i++)
+		if (b [i] == 0 && b [i + 1] == 0 && b [i + 2] == 1 && (b [i + 3] & 0x1f) == 5) return 1;
+	return 0;
+}
+static void avc_fill (SceAvcdecPicture *p, uint32_t h)
+{
+	uint32_t *px = (uint32_t *) p->frame.pPicture [0];
+	for (unsigned y = 0; y < p->frame.frameHeight; y++) for (unsigned x = 0; x < p->frame.frameWidth; x++) px [y * p->frame.framePitch + x] = h;
+}
+static void avc_fill_held (SceAvcdecPicture *p)   /* the oldest held picture (and its time stamp) into p; it leaves the decoder */
+{
+	avc_fill (p, g_avc_pend [g_avc_pend_r]); if (g_avc_pts) p->info.pts = g_avc_pend_pts [g_avc_pend_r];
+	g_avc_pend_r = (g_avc_pend_r + 1) % VLX_AVC_RING; g_avc_pend_n--;
+}
 int sceAvcdecQueryDecoderMemSize (SceVideodecType codec, const SceAvcdecQueryDecoderInfo *q, SceAvcdecDecoderInfo *di)
 {
 	if (!g_avc_lib || codec != SCE_VIDEODEC_TYPE_HW_AVCDEC || !q || !di) return fail ("sceAvcdecQueryDecoderMemSize", (int) 0x80620002);
@@ -1180,9 +1299,27 @@ int sceAvcdecQueryDecoderMemSize (SceVideodecType codec, const SceAvcdecQueryDec
 int sceAvcdecCreateDecoder (SceVideodecType codec, SceAvcdecCtrl *c, const SceAvcdecQueryDecoderInfo *q)
 {
 	if (!g_avc_lib || !c || !q || !c->frameBuf.pBuf || c->frameBuf.size < g_avc_need) return fail ("sceAvcdecCreateDecoder", (int) 0x80620002);
-	(void) codec; c->handle = 0x5000u + ++g_avc_handles; return 0;
+	(void) codec;
+	if (g_avc_dec_kib) {   /* kit #9 review (finding 4) */
+		unsigned need = g_avc_dec_kib * 1024u;
+		klock ();
+		if (g_used [2] + need > g_budget [2]) {
+			unsigned freek = (g_budget [2] - g_used [2]) / 1024u;
+			kunlock ();
+			vlog ("[vlx] sceAvcdecCreateDecoder: NO_FREE_PHYSICAL_PAGE (0x80024302) -- the decoder needs %u KiB of PHYCONT, %u KiB free (VLX_AVC_DEC_KIB)\n", g_avc_dec_kib, freek);
+			return (int) 0x80024302;
+		}
+		g_used [2] += need; g_avc_dec_taken += need;
+		kunlock ();
+	}
+	c->handle = 0x5000u + ++g_avc_handles; g_avc_pend_n = g_avc_pend_r = 0; g_avc_due = 0; return 0;
 }
-int sceAvcdecDeleteDecoder (SceAvcdecCtrl *c) { if (!c || !c->handle) return fail ("sceAvcdecDeleteDecoder", (int) 0x80620002); c->handle = 0; return 0; }
+int sceAvcdecDeleteDecoder (SceAvcdecCtrl *c)
+{
+	if (!c || !c->handle) return fail ("sceAvcdecDeleteDecoder", (int) 0x80620002);
+	if (g_avc_dec_taken) { unsigned give = g_avc_dec_kib * 1024u <= g_avc_dec_taken ? g_avc_dec_kib * 1024u : g_avc_dec_taken; klock (); g_used [2] -= give; g_avc_dec_taken -= give; kunlock (); }
+	c->handle = 0; g_avc_pend_n = g_avc_pend_r = 0; g_avc_due = 0; return 0;
+}
 int sceAvcdecDecode (const SceAvcdecCtrl *c, const SceAvcdecAu *au, SceAvcdecArrayPicture *arr)
 {
 	if (!c || !c->handle || !au || !au->es.pBuf || !au->es.size || !arr || arr->numOfElm < 1 || !arr->pPicture || !arr->pPicture [0]) return fail ("sceAvcdecDecode(param)", (int) 0x80620002);
@@ -1192,9 +1329,69 @@ int sceAvcdecDecode (const SceAvcdecCtrl *c, const SceAvcdecAu *au, SceAvcdecArr
 	uint32_t h = 2166136261u; const unsigned char *b = (const unsigned char *) au->es.pBuf;
 	for (SceUInt32 i = 0; i < au->es.size; i++) { h ^= b [i]; h *= 16777619u; }
 	h = (h & 0x00FFFFFFu) | 0xFF000000u;
-	uint32_t *px = (uint32_t *) p->frame.pPicture [0];
-	for (unsigned y = 0; y < p->frame.frameHeight; y++) for (unsigned x = 0; x < p->frame.frameWidth; x++) px [y * p->frame.framePitch + x] = h;
-	arr->numOfOutput = 1; return 0;
+	if (!g_avc_delay) { avc_fill (p, h); if (g_avc_pts) p->info.pts = au->pts; arr->numOfOutput = 1; return 0; }   /* kit #8's stand-in */
+	if (g_avc_idr_hang && g_avc_pend_n && avc_has_idr (b, au->es.size)) {   /* kit #10 integration review: VLX_AVC_IDR=hang */
+		vlog ("[vlx] sceAvcdecDecode (VLX_AVC_IDR=hang): an IDR access unit with %u picture(s) held -- the call hangs for 40 s\n", g_avc_pend_n);
+		sceKernelDelayThread (40u * 1000000u);
+		vlog ("[vlx] sceAvcdecDecode (VLX_AVC_IDR=hang): returns after 40 s, no picture\n");
+		arr->numOfOutput = 0; return 0;
+	}
+	unsigned d = g_avc_delay < VLX_AVC_RING ? g_avc_delay : VLX_AVC_RING - 1;
+	if (g_avc_idr_bump && avc_has_idr (b, au->es.size)) g_avc_due = g_avc_pend_n;   /* kit #10: every held picture is due before this IDR's */
+	int one_out = 0;
+	if (g_avc_idr_drop && g_avc_pend_n && avc_has_idr (b, au->es.size)) {   /* kit #10 review (finding 5): the decoder models that lose held pictures */
+		if (g_avc_idr_drop == 2) { avc_fill_held (p); one_out = 1; }
+		if (g_avc_idr_dropped++ < 3)
+			vlog ("[vlx] sceAvcdecDecode (VLX_AVC_IDR=%s): an IDR access unit with %u picture(s) held -- %s%u LOST\n", g_avc_idr_drop == 2 ? "one" : "drop",
+			      g_avc_pend_n + (unsigned) one_out, one_out ? "the oldest handed back, " : "", g_avc_pend_n);
+		g_avc_pend_n = 0;
+	}
+	if (g_avc_pend_n >= VLX_AVC_RING) return fail ("sceAvcdecDecode (vlx: more held pictures than the stand-in's ring)", (int) 0x8062000A);
+	g_avc_pend_pts [(g_avc_pend_r + g_avc_pend_n) % VLX_AVC_RING] = au->pts;
+	g_avc_pend [(g_avc_pend_r + g_avc_pend_n++) % VLX_AVC_RING] = h;
+	if (one_out) { arr->numOfOutput = 1; return 0; }
+	if (g_avc_due || g_avc_pend_n > d) {
+		avc_fill_held (p); arr->numOfOutput = 1;
+		if (g_avc_due) g_avc_due--;
+	} else arr->numOfOutput = 0;
+	return 0;
+}
+/* (VLX_AVC_STOP=one: one held picture per call, as Vita3K's HLE has it; default all: as many as the array has elements -- the device's
+ * behaviour is not documented, so the gates run both; kit #9 review (finding 7): VLX_AVC_STOP=drop -- one call empties the decoder: as
+ * many pictures as the array has room for, the rest LOST (the strictest reading: the caller must offer a buffer for every held picture)) */
+static int g_avc_stop_one, g_avc_stop_drop;
+/* kit #9 review, round 2 (finding 1): VLX_AVC_STOP=hang -- the call does not return for 40 s, then returns no picture (touching none of the
+ * decoder's state: the caller has walked away by then) -- the launcher's 15 s release cap and the engine's bounded wait are tested with it */
+static int g_avc_stop_hang;
+static int g_avc_stop_refuse = 1, g_avc_stop_one_only;   /* kit #10: the device's refusal is the default; one-only (a test) */
+static unsigned g_avc_stop_refused;
+int sceAvcdecDecodeStop (const SceAvcdecCtrl *c, SceAvcdecArrayPicture *arr)
+{
+	if (!c || !c->handle || !arr || arr->numOfElm < 1 || !arr->pPicture) return fail ("sceAvcdecDecodeStop(param)", (int) 0x80620002);
+	if (g_avc_stop_refuse || (g_avc_stop_one_only && arr->numOfElm != 1)) {   /* kit #10: as the device (kit #9's run) */
+		arr->numOfOutput = 0;
+		if (++g_avc_stop_refused <= 3)
+			vlog ("[vlx] sceAvcdecDecodeStop: refused 0x80620002 (INVALID_PARAM) with %u picture(s) held and %u offered -- as the device did in kit #9's run (%s)\n",
+			      g_avc_pend_n, (unsigned) arr->numOfElm, g_avc_stop_refuse ? "the default; VLX_AVC_STOP=all = kit #9's stand-in" : "VLX_AVC_STOP=one-only: only a one-picture array is taken");
+		return (int) 0x80620002;
+	}
+	if (g_avc_stop_hang) {
+		vlog ("[vlx] sceAvcdecDecodeStop (VLX_AVC_STOP=hang): the call hangs for 40 s\n");
+		sceKernelDelayThread (40u * 1000000u);
+		vlog ("[vlx] sceAvcdecDecodeStop (VLX_AVC_STOP=hang): returns after 40 s, no picture\n");
+		arr->numOfOutput = 0; return 0;
+	}
+	unsigned k = 0;
+	for (; k < arr->numOfElm && g_avc_pend_n && !(g_avc_stop_one && k); k++) {
+		SceAvcdecPicture *p = arr->pPicture [k];
+		if (!p || p->size != sizeof (*p) || !p->frame.pPicture [0] || p->frame.pixelType != SCE_AVCDEC_PIXELFORMAT_RGBA8888 || p->frame.framePitch < p->frame.frameWidth) return fail ("sceAvcdecDecodeStop(picture)", (int) 0x80620006);
+		avc_fill_held (p); g_avc_drained++;
+	}
+	if (g_avc_stop_drop && g_avc_pend_n) {
+		vlog ("[vlx] sceAvcdecDecodeStop (VLX_AVC_STOP=drop): %u held picture(s) LOST -- the array had room for %u\n", g_avc_pend_n, (unsigned) arr->numOfElm);
+		g_avc_pend_n = 0;
+	}
+	arr->numOfOutput = k; return 0;
 }
 
 /* kit #8 boot track: the module loader for a launcher build, whose vlx ELF links the launcher AND the engine module (their objects): the
@@ -1390,10 +1587,35 @@ void vlx_boot (uint32_t *sp0)
 		}
 		else if (!vstrncmp (*v, "VLX_VSH_FAIL=", 13)) g_vsh_fail = (*v) [13] == '1';                   /* kit #8 boot */
 		else if (!vstrncmp (*v, "VLX_AVC_FAIL=", 13)) g_avc_fail_at = parse_kib (*v + 13);              /* kit #8 boot */
+		else if (!vstrncmp (*v, "VLX_AVC_DELAY=", 14)) g_avc_delay = parse_kib (*v + 14);              /* kit #9 device */
+		else if (!vstrncmp (*v, "VLX_AVC_STOP=", 13)) { g_avc_stop_one_only = !vstrncmp (*v + 13, "one-only", 8); g_avc_stop_one = !vstrncmp (*v + 13, "one", 3); g_avc_stop_drop = !vstrncmp (*v + 13, "drop", 4); g_avc_stop_hang = !vstrncmp (*v + 13, "hang", 4); g_avc_stop_refuse = !vstrncmp (*v + 13, "refuse", 6); }   /* kit #9 device (+ review: drop; kit #10: refuse = the default, one-only) */
+		else if (!vstrncmp (*v, "VLX_AVC_IDR=", 12)) { g_avc_idr_bump = !vstrncmp (*v + 12, "bump", 4); g_avc_idr_drop = !vstrncmp (*v + 12, "drop", 4) ? 1 : !vstrncmp (*v + 12, "one", 3) ? 2 : 0; g_avc_idr_hang = !vstrncmp (*v + 12, "hang", 4); }   /* kit #10 boot (+ review: drop / one; integration review: hang) */
+		else if (!vstrncmp (*v, "VLX_AVC_PTS=", 12)) g_avc_pts = (*v) [12] != '0';   /* kit #10 integration review: 0 = a decoder that hands back no time stamps */
+		else if (!vstrncmp (*v, "VLX_AVC_DEC_KIB=", 16)) g_avc_dec_kib = parse_kib (*v + 16);          /* kit #9 review */
+		else if (!vstrncmp (*v, "VLX_AVC_LIB_KIB=", 16)) g_avc_lib_kib = parse_kib (*v + 16);          /* kit #9 device */
+		else if (!vstrncmp (*v, "VLX_SUSPEND_CLK=", 16)) g_susp_clk = (*v) [16] == '1';                /* kit #9 device (review: default 0) */
+		else if (!vstrncmp (*v, "VLX_SUSPEND=", 12)) {                                                /* kit #9 device: <at s>:<for s> */
+			const char *a = *v + 12; g_susp_at_s = parse_kib (a);
+			while (*a && *a != ':') a++;
+			g_susp_dur_s = *a == ':' ? parse_kib (a + 1) : 0; if (!g_susp_dur_s) g_susp_at_s = 0;
+		}
 		else if (!vstrncmp (*v, "VLX_MODULE_MS=", 14)) g_module_ms = parse_kib (*v + 14);              /* kit #8 boot */
 		else if (!vstrncmp (*v, "VLX_MODULE_IMPORTS=", 19)) g_module_imports = (*v) [19] != '0';         /* kit #8.1 */
 		else if (!vstrncmp (*v, "VLX_CARD=", 9)) g_card_model = (*v) [9] == '1';                       /* kit #8 boot (timing only) */
 		else if (!vstrncmp (*v, "VLX_STRICT_PATHS=", 17)) g_strict_paths = (*v) [17] == '1';           /* kit #8 boot review */
+		else if (!vstrncmp (*v, "VLX_THREAD_FPSCR=", 17)) {                                           /* kit #10 fidelity: <hex>, the device's 0x03000000 */
+			const char *q = *v + 17; unsigned x = 0;
+			if (q [0] == '0' && (q [1] == 'x' || q [1] == 'X')) q += 2;
+			for (;; q++) { int d = *q >= '0' && *q <= '9' ? *q - '0' : *q >= 'a' && *q <= 'f' ? *q - 'a' + 10 : *q >= 'A' && *q <= 'F' ? *q - 'A' + 10 : -1; if (d < 0) break; x = x * 16 + (unsigned) d; }
+			g_thread_fpscr = x; g_thread_fpscr_on = 1;
+		}
+		else if (!vstrncmp (*v, "VLX_TLS_FOREIGN=", 16)) {                                            /* kit #9 runtime review: <slot>[,<n>] */
+			const char *q = *v + 16; int x = 0;
+			if (q [0] == '0' && (q [1] == 'x' || q [1] == 'X')) { q += 2; for (;; q++) { int d = *q >= '0' && *q <= '9' ? *q - '0' : *q >= 'a' && *q <= 'f' ? *q - 'a' + 10 : *q >= 'A' && *q <= 'F' ? *q - 'A' + 10 : -1; if (d < 0) break; x = x * 16 + d; } }
+			else { x = (int) parse_kib (q); while (*q >= '0' && *q <= '9') q++; }
+			if (x > 0 && x < 0x100) g_tls_foreign_slot = x;
+			if (*q == ',') g_tls_foreign_after = parse_kib (q + 1);
+		}
 		else if (!vstrncmp (*v, "VLX_FW_REPORTED=", 16)) {                                            /* kit #8 boot: <x.yy> */
 			const char *q = *v + 16;
 			if (q [0] >= '0' && q [0] <= '9' && q [1] == '.' && q [2] >= '0' && q [2] <= '9' && q [3] >= '0' && q [3] <= '9')
@@ -1416,6 +1638,10 @@ void vlx_boot (uint32_t *sp0)
 	install_crash_handlers ();
 	unsigned mts = &sceUserMainThreadStackSize ? sceUserMainThreadStackSize : 256u * 1024u;
 	vlog ("[vlx] boot: root=%s text=%08x-%08x main stack %u KiB, user budget %u KiB\n", g_root, g_text_lo, g_text_hi, mts / 1024, g_budget [0] / 1024);
+	if (g_thread_fpscr_on)
+		vlog ("[vlx] VLX_THREAD_FPSCR: every thread starts with FPSCR 0x%08x (the device's default is 0x03000000: FZ 1 DN 1)\n", g_thread_fpscr);
+	if (g_tls_foreign_slot >= 0)
+		vlog ("[vlx] VLX_TLS_FOREIGN: TLS slot 0x%x holds 0x5EC0F00D in every thread %s %u\n", g_tls_foreign_slot, g_tls_foreign_after ? "from its sceKernelGetTLSAddr call no." : "from its birth", g_tls_foreign_after);
 	if (g_break) { vlog ("[vlx] VLX_BREAK=1: SIGTRAP so a debugger on QEMU_GDB can attach and set breakpoints\n"); asm volatile ("bkpt #0"); }
 	if (g_trap_after_s) { SceUID w = sceKernelCreateThread ("vlx-trap", vlx_trap_entry, 0x10000100, 0x4000, 0, 0, 0); if (w >= 0) sceKernelStartThread (w, 0, 0); }
 	prof_start ();

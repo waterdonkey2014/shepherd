@@ -60,6 +60,7 @@ public static class Diet
     /// nothing has read for <see cref="FileIdleFrames"/> frames.</summary>
     public static void EndFrame()
     {
+        Runtime.MemLadder.Tick();       // kit #10 memory: the memory-pressure ladder (every 16th frame asks the host; off = one call, then nothing)
         Loader.DropTransientCaches();   // the sprite-atlas trees of this frame's sprite creation
         long now = ++SerializedFile.Clock;
         if (KeepFiles || Loader.Db == null || now % 8 != 0) return;

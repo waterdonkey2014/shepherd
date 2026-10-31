@@ -399,8 +399,9 @@ public static partial class SceneRenderer
             if (c is not NMono m || m.Destroyed || !m.Awoken) continue;
             for (var ty = m.Managed.GetType(); ty != null && ty != typeof(MonoBehaviour); ty = ty.BaseType)
             {
-                var mi = ty.GetMethod("OnRectTransformDimensionsChange", Any | System.Reflection.BindingFlags.DeclaredOnly, null, Type.EmptyTypes, null);
-                if (mi == null) continue;
+                // kit #9 engine (SHEPHERD_K9_MEMO): the walk's answer for the concrete type, memoized (Runtime/K9Memo.cs) -- one pass of this loop
+                var mi = K9Memo.On ? K9Memo.RectDimTarget(ty) : ty.GetMethod("OnRectTransformDimensionsChange", Any | System.Reflection.BindingFlags.DeclaredOnly, null, Type.EmptyTypes, null);
+                if (mi == null) { if (K9Memo.On) break; continue; }
                 if (!sent) { sent = true; if (_nrcFast) NrcSnap(); }   // (menu-speed: the queued walk's snapshot, taken before game code first runs)
                 try { mi.Invoke(m.Managed, null); } catch (Exception e) { Log.Exception(e, "OnRectTransformDimensionsChange"); }
 #if !SHEPHERD_EBOOT
@@ -573,6 +574,8 @@ public static partial class SceneRenderer
         public SGroup[] Groups;
         /// <summary>Fidelity round 1: a SpriteShapeRenderer's generated geometry (Icalls/SpriteShapeIcalls.cs); null for other renderers.</summary>
         public Impl.SpriteShapeIcalls.Data Shape;
+        /// <summary>Kit #9 engine (SHEPHERD_K9_SORT): the renderer record (the camera's order is kept by renderer); cleared after the pass.</summary>
+        public NComponent R;
     }
     /// <summary>A SortingGroup as one sort unit of the frame (Unity: its renderers share the group's sorting layer, order and camera
     /// distance against everything outside it, and sort among themselves by their own keys; a nested group is one unit inside
@@ -663,7 +666,7 @@ public static partial class SceneRenderer
                 int sq = seq++; var grp = groups ? Grouped(tr, sq) : null;
                 if (!Diag.K7.CullOff && SpriteOutside(ns, fx, fy, in lw)) { _culled++; continue; }   // (kit #7 SHEPHERD_K7_CULL=off: timing tests only)
                 if (Runtime.Visibility.On) Runtime.Visibility.Seen(r);   // kit #8 (opt-in): visible in this camera
-                ref var it = ref Item(n++);
+                ref var it = ref Item(n++); it.R = r;
                 it.Mesh = false; it.Shape = null; it.Sprite = ns; it.Col = col; it.Fx = fx; it.Fy = fy; it.Lw = lw; it.Mat = mat; it.Blend = wc != null ? wc.Blend(mat) : ShaderOf(mat?.ShaderName ?? "Sprites/Default").BlendWorld;
                 it.Layer = wc != null ? wc.Layer(nr) : SortingLayerValue(r); it.Order = wc != null ? wc.Order(nr) : SortOrder(r); it.Dist = SqrDist(tr.Position, camPos); it.Seq = sq;
                 it.Groups = grp;
@@ -677,7 +680,7 @@ public static partial class SceneRenderer
                 int sq = seq++; var grp = groups ? Grouped(tr, sq) : null;
                 if (!Diag.K7.CullOff && MeshOutside(mesh, in lw)) { _culled++; continue; }
                 if (Runtime.Visibility.On) Runtime.Visibility.Seen(r);   // kit #8 (opt-in)
-                ref var it = ref Item(n++);
+                ref var it = ref Item(n++); it.R = r;
                 it.Mesh = true; it.Shape = null; it.Pos = mesh.Pos; it.MCol = mesh.Col; it.Uv = mesh.Uv0; it.Mats = mats; it.Mpb = mpb; it.Lw = lw; it.MeshRec = mesh; it.Go = r.Go;
                 it.Spine = SpineSkip.On && SpineSkip.IsSpine(r);   // kit #7 spine: its colour-0 triangles may leave the GPU draw (Render/SpineSkip.cs)
                 it.NSubs = mesh.Sub.Count; if (it.Subs == null || it.Subs.Length < it.NSubs) it.Subs = new int[Math.Max(4, it.NSubs)][];
@@ -699,7 +702,7 @@ public static partial class SceneRenderer
                 d = Impl.SpriteShapeIcalls.Of(r); if (d == null || !d.Prepared) continue;
                 if (SpriteShapes.Outside(d, in lw)) { _culled++; continue; }
                 if (Runtime.Visibility.On) Runtime.Visibility.Seen(r);   // kit #8 (opt-in)
-                ref var it = ref Item(n++);
+                ref var it = ref Item(n++); it.R = r;
                 it.Mesh = false; it.Sprite = null; it.Shape = d; it.Lw = lw; it.Mats = wc != null ? wc.Shared(nr) : RendererIcalls.Shared(r); it.Col = wc != null ? wc.Color(nr) : r.Get("color") is Color c ? c : White();
                 it.Layer = wc != null ? wc.Layer(nr) : SortingLayerValue(r); it.Order = wc != null ? wc.Order(nr) : SortOrder(r); it.Dist = SqrDist(tr.Position, camPos); it.Seq = sq;
                 it.Groups = grp;
@@ -708,7 +711,7 @@ public static partial class SceneRenderer
         if (Runtime.Visibility.On) Runtime.Visibility.AfterCameraCull();   // kit #8 (opt-in): OnBecameVisible for the renderers this camera made visible
         // the old items.OrderBy(Layer).ThenBy(Order).ThenByDescending(Dist).ThenBy(Seq): Seq is unique, so the order is the one total order
         // of these keys under float.CompareTo, whatever sort finds it
-        var ord = SortWorld(n);
+        var ord = K9Sort ? SortWorldK9(n, cam) : SortWorld(n);   // kit #9 engine (SHEPHERD_K9_SORT / _HOT): the same order (below)
         for (int k = 0; k < n; k++)
         {
             ref var it = ref _wi[ord[k]];
@@ -761,7 +764,7 @@ public static partial class SceneRenderer
                 }
             }
         }
-        for (int k = 0; k < n; k++) { ref var it = ref _wi[k]; it.Sprite = null; it.Pos = null; it.MCol = null; it.Uv = null; it.Mats = null; it.Mpb = null; it.Groups = null; it.Mat = null; it.MeshRec = null; it.Shape = null; it.Go = null; if (it.Subs != null) Array.Clear(it.Subs); }   // keep nothing alive
+        for (int k = 0; k < n; k++) { ref var it = ref _wi[k]; it.Sprite = null; it.Pos = null; it.MCol = null; it.Uv = null; it.Mats = null; it.Mpb = null; it.Groups = null; it.Mat = null; it.MeshRec = null; it.Shape = null; it.Go = null; it.R = null; if (it.Subs != null) Array.Clear(it.Subs); }   // keep nothing alive
     }
     // ---------- polish round 2: FX draws (Render/ShaderPolicy.cs) ----------
     static int _fxSkips, _fxBlends, _fxGlows, _fxGrabs, _fxRtZero;
@@ -854,6 +857,7 @@ public static partial class SceneRenderer
     }
     static int WCmp(int x, int y)
     {
+        if (_skOn) return KCmp(x, y);   // kit #9 engine (SHEPHERD_K9_HOT): the packed keys, the same comparisons
         ref var a = ref _wi[x]; ref var b = ref _wi[y];
         if (a.Groups != null || b.Groups != null) return GCmp(ref a, ref b);
         int c = FCmp(a.Layer, b.Layer); if (c != 0) return c;

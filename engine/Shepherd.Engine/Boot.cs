@@ -14,11 +14,18 @@ public static class Boot
         Log.Open(Path.Combine(Program.LogDir, "engine.log"));
         Runtime.StrictOriginal.Report();   // kit #7 tests: the [strict] line (SHEPHERD_STRICT_ORIGINAL=1 only)
         Log.Info(Runtime.K8Speed.Describe());   // kit #8 speed track: which rows are on
+        Log.Info(Runtime.K9Engine.Describe());  // kit #9 engine track: which rows are on
+        Log.Info(Runtime.K9Fidelity.Describe());   // kit #9 fidelity track: Unity's Random + the stand-in fixes (SHEPHERD_K9_FIDELITY=0: kit #8)
+        if (Profile.Vita) Log.Info(Runtime.K10Boot.Describe());   // kit #10 boot track: the boot screen (the game's own loading screen) and when it ends
+        Log.Info(Runtime.K10Load.Describe());   // kit #10 boot track: loading priority (Unity's background-loading slice; play clock)
         IcallRegistry.Init(Path.Combine(Program.RuntimeManaged, "icalls.json"));
         var mode = args.FirstOrDefault() ?? "smoke";
         int rc = mode switch { "smoke" => Smoke(), "gfxtest" => GfxTest(), "uitest" => UiTest(), "boot" => BootGame(args), "nativetest" => NativeTest(), "respaths" => ResPaths(args), "dumpobj" => DumpObj(args), "shaderdump" => ShaderDump(args), _ => PhysCheckHandles(mode) ? PhysCheckRun(args) : Diag.TriggerTest.Handles(mode) ? Diag.TriggerTest.Run() : Diag.SpineClipFuzz.Handles(mode) ? Diag.SpineClipFuzz.Run(args) : Diag.SpineSkipTest.Handles(mode) ? Diag.SpineSkipTest.Run(args) : Diag.VitaSelfTest.Handles(mode) ? Diag.VitaSelfTest.Run() : Render.RenderTest.Handles(mode) ? Render.RenderTest.Run() : Render.GxpCache.Handles(mode) ? Render.GxpCache.SelfTest() : Unknown(mode) };   // "vitatest"
         if (Profile.Vita) VitaSummary(); else if (Impl.NetIcalls.Created > 0) Log.Info(Impl.NetIcalls.Summary());
         IcallRegistry.Report(Path.Combine(Program.LogDir, "missing-icalls.txt"));
+#if !SHEPHERD_EBOOT
+        Diag.K9IcallAlloc.Write(Program.LogDir);   // kit #9 engine: SHEPHERD_K9_ICALL_ALLOC (Mac measurement)
+#endif
         Diag.SimStats.End();         // V6 SHEPHERD_SIMSTATS: startup/window summary + assembly list; no-op when unset
         Diag.K7.End();               // kit #7: the profiler's last scene + the Chrome trace (SHEPHERD_K7_PROF / _TRACE); no-op when unset
         Diag.NativeCensus.Write();   // runtime/logs/native-resolve.txt; no-op unless enabled (vita / SHEPHERD_NATIVE_CENSUS=1)
@@ -51,6 +58,10 @@ public static class Boot
         if (Diag.TestSpine.Summary() is { } testSpine) Log.Info(testSpine);   // kit #7 tests: SHEPHERD_TEST_SPINE
 #endif
         if (Runtime.K8Speed.Summary() is { } k8) Log.Info(k8);   // kit #8 speed track: the tag index, skipped empty messages, the log diet
+        if (Runtime.K9Engine.Summary() is { } k9) Log.Info(k9);   // kit #9 engine track: what each row did (+ the check modes' differences)
+        if (Runtime.K10Load.Summary() is { } k10l) Log.Info(k10l);   // kit #10 boot track: loading priority's extra passes
+        if (Runtime.K9Typed.Summary() is { } k9t) Log.Info(k9t);   // kit #9 runtime track: the typed / mirror check modes' verdict
+        if (Runtime.K10Cache.Summary() is { } k10) Log.Info(k10);   // kit #10 cache track: the learning cache (hits, writes, evictions) + the learning kinds' statistics
 #if !SHEPHERD_NO_PHYS
         if (Physics.PhysConfig.On || Physics.PhysConfig.Asked < 0) PhysExit();   // physics stage 0: what the groundwork built and saw (one line; more with SHEPHERD_CHECK_PHYS)
 #endif
@@ -166,6 +177,7 @@ public static class Boot
             Diag.MemReport.Before(i);   // SHEPHERD_MEMREPORT=<frame>[:<window>]; no-op when unset
             long ft0 = rstats != null ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             Lifecycle.Frame();
+            if (Runtime.K10Boot.On) Runtime.K10Boot.Tick(i);   // kit #10 boot track: the boot screen ends at the game's first frame (before its present) + the boot anatomy line (no frame change)
             rstats?.Frame(i, ft0, g);
             Diag.K7Prof.Push(Diag.K7Prof.ZDiag);
             Diag.MenuClock.After(i);    // stage 2: m+N frames (relative to the Main Menu scene) for the probes below; no-op unless used
@@ -200,6 +212,7 @@ public static class Boot
             Diag.K7Prof.Pop();
             Runtime.LogDiet.EndFrame(); // kit #8: engine.log's lines of this frame in one write with SHEPHERD_K8_LOG_DIET=batch / ring (opt-in); the default flushes per line (kit #7)
         }
+        if (Runtime.K10Boot.On) Runtime.K10Boot.Finish(last);   // kit #10 boot track: a boot screen still showing ends with the loop
         Diag.VitaHost.Finish(last);     // V6 Stage B: the end checkpoint (selected menu button); no-op unless SHEPHERD_VITA_HOST=1
         rstats?.Summary(g);
         DumpUi();

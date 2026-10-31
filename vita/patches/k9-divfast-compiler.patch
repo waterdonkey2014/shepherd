@@ -1,0 +1,241 @@
+--- a/src/mono/mono/mini/decompose.c
++++ b/src/mono/mono/mini/decompose.c
+@@ -1919,12 +1919,169 @@
+ }
+ 
+ #endif
++
++/*
++ * SHEPHERD-VITA device kit #9, track runtime: E2 divfast (vita/patches/k9-divfast-compiler.patch, vita/notes/kit9-runtime.md).
++ * The Cortex-A9 has no divide instruction, so AOT code's 32-bit and 64-bit / and % are emulated: a call to the opcode's emulation icall
++ * through its managed-to-native wrapper (LMF push / pop, pending-exception check), which exists only so that a zero divisor (and
++ * int.MinValue / -1) can raise DivideByZeroException / OverflowException. SHEPHERD_AOT_DIVFAST=1 (AOT compilation only) puts an inline
++ * guard in front of every emulated division:
++ *   32-bit  if the divisor cannot raise (b != 0; signed also b != -1) -> the SAME emulation function called directly (no wrapper:
++ *           MONO_PATCH_INFO_JIT_ICALL_ADDR resolves to the C function, JIT_ICALL_ID to its wrapper); its own checks never fire there;
++ *           a constant divisor that cannot raise -> the direct call (Mono backend), or (LLVM) the constant division left to LLVM as a
++ *           native sdiv / udiv / srem / urem, which it turns into a multiply-high sequence (no call at all);
++ *   64-bit  (32-bit targets) if both operands are in [0, 2^32) and the divisor is not 0 -> the 32-bit unsigned emulation function on
++ *           the low words, zero-extended (the same quotient / remainder: E2's identity, now without the wrapper and the 64-bit call);
++ *   anything else -> exactly the wrapper call emitted before (the same exceptions at the same place).
++ * Review fix (the kit #9 runtime review of b23b56a): every fast path is ALSO behind the runtime's switch word
++ * mono_shepherd_k9_divfast_flags (vita/patches/k9-divfast-flag.patch: loaded through a JIT_ICALL_ADDR_NOCALL GOT slot, set from the env
++ * file at start-up): the 32-bit / constant fast paths need the word >= 1, the 64-bit one >= 2 -- so SHEPHERD_K9_DIVFAST=0 sends every
++ * division to the wrapper call (kit #8's code path) and SHEPHERD_K9_DIVMOD=0 (E2 off) the 64-bit ones (mono_lldiv & co.: libgcc's routine).
++ * The result is the same in every case; only the wrapper and, for 64-bit values that fit in 32 bits, the 64-bit routine are skipped.
++ * Unset / "0": nothing changes (the compiler writes what it wrote before, byte for byte).
++ */
++static int k9_divfast = -1;
++static int k9_divfast_n32, k9_divfast_n64, k9_divfast_nconst, k9_divfast_nnative;
+ 
++static void
++k9_divfast_report (void)
++{
++	printf ("SHEPHERD kit #9 E2 divfast: %d 32-bit + %d 64-bit emulated division / remainder sites given an inline no-wrapper fast path, %d constant-divisor sites called directly (Mono backend), %d left to LLVM as a native constant division -- each behind the run-time switch word mono_shepherd_k9_divfast_flags (SHEPHERD_K9_DIVFAST / SHEPHERD_K9_DIVMOD in the env file); the wrapper call kept as every site's slow path (SHEPHERD_AOT_DIVFAST; counted when emulated: sites in branches removed afterwards -- e.g. a generic method's typeof switch -- and a method LLVM refused, compiled again by the Mono backend, count too; the code keeps fewer)\n",
++		k9_divfast_n32, k9_divfast_n64, k9_divfast_nconst, k9_divfast_nnative);
++}
++
++static gboolean
++k9_divfast_on (MonoCompile *cfg)
++{
++	if (k9_divfast < 0) {
++		const char *e = g_getenv ("SHEPHERD_AOT_DIVFAST");
++		k9_divfast = (e && *e && strcmp (e, "0") != 0) ? 1 : 0;
++		if (k9_divfast)
++			atexit (k9_divfast_report);
++	}
++	return k9_divfast && cfg->compile_aot;
++}
++
++static MonoInst **
++k9_divfast_args (MonoCompile *cfg, int n, int r0, int r1)
++{
++	MonoInst **a = (MonoInst **)mono_mempool_alloc0 (cfg->mempool, sizeof (MonoInst*) * n);
++	MONO_INST_NEW (cfg, a [0], OP_ARG);
++	a [0]->dreg = r0;
++	MONO_INST_NEW (cfg, a [1], OP_ARG);
++	a [1]->dreg = r1;
++	return a;
++}
++
++/* the run-time switch (review fix): to slow_bb unless mono_shepherd_k9_divfast_flags >= min (1: 32-bit / constant, 2: 64-bit) */
++static void
++k9_divfast_emit_switch (MonoCompile *cfg, int min, MonoBasicBlock *slow_bb)
++{
++	int addr = alloc_preg (cfg), flags = alloc_ireg (cfg);
++	MONO_EMIT_NEW_AOTCONST (cfg, addr, GUINT_TO_POINTER (MONO_JIT_ICALL_mono_shepherd_k9_divfast_flags), MONO_PATCH_INFO_JIT_ICALL_ADDR_NOCALL);
++	MONO_EMIT_NEW_LOAD_MEMBASE_OP (cfg, OP_LOADI4_MEMBASE, flags, addr, 0);
++	MONO_EMIT_NEW_ICOMPARE_IMM (cfg, flags, min);
++	MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_IBLT, slow_bb);
++}
++
++/*
++ * kind 1 = 32-bit guarded, 2 = 64-bit guarded (32-bit targets), 3 = a constant divisor that cannot raise (imm_op / imm: the _IMM form
++ * before mono_decompose_op_imm; under LLVM the fast path is that _IMM instruction, recorded in *native so the scan leaves it to LLVM);
++ * emits into cfg->cbb (the dummy first bblock)
++ */
++static void
++k9_divfast_emit (MonoCompile *cfg, MonoBasicBlock *bb, MonoInst *ins, int op, int kind, MonoJitICallInfo *info, MonoInst **args, int imm_op, gint32 imm, GHashTable **native)
++{
++	MonoBasicBlock *slow_bb, *end_bb;
++	MonoInst *call;
++	int a = args [0]->dreg, b = args [1]->dreg;
++
++	NEW_BBLOCK (cfg, slow_bb);
++	NEW_BBLOCK (cfg, end_bb);
++	if (kind == 1) {
++		k9_divfast_emit_switch (cfg, 1, slow_bb);
++		if (op == OP_IDIV || op == OP_IREM) {
++			int t = alloc_ireg (cfg);
++			/* b in {-1, 0} <=> (unsigned) (b + 1) <= 1 */
++			MONO_EMIT_NEW_BIALU_IMM (cfg, OP_IADD_IMM, t, b, 1);
++			MONO_EMIT_NEW_ICOMPARE_IMM (cfg, t, 1);
++			MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_IBLE_UN, slow_bb);
++		} else {
++			MONO_EMIT_NEW_ICOMPARE_IMM (cfg, b, 0);
++			MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_IBEQ, slow_bb);
++		}
++		call = mini_emit_abs_call (cfg, MONO_PATCH_INFO_JIT_ICALL_ADDR, GUINT_TO_POINTER (mono_jit_icall_info_id (info)), info->sig, k9_divfast_args (cfg, 2, a, b));
++		call->dreg = ins->dreg;
++		k9_divfast_n32++;
++	} else if (kind == 2) {
++		MonoJitICallInfo *info32 = mono_find_jit_opcode_emulation ((op == OP_LDIV || op == OP_LDIV_UN) ? OP_IDIV_UN : OP_IREM_UN);
++		int lo_a, lo_b;
++		k9_divfast_emit_switch (cfg, 2, slow_bb);
++		if (COMPILE_LLVM (cfg)) {
++			int o = alloc_lreg (cfg), c = alloc_lreg (cfg);
++			MONO_EMIT_NEW_BIALU (cfg, OP_LOR, o, a, b);
++			MONO_EMIT_NEW_I8CONST (cfg, c, (gint64) 0xffffffffLL);
++			MONO_EMIT_NEW_BIALU (cfg, OP_LCOMPARE, -1, o, c);
++			MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_LBGT_UN, slow_bb);
++			lo_a = alloc_ireg (cfg);
++			MONO_EMIT_NEW_UNALU (cfg, OP_LCONV_TO_I4, lo_a, a);
++			lo_b = alloc_ireg (cfg);
++			MONO_EMIT_NEW_UNALU (cfg, OP_LCONV_TO_I4, lo_b, b);
++		} else {
++			/* the Mono backend's long vregs are already split (mono_decompose_long_opts ran): use the halves */
++			int h = alloc_ireg (cfg);
++			MONO_EMIT_NEW_BIALU (cfg, OP_IOR, h, MONO_LVREG_MS (a), MONO_LVREG_MS (b));
++			MONO_EMIT_NEW_ICOMPARE_IMM (cfg, h, 0);
++			MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_IBNE_UN, slow_bb);
++			lo_a = MONO_LVREG_LS (a);
++			lo_b = MONO_LVREG_LS (b);
++		}
++		MONO_EMIT_NEW_ICOMPARE_IMM (cfg, lo_b, 0);
++		MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_IBEQ, slow_bb);
++		call = mini_emit_abs_call (cfg, MONO_PATCH_INFO_JIT_ICALL_ADDR, GUINT_TO_POINTER (mono_jit_icall_info_id (info32)), info32->sig, k9_divfast_args (cfg, 2, lo_a, lo_b));
++		if (COMPILE_LLVM (cfg)) {
++			MONO_EMIT_NEW_UNALU (cfg, OP_ICONV_TO_U8, ins->dreg, call->dreg);
++		} else {
++			MONO_EMIT_NEW_UNALU (cfg, OP_MOVE, MONO_LVREG_LS (ins->dreg), call->dreg);
++			MONO_EMIT_NEW_ICONST (cfg, MONO_LVREG_MS (ins->dreg), 0);
++		}
++		k9_divfast_n64++;
++	} else {
++		/* kind 3: the divisor is a constant that cannot raise (neither 0 nor, signed, -1) */
++		k9_divfast_emit_switch (cfg, 1, slow_bb);
++		if (COMPILE_LLVM (cfg)) {
++			/* LLVM gets the constant division itself (OP_I{DIV,REM}[_UN]_IMM -> sdiv / udiv / srem / urem by the constant, mini-llvm.c)
++			 * and turns it into a multiply-high sequence -- no call at all; the same result, nothing can raise */
++			MonoInst *d;
++			MONO_INST_NEW (cfg, d, imm_op);
++			d->dreg = ins->dreg;
++			d->sreg1 = a;
++			d->inst_imm = imm;
++			MONO_ADD_INS (cfg->cbb, d);
++			if (!*native)
++				*native = g_hash_table_new (NULL, NULL);
++			g_hash_table_insert (*native, d, d);
++			k9_divfast_nnative++;
++		} else {
++			call = mini_emit_abs_call (cfg, MONO_PATCH_INFO_JIT_ICALL_ADDR, GUINT_TO_POINTER (mono_jit_icall_info_id (info)), info->sig, k9_divfast_args (cfg, 2, a, b));
++			call->dreg = ins->dreg;
++			k9_divfast_nconst++;
++		}
++	}
++	MONO_EMIT_NEW_BRANCH_BLOCK (cfg, OP_BR, end_bb);
++	/* the slow path: exactly the call emitted before (the wrapper raises the exceptions) */
++	MONO_START_BB (cfg, slow_bb);
++	call = mono_emit_jit_icall_by_info (cfg, bb->real_offset, info, k9_divfast_args (cfg, 2, a, b));
++	call->dreg = ins->dreg;
++	MONO_START_BB (cfg, end_bb);
++}
++
+ void
+ mono_local_emulate_ops (MonoCompile *cfg)
+ {
+ 	MonoBasicBlock *bb;
+ 	gboolean inlined_wrapper = FALSE;
++	GHashTable *k9_native = NULL;   /* SHEPHERD-VITA kit #9 E2 divfast: the native constant divisions it emitted (left to LLVM) */
+ 
+ 	for (bb = cfg->bb_entry; bb; bb = bb->next_bb) {
+ 		MonoInst *ins;
+@@ -1955,10 +2112,46 @@
+ 				MonoInst *call;
+ 				MonoBasicBlock *first_bb;
+ 
++				int k9_op = op_noimm != -1 ? op_noimm : ins->opcode, k9_kind = 0, k9_imm_op = ins->opcode;   /* SHEPHERD-VITA kit #9 E2 divfast (above) */
++				gint32 k9_imm = 0;
++
++				if (k9_native && g_hash_table_lookup (k9_native, ins))
++					continue;   /* SHEPHERD-VITA kit #9 E2 divfast: its own native constant division (a switch's fast path): LLVM's */
++
+ 				/* Create dummy MonoInst's for the arguments */
+ 				g_assert (!info->sig->hasthis);
+ 				g_assert (info->sig->param_count <= MONO_MAX_SRC_REGS);
+ 
++				if (k9_divfast_on (cfg)) {
++					switch (k9_op) {
++					case OP_IDIV:
++					case OP_IREM:
++					case OP_IDIV_UN:
++					case OP_IREM_UN:
++						if (op_noimm != -1) {
++							gint32 imm = (gint32) ins->inst_imm;
++							if (imm != 0 && !((k9_op == OP_IDIV || k9_op == OP_IREM) && imm == -1)) {
++								k9_kind = 3;   /* a constant divisor that cannot raise: the direct call / LLVM's native division */
++								k9_imm = imm;
++							}
++						} else {
++							k9_kind = 1;
++						}
++						break;
++#if TARGET_SIZEOF_VOID_P == 4
++					case OP_LDIV:
++					case OP_LREM:
++					case OP_LDIV_UN:
++					case OP_LREM_UN:
++						if (op_noimm == -1 && mono_find_jit_opcode_emulation ((k9_op == OP_LDIV || k9_op == OP_LDIV_UN) ? OP_IDIV_UN : OP_IREM_UN))
++							k9_kind = 2;
++						break;
++#endif
++					default:
++						break;
++					}
++				}
++
+ 				if (op_noimm != -1)
+ 					mono_decompose_op_imm (cfg, bb, ins);
+ 
+@@ -1978,8 +2171,12 @@
+ 				cfg->cbb = mono_mempool_alloc0 ((cfg)->mempool, sizeof (MonoBasicBlock));
+ 				first_bb = cfg->cbb;
+ 
++				if (k9_kind) {   /* SHEPHERD-VITA kit #9 E2 divfast */
++					k9_divfast_emit (cfg, bb, ins, k9_op, k9_kind, info, args, k9_imm_op, k9_imm, &k9_native);
++				} else {
+ 				call = mono_emit_jit_icall_by_info (cfg, bb->real_offset, info, args);
+ 				call->dreg = ins->dreg;
++				}
+ 
+ 				/* Replace ins with the emitted code and do the necessary bb linking */
+ 				if (cfg->cbb->code || (cfg->cbb != first_bb)) {
+@@ -2006,6 +2203,8 @@
+ 			}
+ 		}
+ 	}
++	if (k9_native)   /* SHEPHERD-VITA kit #9 E2 divfast */
++		g_hash_table_destroy (k9_native);
+ 
+ 	/*
+ 	 * Avoid rerunning these passes by emitting directly the exception checkpoint

@@ -1,0 +1,201 @@
+SHEPHERD-VITA device kit #10, track aot: AOT THAT LEARNS FROM PLAY -- the runtime's record of AOT misses (vita/notes/kit10-aot.md;
+read by vita/tools/k10_learn.py). Applied after the kit #9 runtime patches by vita/toolchain/build-runtime-k9.sh. mini/aot-runtime.c only.
+
+--- a/src/mono/mono/mini/aot-runtime.c
++++ b/src/mono/mono/mini/aot-runtime.c
+@@ -4868,8 +4868,195 @@
+  * NULL otherwise.
+  * On platforms with function pointers, this doesn't return a function pointer.
+  */
++/*
++ * SHEPHERD-VITA device kit #10, track aot (vita/patches/k10-aot-learn.patch, vita/notes/kit10-aot.md): AOT THAT LEARNS FROM PLAY.
++ * Every method the runtime looked for in the AOT images and did not find there -- so the interpreter runs it -- is recorded ONCE: the
++ * non-generic methods of an image that HAS an AOT module (a profile-only owner image of the game-AOT app, the trimmed CoreLib: methods
++ * left out of the build that the play reached anyway), and every generic instance compiled code asked for that no image holds (an
++ * instantiation the AOT compiler could not foresee). The next build on the Mac compiles exactly those (vita/tools/k10_learn.py ->
++ * SHEPHERD_AOT_LEARNED, vita/patches/k10-aot-compiler.patch): the same IL, compiled -- exact. (The interpreter never calls compiled code
++ * for a generic instance itself -- interp.c interp_jit_call_can_be_supported -- so instances only interpreted code reaches are not
++ * misses here: no lookup is made for them.) Wrappers are counted, not recorded (no token names them).
++ * A record is formatted at the miss from plain field reads (image, token, the generic arguments' types: no signature, no lock but this
++ * file's own) into a buffer the host takes and appends to <logs>/aot-learn.tsv (vita/shepherd/k10_aot.inc.c: every 5 s when new
++ * records arrived, and at the end); records never change what runs. SHEPHERD_K10_AOTLEARN=0 (env file) = no record (kit #9).
++ * Line: <flag> TAB <image> TAB <token> TAB <desc> TAB <name>; flag m = a method of an image with an AOT module, g = a generic instance
++ * whose definition's image has one, h = a generic instance of an interpreted image's definition; desc = <asm>!<token>[|C<types>][|M<types>]
++ * with each type P<MonoTypeEnum hex> | T<asm>!<typedef token> | G<asm>!<typedef token><args,...> | Z<elem> | A<rank>:<elem> | R<elem>
++ * (a '?' = a type no build could name: an open / shared parameter, a function pointer; the Mac tool skips those lines).
++ */
++#include <pthread.h>
++
++int mono_shepherd_k10_learn_mode = -1;   /* -1 not read yet, 0 off (SHEPHERD_K10_AOTLEARN=0 / off), 1 on (unset / anything else) */
++volatile int mono_shepherd_k10_learn_records, mono_shepherd_k10_learn_wrappers, mono_shepherd_k10_learn_dropped;
++static pthread_mutex_t k10_learn_mutex = PTHREAD_MUTEX_INITIALIZER;
++static GHashTable *k10_learn_seen;
++static GString *k10_learn_buf;
++#define K10_LEARN_BUF_CAP (256 * 1024)   /* bytes waiting for the host; past it a record is dropped (and counted), to be recorded at a later miss */
++
++static void
++k10_learn_type (GString *s, MonoType *t, int depth)
++{
++	if (!t || depth > 12 || m_type_is_byref (t)) {
++		g_string_append_c (s, '?');
++		return;
++	}
++	switch (t->type) {
++	case MONO_TYPE_BOOLEAN: case MONO_TYPE_CHAR: case MONO_TYPE_I1: case MONO_TYPE_U1: case MONO_TYPE_I2: case MONO_TYPE_U2:
++	case MONO_TYPE_I4: case MONO_TYPE_U4: case MONO_TYPE_I8: case MONO_TYPE_U8: case MONO_TYPE_R4: case MONO_TYPE_R8:
++	case MONO_TYPE_STRING: case MONO_TYPE_OBJECT: case MONO_TYPE_I: case MONO_TYPE_U: case MONO_TYPE_TYPEDBYREF:
++		g_string_append_printf (s, "P%02x", t->type);
++		return;
++	case MONO_TYPE_CLASS: case MONO_TYPE_VALUETYPE: {
++		MonoClass *k = t->data.klass;
++		MonoImage *im = k ? m_class_get_image (k) : NULL;
++		if (!im || !im->assembly_name || mono_class_is_ginst (k) || mono_class_is_gtd (k)) {
++			g_string_append_c (s, '?');
++			return;
++		}
++		g_string_append_printf (s, "T%s!%08x", im->assembly_name, m_class_get_type_token (k));
++		return;
++	}
++	case MONO_TYPE_GENERICINST: {
++		MonoGenericClass *gc = t->data.generic_class;
++		MonoClass *def = gc ? gc->container_class : NULL;
++		MonoImage *im = def ? m_class_get_image (def) : NULL;
++		MonoGenericInst *gi = gc ? gc->context.class_inst : NULL;
++		if (!im || !im->assembly_name || !gi) {
++			g_string_append_c (s, '?');
++			return;
++		}
++		g_string_append_printf (s, "G%s!%08x<", im->assembly_name, m_class_get_type_token (def));
++		for (guint i = 0; i < gi->type_argc; i++) {
++			if (i)
++				g_string_append_c (s, ',');
++			k10_learn_type (s, gi->type_argv [i], depth + 1);
++		}
++		g_string_append_c (s, '>');
++		return;
++	}
++	case MONO_TYPE_SZARRAY:
++		g_string_append_c (s, 'Z');
++		k10_learn_type (s, m_class_get_byval_arg (t->data.klass), depth + 1);
++		return;
++	case MONO_TYPE_ARRAY:
++		g_string_append_printf (s, "A%d:", (int) t->data.array->rank);
++		k10_learn_type (s, m_class_get_byval_arg (t->data.array->eklass), depth + 1);
++		return;
++	case MONO_TYPE_PTR:
++		g_string_append_c (s, 'R');
++		k10_learn_type (s, t->data.type, depth + 1);
++		return;
++	default:   /* VAR / MVAR (an open or shared instance), FNPTR, ... */
++		g_string_append_c (s, '?');
++		return;
++	}
++}
++
++static void
++k10_learn_inst (GString *s, char tag, MonoGenericInst *gi)
++{
++	if (!gi)
++		return;
++	g_string_append_printf (s, "|%c<", tag);
++	for (guint i = 0; i < gi->type_argc; i++) {
++		if (i)
++			g_string_append_c (s, ',');
++		k10_learn_type (s, gi->type_argv [i], 0);
++	}
++	g_string_append_c (s, '>');
++}
++
++static void
++k10_learn_note (MonoMethod *method)
++{
++	if (mono_shepherd_k10_learn_mode < 0) {
++		const char *e = g_getenv ("SHEPHERD_K10_AOTLEARN");
++		mono_shepherd_k10_learn_mode = e && (!strcmp (e, "0") || !strcmp (e, "off")) ? 0 : 1;
++	}
++	if (!mono_shepherd_k10_learn_mode || !method || !method->klass)
++		return;
++	if ((method->iflags & (METHOD_IMPL_ATTRIBUTE_INTERNAL_CALL | METHOD_IMPL_ATTRIBUTE_RUNTIME)) ||
++	    (method->flags & (METHOD_ATTRIBUTE_PINVOKE_IMPL | METHOD_ATTRIBUTE_ABSTRACT)))
++		return;   /* (never compiled code: mono_aot_get_method's own early refusals) */
++	if (method->wrapper_type != MONO_WRAPPER_NONE) {
++		mono_atomic_inc_i32 (&mono_shepherd_k10_learn_wrappers);
++		return;
++	}
++	MonoImage *image = m_class_get_image (method->klass);
++	MonoAotModule *amodule = image ? image->aot_module : NULL;
++	gboolean has_aot = amodule && amodule != AOT_MODULE_NOT_FOUND && !amodule->out_of_date;
++	if (!method->is_inflated && !has_aot)
++		return;   /* an interpreted image's own method: nothing a build of the AOT images would add */
++	if (!image->assembly_name)
++		return;
++	pthread_mutex_lock (&k10_learn_mutex);
++	if (!k10_learn_seen)
++		k10_learn_seen = g_hash_table_new (NULL, NULL);
++	if (g_hash_table_lookup (k10_learn_seen, method)) {
++		pthread_mutex_unlock (&k10_learn_mutex);
++		return;
++	}
++	if (!k10_learn_buf)
++		k10_learn_buf = g_string_sized_new (4096);
++	if (k10_learn_buf->len > K10_LEARN_BUF_CAP) {
++		pthread_mutex_unlock (&k10_learn_mutex);
++		mono_atomic_inc_i32 (&mono_shepherd_k10_learn_dropped);
++		return;
++	}
++	g_hash_table_insert (k10_learn_seen, method, method);
++	guint32 token = mono_method_get_token (method);
++	GString *s = k10_learn_buf;
++	g_string_append_printf (s, "%c\t%s\t%08x\t%s!%08x", method->is_inflated ? (has_aot ? 'g' : 'h') : 'm', image->assembly_name, token, image->assembly_name, token);
++	if (method->is_inflated) {
++		MonoGenericContext *ctx = mono_method_get_context (method);
++		k10_learn_inst (s, 'C', ctx ? ctx->class_inst : NULL);
++		k10_learn_inst (s, 'M', ctx ? ctx->method_inst : NULL);
++	}
++	const char *ns = m_class_get_name_space (method->klass), *cn = m_class_get_name (method->klass);
++	MonoClass *outer = m_class_get_nested_in (method->klass);
++	g_string_append_printf (s, "\t%s%s%s%s%s:%s\n", ns && *ns ? ns : "", ns && *ns ? "." : "", outer ? m_class_get_name (outer) : "", outer ? "/" : "", cn ? cn : "?", method->name ? method->name : "?");
++	mono_atomic_inc_i32 (&mono_shepherd_k10_learn_records);
++	pthread_mutex_unlock (&k10_learn_mutex);
++}
++
++/* the host (vita/shepherd/k10_aot.inc.c): moves up to cap bytes of whole record lines into dst and drops them from the buffer; returns the
++ * bytes moved (dst NULL: the bytes waiting). Any thread (only this file's lock). */
++int
++mono_shepherd_k10_learn_take (char *dst, int cap)
++{
++	pthread_mutex_lock (&k10_learn_mutex);
++	int n = 0;
++	if (k10_learn_buf && k10_learn_buf->len) {
++		if (!dst) {
++			n = (int) k10_learn_buf->len;
++		} else {
++			n = (int) k10_learn_buf->len < cap ? (int) k10_learn_buf->len : cap;
++			while (n > 0 && k10_learn_buf->str [n - 1] != '\n')
++				n--;   /* whole lines only */
++			memcpy (dst, k10_learn_buf->str, n);
++			memmove (k10_learn_buf->str, k10_learn_buf->str + n, k10_learn_buf->len - n);   /* (eglib has no g_string_erase) */
++			g_string_truncate (k10_learn_buf, k10_learn_buf->len - n);
++		}
++	}
++	pthread_mutex_unlock (&k10_learn_mutex);
++	return n;
++}
++
++static gpointer k10_aot_get_method_impl (MonoMethod *method, MonoError *error);
++
++/* (kit #10 aot: the lookup, then the learning record of a miss -- the function below is upstream's mono_aot_get_method, renamed) */
+ gpointer
+ mono_aot_get_method (MonoMethod *method, MonoError *error)
++{
++	gpointer code = k10_aot_get_method_impl (method, error);
++	if (!code && G_UNLIKELY (mono_shepherd_k10_learn_mode != 0))
++		k10_learn_note (method);
++	return code;
++}
++
++static gpointer
++k10_aot_get_method_impl (MonoMethod *method, MonoError *error)
+ {
+ 	MonoClass *klass = method->klass;
+ 	MonoMethod *orig_method = method;

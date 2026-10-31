@@ -1,3 +1,6 @@
+#if !SHEPHERD_EBOOT
+#define SHEPHERD_LOADPROF   // (kit #10: the loader profile's zone calls -- Assets/LoadProf.cs -- are compiled into Mac / engine-tools builds only)
+#endif
 using System.Collections;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -70,9 +73,10 @@ public static class Loader
     {
         if (!LiveIndex) { Live[(f.Name, o.PathId)] = n; return; }
         var e = LiveEntry(f, o); int pos = e != null ? e.LivePos : _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0;
-        if (pos > 0) { _liveOrder[pos - 1] = n; return; }   // an existing key: its value replaced in place (the dictionary's overwrite)
+        if (pos > 0) { var old = _liveOrder[pos - 1]; _liveOrder[pos - 1] = n; if (_shaderPos != null) ShaderTrack(pos, old, n); return; }   // an existing key: its value replaced in place (the dictionary's overwrite)
         if (_liveFreeN > 0) { pos = _liveFree[--_liveFreeN]; _liveOrder[pos - 1] = n; }   // kit #6 integration: a removed key's place, as Dictionary reuses its last freed entry
         else { _liveOrder.Add(n); pos = _liveOrder.Count; }
+        if (_shaderPos != null) ShaderTrack(pos, null, n);
         if (e != null) e.LivePos = pos; else (_liveOther ??= new())[(f.Name, o.PathId)] = pos;
     }
     /// <summary>Kit #6 integration: (f, o)'s record leaves the map as Dictionary.Remove would take it out (the engine track's scene reload,
@@ -85,9 +89,30 @@ public static class Loader
         else { pos = _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0; if (pos > 0) _liveOther[(f.Name, o.PathId)] = 0; }
         if (pos <= 0) { n = null; return false; }
         n = _liveOrder[pos - 1]; _liveOrder[pos - 1] = null;
+        if (_shaderPos != null) ShaderTrack(pos, n, null);
         if (_liveFree == null || _liveFreeN == _liveFree.Length) { var a = new int[Math.Max(64, _liveFreeN * 2)]; if (_liveFree != null) Array.Copy(_liveFree, a, _liveFreeN); _liveFree = a; }
         _liveFree[_liveFreeN++] = pos;
         return true;
+    }
+    /// <summary>Kit #10 E3 (create programs): the places in the live-record list that hold a shader record, ascending -- CreateShader's search
+    /// for the first live shader of a name walked every live record (the menu: ~50,000 per shader asset, 188 shader assets); with the live index
+    /// (SHEPHERD_LIVE_INDEX unset) LiveRecords IS that list in place order, so its first shader of the name is the first one at these places.
+    /// Built on first use from the list, then kept by LiveSet / LiveRemove.</summary>
+    static List<int> _shaderPos;
+    static void ShaderTrack(int pos, NObj old, NObj now)
+    {
+        bool was = old is NShader, isNow = now is NShader;
+        if (was == isNow) return;
+        int i = _shaderPos.BinarySearch(pos);
+        if (was && i >= 0) _shaderPos.RemoveAt(i);
+        if (isNow && i < 0) _shaderPos.Insert(~i, pos);
+    }
+    static List<int> ShaderPositions()
+    {
+        if (_shaderPos != null) return _shaderPos;
+        var l = new List<int>();
+        for (int i = 0; i < _liveOrder.Count; i++) if (_liveOrder[i] is NShader) l.Add(i + 1);
+        return _shaderPos = l;
     }
     /// <summary>Bumped on every write to <see cref="Live"/> (LazyRef's memo key).</summary>
     public static long LiveEpoch;
@@ -105,6 +130,7 @@ public static class Loader
 
     public static void Init()
     {
+        Runtime.K10LoadTrack.Start();   // kit #10 load track: the start line, once (which rows are on; SHEPHERD_K10_LOAD=0: kit #9's loader)
         PackRecorder.Install();   // V3 part 2: SHEPHERD_PACK_RECORD (no-op unset)
         Db = new AssetDatabase(Program.GameData);
         Diet.Init(Db);
@@ -134,31 +160,44 @@ public static class Loader
     {
         if (p.IsNull) return null;
         (SerializedFile f, ObjectInfo o) r;
-        try { r = Db.Resolve(from, p); } catch (Exception e) { Log.Warn($"resolve {p} from {from?.Name}: {e.Message}"); return null; }
+        LoadProf.Enter(LoadProf.Resolve);   // (the profile's calls: compiled out of eboots)
+        try { r = Db.Resolve(from, p); } catch (Exception e) { LoadProf.Exit(LoadProf.Resolve); Log.Warn($"resolve {p} from {from?.Name}: {e.Message}"); return null; }
+        LoadProf.Exit(LoadProf.Resolve);
         return r.f == null || r.o == null ? null : Get(r.f, r.o);
     }
 
     public static NObj Get(SerializedFile f, ObjectInfo o)
     {
         if (LiveTryGet(f, o, out var n)) return n;
-        _depth++;
+        _depth++; int pz = LoadProf.On ? ProfZone(o.ClassId) : 0; LoadProf.Enter(pz);
         try { n = Create(f, o); }
         catch (Exception e) { Log.Exception(e, $"load {ClassIds.Name(o.ClassId)} #{o.PathId} in {f.Name}"); n = null; }
-        finally { _depth--; }
-        if (_depth == 0) Drain();
+        finally { _depth--; LoadProf.Exit(pz); }
+        if (_depth == 0) { Drain(); if (LoadDump.On) LoadDump.Point("load " + f.Name); }
         return n;
     }
 
+    static int ProfZone(int classId) => classId switch { 1 => LoadProf.CreateGo, 4 or 224 => LoadProf.CreateTr, 114 => LoadProf.CreateMono, 213 => LoadProf.CreateSprite, 28 or 84 => LoadProf.CreateTexture,
+        21 => LoadProf.CreateMaterial, 48 => LoadProf.CreateShader, 43 => LoadProf.CreateMesh, 49 => LoadProf.CreateText, 91 => LoadProf.CreateAsset, _ => LoadProf.CreateOther };
     static void Drain()
+    {
+        if (LoadProf.On) { LoadProf.Enter(LoadProf.Drain); try { DrainCore(); } finally { LoadProf.Exit(LoadProf.Drain); } }
+        else DrainCore();
+    }
+    static void DrainCore()
     {
         _depth++;
         try { while (Pending.Count > 0) { var a = Pending.Dequeue(); try { a(); } catch (Exception e) { Log.Exception(e, "populate"); } } }
         finally { _depth--; }
     }
 
-    static T Reg<T>(SerializedFile f, ObjectInfo o, T n) where T : NObj { n.SourceFile = f; n.PathId = o.PathId; LiveSet(f, o, n); LiveEpoch++; Created++; return n; }
+    static T Reg<T>(SerializedFile f, ObjectInfo o, T n) where T : NObj { n.SourceFile = f; n.PathId = o.PathId; LiveSet(f, o, n); LiveEpoch++; Created++; if (LoadDump.On) LoadDump.Created(n); return n; }
 
-    static TypeTreeObject Read(SerializedFile f, ObjectInfo o) => TypeTreeReader.Read(f, o);
+    static TypeTreeObject Read(SerializedFile f, ObjectInfo o)
+    {
+        if (!LoadProf.On) return TypeTreeReader.Read(f, o);
+        LoadProf.Enter(LoadProf.Tree); try { return TypeTreeReader.Read(f, o); } finally { LoadProf.Exit(LoadProf.Tree); }
+    }
     static object V(TypeTreeObject t, string k) => t != null && t.TryGet(k, out var v) ? v : null;
     static int I(TypeTreeObject t, string k, int d = 0) => V(t, k) is { } v ? unchecked((int)Convert.ToInt64(v)) : d;
     static float Fl(TypeTreeObject t, string k, float d = 0) => V(t, k) is { } v ? Convert.ToSingle(v) : d;
@@ -203,16 +242,16 @@ public static class Loader
     // ---------------- GameObject / components ----------------
     static NObj CreateGameObject(SerializedFile f, ObjectInfo o)
     {
-        var d = Read(f, o);
+        var d = Read(f, o); bool fx = TreeIdx.Use(f);
         var go = Reg(f, o, Objects.Bind((GameObject)Objects.NewManaged(typeof(GameObject)), new NGameObject
         {
-            Name = S(d, "m_Name"), ActiveSelf = I(d, "m_IsActive", 1) != 0, Layer = I(d, "m_Layer"), Tag = TagName((uint)I(d, "m_Tag")), Scene = SceneOf(f)
+            Name = TS(d, fx, TreeIdx.Name, "m_Name"), ActiveSelf = TI(d, fx, TreeIdx.IsActive, "m_IsActive", 1) != 0, Layer = TI(d, fx, TreeIdx.Layer, "m_Layer"), Tag = TagName((uint)TI(d, fx, TreeIdx.Tag, "m_Tag")), Scene = SceneOf(f)
         }, SceneOf(f) == 0));
         go.SetSource(d);
-        if (V(d, "m_Component") is IList comps)
+        if (TV(d, fx, TreeIdx.Component, "m_Component") is IList comps)
             foreach (var e in comps)
             {
-                var pp = e is TypeTreeObject ct ? V(ct, "component") : e;
+                var pp = e is TypeTreeObject ct ? TV(ct, fx, TreeIdx.ComponentInner, "component") : e;
                 if (pp is not UPPtr p) continue;
                 if (Get(f, p) is NComponent c && !go.Components.Contains(c))
                 {
@@ -233,7 +272,7 @@ public static class Loader
 
     static void AttachToGameObject(NComponent c, SerializedFile f, TypeTreeObject d)
     {
-        if (V(d, "m_GameObject") is UPPtr gp && !gp.IsNull && Get(f, gp) is NGameObject go)
+        if (TV(d, TreeIdx.Use(f), TreeIdx.GameObject, "m_GameObject") is UPPtr gp && !gp.IsNull && Get(f, gp) is NGameObject go)
         {
             c.Go = go; c.Name = go.Name;
             if (!go.Components.Contains(c)) go.Components.Add(c);
@@ -243,19 +282,19 @@ public static class Loader
 
     static NObj CreateTransform(SerializedFile f, ObjectInfo o)
     {
-        var d = Read(f, o); bool rect = o.ClassId == 224;
+        var d = Read(f, o); bool rect = o.ClassId == 224; bool fx = TreeIdx.Use(f);
         var t = Reg(f, o, Objects.Bind(Objects.NewManaged(rect ? typeof(RectTransform) : typeof(Transform)), new NTransform { IsRect = rect }, SceneOf(f) == 0));
         t.SetSource(d);
-        t.LocalRotation = Q(V(d, "m_LocalRotation")); t.LocalPosition = V3(V(d, "m_LocalPosition")); t.LocalScale = V3(V(d, "m_LocalScale"), Vector3.one);
+        t.LocalRotation = TQ(TV(d, fx, TreeIdx.LocalRotation, "m_LocalRotation"), fx); t.LocalPosition = TV3(TV(d, fx, TreeIdx.LocalPosition, "m_LocalPosition"), fx); t.LocalScale = TV3(TV(d, fx, TreeIdx.LocalScale, "m_LocalScale"), fx, Vector3.one);
         if (rect)
         {
-            t.AnchorMin = V2(V(d, "m_AnchorMin")); t.AnchorMax = V2(V(d, "m_AnchorMax")); t.AnchoredPosition = V2(V(d, "m_AnchoredPosition"));
-            t.SizeDelta = V2(V(d, "m_SizeDelta")); t.Pivot = V2(V(d, "m_Pivot"), new Vector2(0.5f, 0.5f));
+            t.AnchorMin = TV2(TV(d, fx, TreeIdx.AnchorMin, "m_AnchorMin"), fx); t.AnchorMax = TV2(TV(d, fx, TreeIdx.AnchorMax, "m_AnchorMax"), fx); t.AnchoredPosition = TV2(TV(d, fx, TreeIdx.AnchoredPosition, "m_AnchoredPosition"), fx);
+            t.SizeDelta = TV2(TV(d, fx, TreeIdx.SizeDelta, "m_SizeDelta"), fx); t.Pivot = TV2(TV(d, fx, TreeIdx.Pivot, "m_Pivot"), fx, new Vector2(0.5f, 0.5f));
         }
         AttachToGameObject(t, f, d);
         Pending.Enqueue(() =>
         {
-            if (V(d, "m_Children") is IList kids)
+            if (TV(d, fx, TreeIdx.Children, "m_Children") is IList kids)
                 foreach (var k in kids)
                     if (k is UPPtr kp && Get(f, kp) is NTransform ct && ct.Parent != t) { ct.Parent?.Children.Remove(ct); ct.Parent = t; t.Children.Add(ct); }
         });
@@ -287,34 +326,69 @@ public static class Loader
 #endif
     static NObj CreateMonoBehaviour(SerializedFile f, ObjectInfo o)
     {
-        var info = Db.GetMonoScript(f, o);
-        var type = info == null ? null : ScriptType(info.AssemblyName, info.Namespace, info.ClassName);
+        var info = Db.GetMonoScript(f, o); bool fx = TreeIdx.Use(f);
+        Type type;
+        if (fx && info != null) { if (!_scriptTypes.TryGetValue(info, out type)) _scriptTypes[info] = type = ScriptType(info.AssemblyName, info.Namespace, info.ClassName); }   // kit #10: ScriptType's answer per script (the cached MonoScriptInfo)
+        else type = info == null ? null : ScriptType(info.AssemblyName, info.Namespace, info.ClassName);
         if (type == null) { Skipped++; return null; }
         TypeTreeObject d = null; bool fullTree = true;
         try { d = Read(f, o); } catch { fullTree = false; }
-        if (d != null && !HasScriptFields(d, type)) fullTree = false;
+        if (d != null && !(fx ? TreeIdx.HasScriptFields(d, type) : HasScriptFields(d, type))) fullTree = false;
         var managed = Objects.NewManaged(type);
-        bool isComponent = typeof(Component).IsAssignableFrom(type);
-        NObj rec = isComponent ? Lifecycle.NewComponentRecord(type) : new NObj();
+        int tk = fx ? TypeKind(type) : 0;
+        bool isComponent = fx ? (tk & 1) != 0 : typeof(Component).IsAssignableFrom(type);
+        NObj rec = isComponent ? ((tk & 2) != 0 ? new NMono() : Lifecycle.NewComponentRecord(type)) : new NObj();   // (kind bit 2: NewComponentRecord's first case, a MonoBehaviour)
         Reg(f, o, Objects.Bind(managed, rec, !isComponent || SceneOf(f) == 0));
-        rec.Name = d != null ? S(d, "m_Name") : ""; rec.SetSource(d);
+        rec.Name = d != null ? TS(d, fx, TreeIdx.Name, "m_Name") : ""; rec.SetSource(d);
         if (TraceCreate != null && TraceCreate.Contains(type.Name)) TraceCreated(type, rec, f, o);
         if (SpineShare.On && type.Name == "SkeletonDataAsset") SpineShare.Register(managed);   // kit5 L1 prototype (off unless SHEPHERD_SPINE_SHARE=1)
         if (Diag.SpineCats.On && type.Name == "SkeletonDataAsset") Diag.SpineCats.Register(managed);   // kit6 mem L1 measurement (off unless SHEPHERD_SPINE_CATS=1)
-        if (rec is NBehaviour b) b.Enabled = d == null || I(d, "m_Enabled", 1) != 0;
-        Objects.RunCtor(managed);
+        if (rec is NBehaviour b) b.Enabled = d == null || TI(d, fx, TreeIdx.Enabled, "m_Enabled", 1) != 0;
+        if (LoadProf.On) { LoadProf.Enter(LoadProf.GameCtor); try { Objects.RunCtor(managed); } finally { LoadProf.Exit(LoadProf.GameCtor); } }
+        else Objects.RunCtor(managed);
         if (rec is NComponent c && d != null) AttachToGameObject(c, f, d);
         Pending.Enqueue(() =>
         {
-            if (fullTree && d != null) Populate(managed, type, d, f);
-            else PopulateByReflection(managed, type, f, o);
-            if (Profile.Vita) VitaMemory.AfterPopulate(managed, type);   // stage 1: single-language I2 sources
-            if (managed is ISerializationCallbackReceiver scr) { try { scr.OnAfterDeserialize(); } catch (Exception e) { Log.Exception(e, $"OnAfterDeserialize {type.Name}"); } }
-            if (!isComponent && managed is ScriptableObject) Lifecycle.ScriptableAwakeEnable(rec);
+            if (LoadProf.On)
+            {
+                LoadProf.Enter(LoadProf.Populate); long pt0 = LoadProf.Now();
+                try { PopulateStep(managed, type, d, f, o, fullTree); } finally { LoadProf.Exit(LoadProf.Populate); LoadProf.TypeDone(type, pt0); }
+                LoadProf.Enter(LoadProf.GameAfter);
+                try { AfterStep(managed, type, rec, isComponent); } finally { LoadProf.Exit(LoadProf.GameAfter); }
+            }
+            else { PopulateStep(managed, type, d, f, o, fullTree); AfterStep(managed, type, rec, isComponent); }
         });
         return rec;
     }
-    static bool HasScriptFields(TypeTreeObject d, Type t) { var fs = SerRules.Fields(t); return fs.Length == 0 || fs.Any(x => d.TryGet(x.Name, out _)); }
+    static void PopulateStep(object managed, Type type, TypeTreeObject d, SerializedFile f, ObjectInfo o, bool fullTree)
+    {
+        if (fullTree && d != null) { if (!FieldPrograms.TryPopulate(managed, type, d, f)) Populate(managed, type, d, f); }   // kit #10 E3: the field program (SHEPHERD_K10_FIELDPROG=0: Populate)
+        else if (!BinPrograms.TryPopulate(managed, type, f, o)) PopulateByReflection(managed, type, f, o);   // kit #10: the binary field program (SHEPHERD_K10_BINPROG=0: the reflection walk)
+        if (Profile.Vita) VitaMemory.AfterPopulate(managed, type);   // stage 1: single-language I2 sources
+    }
+    static void AfterStep(object managed, Type type, NObj rec, bool isComponent)
+    {
+        if (managed is ISerializationCallbackReceiver scr) { try { scr.OnAfterDeserialize(); } catch (Exception e) { Log.Exception(e, $"OnAfterDeserialize {type.Name}"); } }
+        if (!isComponent && managed is ScriptableObject) Lifecycle.ScriptableAwakeEnable(rec);
+    }
+    internal static bool HasScriptFields(TypeTreeObject d, Type t) { var fs = SerRules.Fields(t); return fs.Length == 0 || fs.Any(x => d.TryGet(x.Name, out _)); }
+    // ---- kit #10 E3, create programs (Assets/TreeIdx.cs): the same reads by place for pack trees, the same answers per type / per script ----
+    static readonly Dictionary<object, Type> _scriptTypes = new(TreeIdx.ByRef);
+    static readonly Dictionary<Type, int> _typeKinds = new();
+    /// <summary>bit 1: typeof(Component).IsAssignableFrom(t); bit 2: Lifecycle.NewComponentRecord's first case (typeof(MonoBehaviour).IsAssignableFrom(t)).</summary>
+    static int TypeKind(Type t)
+    {
+        if (_typeKinds.TryGetValue(t, out var k)) return k;
+        k = (typeof(Component).IsAssignableFrom(t) ? 1 : 0) | (typeof(MonoBehaviour).IsAssignableFrom(t) ? 2 : 0);
+        return _typeKinds[t] = k;
+    }
+    static object TV(TypeTreeObject d, bool fx, int which, string k) => fx ? TreeIdx.V(d, which) : V(d, k);
+    static int TI(TypeTreeObject d, bool fx, int which, string k, int def = 0) { var v = fx ? TreeIdx.V(d, which) : V(d, k); return v is null ? def : v is int i ? i : v is byte b ? b : unchecked((int)Convert.ToInt64(v)); }
+    static string TS(TypeTreeObject d, bool fx, int which, string k) => (fx ? TreeIdx.V(d, which) : V(d, k)) as string ?? "";
+    static float TFl(TypeTreeObject t, int which, float d = 0) => TreeIdx.V(t, which) is { } v ? (v is float x ? x : Convert.ToSingle(v)) : d;
+    static Vector3 TV3(object o, bool fx, Vector3 def = default) => !fx ? V3(o, def) : o is TypeTreeObject t ? new Vector3(TFl(t, TreeIdx.X), TFl(t, TreeIdx.Y), TFl(t, TreeIdx.Z)) : def;
+    static Vector2 TV2(object o, bool fx, Vector2 def = default) => !fx ? V2(o, def) : o is TypeTreeObject t ? new Vector2(TFl(t, TreeIdx.X), TFl(t, TreeIdx.Y)) : def;
+    static Quaternion TQ(object o, bool fx) => !fx ? Q(o) : o is TypeTreeObject t ? M.QNorm(new Quaternion(TFl(t, TreeIdx.X), TFl(t, TreeIdx.Y), TFl(t, TreeIdx.Z), TFl(t, TreeIdx.W, 1))) : Quaternion.identity;
 
     static readonly Dictionary<string, Type> BuiltinTypes = new();
     static Type BuiltinType(int classId)
@@ -338,12 +412,13 @@ public static class Loader
         var type = BuiltinType(o.ClassId);
         if (type == null) { Skipped++; return null; }
         try { d = Read(f, o); } catch { d = null; }
-        bool isComponent = typeof(Component).IsAssignableFrom(type);
+        bool isComponent = TreeIdx.On ? (TypeKind(type) & 1) != 0 : typeof(Component).IsAssignableFrom(type);
         NObj rec = isComponent ? Lifecycle.NewComponentRecord(type) : rec0 ?? new NObj();
         Reg(f, o, Objects.Bind(Objects.NewManaged(type), rec, !isComponent || SceneOf(f) == 0));
-        rec.SetSource(d); rec.Name = d != null ? S(d, "m_Name") : "";
+        bool fx = TreeIdx.Use(f);
+        rec.SetSource(d); rec.Name = d != null ? TS(d, fx, TreeIdx.Name, "m_Name") : "";
         if (d != null) SeedProps(rec, d, f);
-        if (rec is NBehaviour b && d != null) b.Enabled = I(d, "m_Enabled", 1) != 0;
+        if (rec is NBehaviour b && d != null) b.Enabled = TI(d, fx, TreeIdx.Enabled, "m_Enabled", 1) != 0;
         if (rec is NComponent c && d != null) AttachToGameObject(c, f, d);
         return rec;
     }
@@ -359,6 +434,7 @@ public static class Loader
     [ThreadStatic] static PropBag.Pending _seed;
     static void SeedProps(NObj rec, TypeTreeObject d, SerializedFile f)
     {
+        if (SeedPrograms.TrySeed(rec, d, f)) return;   // kit #10 E3: the seed program (SHEPHERD_K10_SEEDPROG=0: the walk below)
         // kit6 mem L4a: the kept keys are collected and set as one (NObj.SetMany: the bag a Set per key would leave, built once)
         var kept = PropBag.Shaped ? (_seed ??= new()) : null;
         if (kept != null) { kept.Clear(); try { SeedProps(rec, d, f, kept); } finally { rec.SetMany(kept); kept.Clear(); } }
@@ -369,7 +445,7 @@ public static class Loader
         foreach (var kv in d)
         {
             var k = kv.Key; if (k is "m_GameObject" or "m_Name" or "m_Script" or "m_ObjectHideFlags" or "m_CorrespondingSourceObject" or "m_PrefabInstance" or "m_PrefabAsset") continue;
-            var name = Renames.TryGetValue(k, out var r) ? r : k.StartsWith("m_") && k.Length > 2 ? char.ToLowerInvariant(k[2]) + k[3..] : k;
+            var name = PropName(k);
             // V3 diet: a bulky value (list/array or unrecognised struct) under a key nothing can read -- no auto getter has
             // that name and no engine code mentions it -- is not seeded (Font.m_FontData, ParticleSystem modules, ...).
             // Scalars, Unity structs and object references are always seeded (animation may target any of them).
@@ -378,8 +454,10 @@ public static class Loader
             if (kept != null) kept.Add(name, Plain(kv.Value, f)); else rec.Set(name, Plain(kv.Value, f));
         }
     }
+    /// <summary>A Unity field name's scripting property name (the auto-prop key).</summary>
+    internal static string PropName(string k) => Renames.TryGetValue(k, out var r) ? r : k.StartsWith("m_") && k.Length > 2 ? char.ToLowerInvariant(k[2]) + k[3..] : k;
     /// <summary>Values Plain() would keep as a list / byte[] / unrecognised TypeTreeObject (the expensive kinds).</summary>
-    static bool IsBulky(object v) => v is System.Collections.IList ||
+    internal static bool IsBulky(object v) => v is System.Collections.IList ||
         v is TypeTreeObject t && t.TypeName is not ("Vector2f" or "Vector3f" or "Vector4f" or "Quaternionf" or "ColorRGBA" or "Rectf" or "BitField" or "AABB");
     /// <summary>Type-tree value -> a plain engine value (Unity structs recognised by shape, PPtrs -> LazyRef, lists recursively).</summary>
     public static object Plain(object v, SerializedFile f)
@@ -617,8 +695,16 @@ public static class Loader
                 var (af, atlas) = AtlasTree(f, ap);
                 var key = V(d, "m_RenderDataKey") as TypeTreeObject;
                 if (atlas != null && V(atlas, "m_RenderDataMap") is IList map)
-                    foreach (var e in map.OfType<TypeTreeObject>())
-                        if (KeyEq(V(e, "first") as TypeTreeObject, key)) { rd = V(e, "second") as TypeTreeObject; f = af; break; }
+                {
+                    if (TreeIdx.On && AtlasIndexOf(atlas, map) is { } ix && AtlasKey(key, ix.GuidKeys) is { } ak)
+                    {   // kit #10: the atlas's render-data map indexed once (the same first matching entry: KeyEq below)
+                        if (ix.Map.TryGetValue(ak, out var hitE)) { rd = V(hitE, "second") as TypeTreeObject; f = af; }
+                        _atlasIndexHits++;
+                    }
+                    else
+                        foreach (var e in map.OfType<TypeTreeObject>())
+                            if (KeyEq(V(e, "first") as TypeTreeObject, key)) { rd = V(e, "second") as TypeTreeObject; f = af; break; }
+                }
             }
             catch (Exception e) { Log.Warn($"sprite atlas for '{sp.Name}': {e.Message}"); }
         }
@@ -647,7 +733,58 @@ public static class Loader
         if (atlas != null) { _atlasCache[_atlasNext] = (rf, ro.PathId, atlas); _atlasNext = (_atlasNext + 1) % _atlasCache.Length; }
         return (rf, atlas);
     }
-    public static void DropTransientCaches() { if (_atlasCache[0].tree != null || _atlasCache[1].tree != null || _atlasCache[2].tree != null || _atlasCache[3].tree != null) Array.Clear(_atlasCache); }
+    public static void DropTransientCaches() { if (_atlasCache[0].tree != null || _atlasCache[1].tree != null || _atlasCache[2].tree != null || _atlasCache[3].tree != null) Array.Clear(_atlasCache); _atlasIndex = default; }
+
+    /// <summary>Kit #10 E3 (create programs): an atlas sprite's render data was found by walking the atlas's m_RenderDataMap with KeyEq for every
+    /// sprite (a run of N sprites of one atlas: ~N^2/2 KeyEq calls, each a LINQ walk). The map is indexed once per atlas tree -- the entry kept
+    /// for a key is the FIRST entry KeyEq would match -- when KeyEq reduces to plain value equality: every entry's key is (GUID struct, integer),
+    /// the GUID structs share one key list (a pack shape) of integer values (no list, no float, no "data" key), and the sprite's own key has
+    /// that same key list; then KeyEq(entry, key) holds iff each GUID value Equals the other (same type, same value) and the integers agree,
+    /// i.e. iff their canonical strings are equal. Anything else walks the map as before. Dropped with the atlas cache.</summary>
+    sealed class AtlasIndex { public TypeTreeObject Atlas; public object GuidKeys; public Dictionary<string, TypeTreeObject> Map; public bool Bad; }
+    static AtlasIndex _atlasIndex; static long _atlasIndexHits, _atlasIndexBuilt;
+    public static string CreateSummary() => !TreeIdx.On ? null : $"[k10] create programs: {_scriptTypes.Count} script types kept, {_typeKinds.Count} type kinds; {_atlasIndexHits} atlas sprites found through {_atlasIndexBuilt} atlas indexes; shader places {(_shaderPos != null ? _shaderPos.Count.ToString() : "unused")}";
+    static AtlasIndex AtlasIndexOf(TypeTreeObject atlas, IList map)
+    {
+        if (_atlasIndex != null && ReferenceEquals(_atlasIndex.Atlas, atlas)) return _atlasIndex.Bad ? null : _atlasIndex;
+        var ix = new AtlasIndex { Atlas = atlas, Map = new Dictionary<string, TypeTreeObject>(StringComparer.Ordinal) };
+        _atlasIndex = ix;
+        foreach (var e in map.OfType<TypeTreeObject>())
+        {
+            if (V(e, "first") is not TypeTreeObject a) continue;   // (KeyEq: false for every key)
+            if (V(a, "first") is not TypeTreeObject g) { ix.Bad = true; break; }
+            if (ix.GuidKeys == null) { ix.GuidKeys = g.Keys; if (g.Keys.Distinct().Count() != g.Keys.Count) { ix.Bad = true; break; } }   // (a repeated key: KeyEq reads its first value only)
+            else if (!ReferenceEquals(ix.GuidKeys, g.Keys)) { ix.Bad = true; break; }
+            var k = AtlasKey(a, ix.GuidKeys);
+            if (k == null) { ix.Bad = true; break; }
+            ix.Map.TryAdd(k, e);   // (the first entry of a key: the walk's first match)
+        }
+        if (ix.GuidKeys == null) ix.Bad = true;
+        _atlasIndexBuilt++;
+        return ix.Bad ? null : ix;
+    }
+    /// <summary>A render-data key (GUID struct, integer) as a string that is equal iff KeyEq holds (see AtlasIndex), or null if the key is not of that form.</summary>
+    static string AtlasKey(TypeTreeObject key, object guidKeys)
+    {
+        if (key == null || V(key, "first") is not TypeTreeObject g || !ReferenceEquals(g.Keys, guidKeys)) return null;
+        var sb = new System.Text.StringBuilder(48);
+        for (int i = 0; i < g.Keys.Count; i++)
+        {
+            if (g.Keys[i] == "data") return null;
+            var v = g.Values[i];
+            switch (v)
+            {
+                case uint u: sb.Append('u').Append(u); break; case int x: sb.Append('i').Append(x); break; case ulong ul: sb.Append('U').Append(ul); break;
+                case long l: sb.Append('l').Append(l); break; case ushort us: sb.Append('s').Append(us); break; case short sh: sb.Append('h').Append(sh); break;
+                case byte b: sb.Append('b').Append(b); break; case sbyte sb8: sb.Append('y').Append(sb8); break; case null: sb.Append('n'); break;
+                default: return null;
+            }
+            sb.Append(',');
+        }
+        var sec = V(key, "second");
+        long sv; switch (sec) { case null: sv = 0; break; case long l2: sv = l2; break; case int i2: sv = i2; break; case uint u2: sv = u2; break; case ulong u3 when u3 <= long.MaxValue: sv = (long)u3; break; default: return null; }
+        return sb.Append('|').Append(sv).ToString();
+    }
 
     static bool KeyEq(TypeTreeObject a, TypeTreeObject b)
     {
@@ -685,7 +822,13 @@ public static class Loader
     {
         string name = "Hidden/Unknown"; Render.ShaderPolicy.State state = null;
         try { var d = Read(f, o); var pf = V(d, "m_ParsedForm") as TypeTreeObject; name = pf != null ? S(pf, "m_Name") : S(d, "m_Name"); state = Render.ShaderPolicy.Parse(pf, name); } catch { }   // polish round 2: + the render state
-        foreach (var n in LiveRecords) if (n is NShader s && s.ShaderName == name) { LiveSet(f, o, s); s.State ??= state; LiveEpoch++; return s; }
+        if (TreeIdx.On && LiveIndex)
+        {   // kit #10: the same first shader of the name, from the shader places (above)
+            NShader hit = null;
+            foreach (var pos in ShaderPositions()) if (_liveOrder[pos - 1] is NShader s0 && s0.ShaderName == name) { hit = s0; break; }
+            if (hit != null) { LiveSet(f, o, hit); hit.State ??= state; LiveEpoch++; if (LoadDump.On) LoadDump.Aliased(f, o, hit); return hit; }   // (the dump: an alias line, kit #10 review)
+        }
+        else foreach (var n in LiveRecords) if (n is NShader s && s.ShaderName == name) { LiveSet(f, o, s); s.State ??= state; LiveEpoch++; if (LoadDump.On) LoadDump.Aliased(f, o, s); return s; }
         return Reg(f, o, Objects.Bind(Objects.NewManaged(typeof(Shader)), new NShader { Name = name, ShaderName = name, State = state }, true));
     }
 
@@ -742,7 +885,13 @@ public static class Loader
     {
         if (!Scenes.All.TryGetValue(handle, out var scene)) return;
         Runtime.Time.LevelLoadAt = Runtime.Time.Now;
-        foreach (var r in scene.Roots.ToArray()) if (r.ActiveSelf && !r.Destroyed) Lifecycle.BecameActive(r);
+        if (LoadProf.On)
+        {
+            LoadProf.Enter(LoadProf.Activate);
+            try { foreach (var r in scene.Roots.ToArray()) if (r.ActiveSelf && !r.Destroyed) Lifecycle.BecameActive(r); }
+            finally { LoadProf.Exit(LoadProf.Activate); LoadProf.SceneDone(scene.Name + " (activated)"); }
+        }
+        else foreach (var r in scene.Roots.ToArray()) if (r.ActiveSelf && !r.Destroyed) Lifecycle.BecameActive(r);
     }
     public static int LoadLevel0(bool activate = true)
     {
@@ -751,6 +900,13 @@ public static class Loader
         return Instantiate(f, "level0", "level0", activate, sw, buildIndex: 0);
     }
     static int Instantiate(SerializedFile file, string name, string path, bool activate, System.Diagnostics.Stopwatch sw, int buildIndex = -1)
+    {
+        if (!LoadProf.On) return InstantiateCore(file, name, path, activate, sw, buildIndex);
+        LoadProf.Enter(LoadProf.Scene);
+        try { return InstantiateCore(file, name, path, activate, sw, buildIndex); }
+        finally { LoadProf.Exit(LoadProf.Scene); LoadProf.SceneDone(name); }
+    }
+    static int InstantiateCore(SerializedFile file, string name, string path, bool activate, System.Diagnostics.Stopwatch sw, int buildIndex)
     {
         if (file?.Pack != null) file = PackAssets.SceneFile(Db, file);   // V3 pack: a scene file the pack holds only partly is a loud miss
         if (K6Engine.SceneReload && file != null && !_sceneFilesLoaded.Add(file.Name)) RetireSceneRecords(file, name);   // kit #6 (b): a reload gets new objects
@@ -763,6 +919,7 @@ public static class Loader
         finally { _depth--; }
         Diag.SimStats.ScenePoint(name, 0);
         Drain();
+        if (LoadDump.On) LoadDump.Point("scene " + name);
         DropTransientCaches();
         Diag.SimStats.ScenePoint(name, 1);
         LoadingScene = 0; _loadingFile = null;
@@ -773,7 +930,13 @@ public static class Loader
         {
             Scenes.ActiveHandle = scene.Handle;
             Runtime.Time.LevelLoadAt = Runtime.Time.Now;
-            foreach (var r in scene.Roots.ToArray()) if (r.ActiveSelf) Lifecycle.BecameActive(r);
+            if (LoadProf.On)
+            {
+                LoadProf.Enter(LoadProf.Activate);
+                try { foreach (var r in scene.Roots.ToArray()) if (r.ActiveSelf) Lifecycle.BecameActive(r); }
+                finally { LoadProf.Exit(LoadProf.Activate); }
+            }
+            else foreach (var r in scene.Roots.ToArray()) if (r.ActiveSelf) Lifecycle.BecameActive(r);
         }
         return scene.Handle;
     }

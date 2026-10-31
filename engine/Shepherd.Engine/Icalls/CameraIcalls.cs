@@ -94,7 +94,8 @@ public static class CameraIcalls
     [Icall("UnityEngine.Camera::get_current")] static object Current(object[] a) => AllCameras().FirstOrDefault()?.Managed;
     [Icall("UnityEngine.Camera::GetAllCamerasCount")] static object Count(object[] a) => AllCameras().Count();
     [Icall("UnityEngine.Camera::GetAllCamerasImpl")] static object All(object[] a) { var arr = (Camera[])a[0]; int i = 0; foreach (var c in AllCameras()) { if (i >= arr.Length) break; arr[i++] = (Camera)c.Managed; } return i; }
-    [Icall("UnityEngine.Camera::get_aspect")] static object GetAspect(object[] a) => Aspect(C(a[0]));
+    [Icall("UnityEngine.Camera::get_aspect")] static object GetAspect(object[] a) { float v = Aspect(C(a[0])); return Runtime.K9Memo.Float(AspectBox, v); }   // (kit #9 memo: one box per value)
+    static readonly Runtime.BoxCache AspectBox = new();
     [Icall("UnityEngine.Camera::set_aspect")] static object SetAspect(object[] a) { C(a[0])?.Set("__aspect", (float)a[1]); return null; }
     [Icall("UnityEngine.Camera::ResetAspect")] static object ResetAspect(object[] a) { C(a[0])?.RemoveProp("__aspect"); return null; }
     [Icall("UnityEngine.Camera::get_pixelWidth")] static object PW(object[] a) => PwBox.Of((int)PixelRectF(C(a[0])).W);   // (menu-speed: a box per changed value)
@@ -171,4 +172,11 @@ public static class CameraIcalls
         a[2] = new Vector2(h * asp, h); return null;
     }
     [Icall("UnityEngine.Camera::SetupCurrent")] static object SetupCur(object[] a) => null;
+
+    // kit #9 track runtime (lever 10; Icalls/K9Reg.cs, Runtime/K9Typed.cs): the typed twins of the hooks above -- the same expressions, no boxes
+    internal static void K9(K9Reg r)
+    {
+        r.Add("UnityEngine.Camera::get_pixelWidth", (Func<object, int>)(s => (int)PixelRectF(C(s)).W), PW);
+        r.Add("UnityEngine.Camera::get_pixelHeight", (Func<object, int>)(s => (int)PixelRectF(C(s)).H), PH);
+    }
 }

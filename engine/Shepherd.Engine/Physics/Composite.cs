@@ -320,7 +320,7 @@ public static class Composite
     /// which a move or turn of the body leaves bit for bit unchanged.</summary>
     static Matrix4x4 RelChain(NTransform t, NTransform tb)
     {
-        if (ReferenceEquals(t, tb)) return Matrix4x4.identity;
+        if (ReferenceEquals(t, tb)) return PG.Identity;   // kit #9 glue math rule
         var r = t.LocalMatrix;
         for (var p = t.Parent; p != null && !ReferenceEquals(p, tb); p = p.Parent) r = M.Mul(p.LocalMatrix, r);
         return r;

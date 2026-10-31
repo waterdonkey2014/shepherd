@@ -1,0 +1,790 @@
+diff -ruN a/src/mono/mono/sgen/sgen-conf.h b/src/mono/mono/sgen/sgen-conf.h
+--- a/src/mono/mono/sgen/sgen-conf.h
++++ b/src/mono/mono/sgen/sgen-conf.h
+@@ -270,4 +270,17 @@
+ #define MONO_VITA_HEAP_LIMIT_HOOK(request, space, allocated, max_heap) do { } while (0)
+ #endif
+ 
++/* SHEPHERD-VITA kit #9 gc (vita/notes/kit9-gc.md; mono-vita.h): the worker-start hook (lever 32) and the per-scene nursery target */
++#ifdef HOST_VITA
++void mono_vita_sgen_worker_started (int index);
++extern volatile size_t sgen_vita_nursery_target;
++/* kit #9 gc review: the host's switches (mono-vita.h mono_vita_gc_set_stats / _set_conc_cap / _set_used_size_mode; every default = kit #8)
++ * and the counters they feed (sgen-gc.c) */
++extern gboolean sgen_vita_stats_on;
++extern gboolean sgen_vita_conc_cap;
++extern int sgen_vita_used_mode;
++void sgen_vita_wait_note (int kind, gint64 ticks);
++void sgen_vita_forced_note (int kind);
++#endif
++
+ #endif
+diff -ruN a/src/mono/mono/sgen/sgen-gc.c b/src/mono/mono/sgen/sgen-gc.c
+--- a/src/mono/mono/sgen/sgen-gc.c
++++ b/src/mono/mono/sgen/sgen-gc.c
+@@ -180,6 +180,9 @@
+ #include <glib.h>
+ 
+ #include "mono/sgen/sgen-gc.h"
++#ifdef HOST_VITA
++#include "mono/utils/mono-vita.h"   /* kit #9 gc: MonoVitaUsedSizeStats */
++#endif
+ #include "mono/sgen/sgen-cardtable.h"
+ #include "mono/sgen/sgen-protocol.h"
+ #include "mono/sgen/sgen-memory-governor.h"
+@@ -246,6 +249,17 @@
+ 
+ static gboolean precleaning_enabled = TRUE;
+ static gboolean dynamic_nursery = FALSE;
++#ifdef HOST_VITA
++static guint32 vita_collections;              /* kit #9 gc: every finished collection (sgen_perform_collection_inner; vita_major_used_size) */
++static MonoVitaPinStats vita_pin;             /* kit #9 gc (STRETCH "pinned-object area", count first): the nursery's pinned objects per collection */
++/* kit #9 gc review: none of the kit #9 counters runs unless the host asks for it (with the env file's GC switches off -- SHEPHERD_K9_GC=0,
++ * or 00099 / 00011's defaults -- every collection runs kit #8's code paths): the pinning / wait / forced-major counters
++ * (mono_vita_gc_set_stats) and the used-size mode (mono_vita_gc_set_used_size_mode: the collection key counts only when a mode needs it) */
++gboolean sgen_vita_stats_on;
++int sgen_vita_used_mode;
++static MonoVitaGcWaitStats vita_waits;
++static volatile gboolean vita_explicit_running;   /* kit #9 gc review: sgen_gc_collect (generation > 0) is running (the GC lock held) */
++#endif
+ static size_t min_nursery_size = 0;
+ static size_t max_nursery_size = 0;
+ 
+@@ -739,6 +753,23 @@
+ 	}
+ 	sgen_client_nursery_objects_pinned (definitely_pinned, count);
+ 	stat_pinned_objects += count;
++#ifdef HOST_VITA
++	/* kit #9 gc: how often a nursery collection keeps objects in the nursery (each one splits its free space into fragments) */
++	if (sgen_vita_stats_on)
++		vita_pin.pinnings++;
++	if (count && sgen_vita_stats_on) {
++		guint64 b = 0;
++		for (int i = 0; i < count; ++i)
++			b += safe_object_get_size ((GCObject *) definitely_pinned [i]);
++		vita_pin.with_pinned++;
++		vita_pin.objects += count;
++		vita_pin.bytes += b;
++		if ((guint32) count > vita_pin.max_objects)
++			vita_pin.max_objects = count;
++		if (b > vita_pin.max_bytes)
++			vita_pin.max_bytes = (guint32) b;
++	}
++#endif
+ 	return count;
+ }
+ 
+@@ -2549,7 +2580,18 @@
+ 	 * The workers will be resumed with a finishing pause context to avoid
+ 	 * additional cardtable and object scanning.
+ 	 */
++#ifdef HOST_VITA
++	{
++		/* kit #9 gc review: the world is stopped and this thread now waits until sgen's worker has run, seen forced_stop and gone idle
++		 * (sgen_thread_pool_idle_wait): how long, on the device's scheduler (the worker shares USER_2 with higher-priority native threads) */
++		gint64 vita_w0 = sgen_vita_stats_on ? mono_100ns_ticks () : 0;
++		sgen_workers_stop_all_workers (GENERATION_OLD);
++		if (sgen_vita_stats_on)
++			sgen_vita_wait_note (0, mono_100ns_ticks () - vita_w0);
++	}
++#else
+ 	sgen_workers_stop_all_workers (GENERATION_OLD);
++#endif
+ 
+ 	SGEN_TV_GETTIME (time_major_conc_collection_end);
+ 	UnlockedAdd64 (&mono_gc_stats.major_gc_time_concurrent, SGEN_TV_ELAPSED (time_major_conc_collection_start, time_major_conc_collection_end));
+@@ -2709,6 +2751,10 @@
+ 
+ 	time_max = MAX (time_max, time_last);
+ 
++#ifdef HOST_VITA
++	if (sgen_vita_used_mode)
++		vita_collections++;   /* kit #9 gc: the used-size cache's first key (every collection, concurrent start / finish included) */
++#endif
+ 	if (stw)
+ 		sgen_restart_world (oldest_generation_collected, forced_serial || !sgen_major_collector.is_concurrent);
+ }
+@@ -3211,7 +3257,18 @@
+ 	LOCK_GC;
+ 	if (generation > 1)
+ 		generation = 1;
++#ifdef HOST_VITA
++	/* kit #9 gc review: an explicit full collection (GC.Collect, whichever way the icall was reached) -- the host books its pause as
++	 * 'x' (mono_vita_gc_explicit_running, read in the profiler's PRE_STOP_WORLD on this thread); only with the counters on */
++	if (sgen_vita_stats_on && generation > 0) {
++		vita_explicit_running = TRUE;
++		vita_waits.explicit_collections++;
++	}
++#endif
+ 	sgen_perform_collection (0, generation, "user request", TRUE, TRUE);
++#ifdef HOST_VITA
++	vita_explicit_running = FALSE;
++#endif
+ 	/* Make sure we don't exceed heap size allowance by promoting */
+ 	if (generation == GENERATION_NURSERY && sgen_need_major_collection (0, &forced))
+ 		sgen_perform_collection (0, GENERATION_OLD, "Minor allowance", forced, TRUE);
+@@ -3224,6 +3281,162 @@
+ 	return mono_atomic_load_i32 (generation == GENERATION_NURSERY ? &mono_gc_stats.minor_gc_count : &mono_gc_stats.major_gc_count);
+ }
+ 
++#ifdef HOST_VITA
++/*
++ * SHEPHERD-VITA kit #9 gc: the sgen per-frame used-size fix (vita/notes/kit9-gc.md; mono-vita.h mono_vita_gc_set_used_size_mode).
++ * GC.GetTotalMemory -> sgen_gc_get_used_size -> major_get_used_size visits every object slot of every major-heap block under the
++ * GC lock (and sweeps the unswept blocks): ~8 ms of vlx time per call at the menu's heap (kit #7 measure), paid by any per-frame caller.
++ * The major heap's allocated slots change only through a collection or an allocation in the major heap (alloc_obj counts every one in
++ * sgen_total_allocated_major); sweeping between collections frees only objects the walk would not count anyway (it sweeps first). So:
++ *   mode 1 (cache)   the previous walk's figure while neither a collection ran nor a byte was allocated in the major heap since -- the
++ *                    same answer by construction;
++ *   mode 2 (counter) sgen's own book: the last sweep's live slots + every major allocation since (the memory governor's figure);
++ *   mode 3 (check)   walk every call AND compare with modes 1 and 2 (the proof run).
++ * Mode 0 (default) = kit #8: walk every call.
++ */
++static guint32 vita_cache_collections;
++static mword vita_cache_allocated;
++static gboolean vita_cache_valid;
++static gint64 vita_cache_major;
++static MonoVitaUsedSizeStats vita_used_stats;
++
++void mono_vita_gc_set_used_size_mode (int mode);
++void mono_vita_gc_get_pin_stats (MonoVitaPinStats *stats);
++
++void
++mono_vita_gc_get_pin_stats (MonoVitaPinStats *stats)
++{
++	*stats = vita_pin;   /* plain copy: counters (approximate while a collection runs) */
++}
++void mono_vita_gc_get_used_size_stats (MonoVitaUsedSizeStats *stats);
++
++void
++mono_vita_gc_set_used_size_mode (int mode)
++{
++	sgen_vita_used_mode = mode >= 0 && mode <= 3 ? mode : 0;
++}
++
++void
++mono_vita_gc_get_used_size_stats (MonoVitaUsedSizeStats *stats)
++{
++	*stats = vita_used_stats;   /* plain copy: counters, read without the GC lock (approximate while a call runs) */
++}
++
++/* kit #9 gc review: the counters' switch (default off = kit #8's code paths), the concurrent collector's cap rule (sgen-memory-governor.c
++ * sgen_need_major_collection; default off = stock sgen), and the waits / forced majors the device run must see (vlx cannot model the
++ * Vita's scheduler: a finishing pause waits until sgen's worker has run and gone idle, a major start or a forced finish waits for the
++ * concurrent sweep -- a starved worker shows here as wait time) */
++void mono_vita_gc_set_stats (int on);
++void mono_vita_gc_set_conc_cap (int on);
++void mono_vita_gc_get_wait_stats (MonoVitaGcWaitStats *stats);
++
++void
++mono_vita_gc_set_stats (int on)
++{
++	sgen_vita_stats_on = on != 0;
++}
++
++void
++mono_vita_gc_set_conc_cap (int on)
++{
++	sgen_vita_conc_cap = on != 0;
++}
++
++void
++mono_vita_gc_get_wait_stats (MonoVitaGcWaitStats *stats)
++{
++	*stats = vita_waits;   /* plain copy: counters (approximate while a collection runs) */
++}
++
++/* kit #9 gc review: TRUE while an explicit full collection runs (sgen_gc_collect; the counters on) -- the host's profiler callback asks
++ * at PRE_STOP_WORLD, on the collecting thread, so the answer belongs to that collection */
++int mono_vita_gc_explicit_running (void);
++int
++mono_vita_gc_explicit_running (void)
++{
++	return vita_explicit_running ? 1 : 0;
++}
++
++/* LOCKING: the GC lock is held (a collection, or the used-size walk); ticks = 100 ns units (mono_100ns_ticks) */
++void
++sgen_vita_wait_note (int kind, gint64 ticks)
++{
++	guint32 us = ticks > 0 ? (guint32) (ticks / 10) : 0;
++	if (kind == 0) {
++		vita_waits.finish_waits++;
++		vita_waits.finish_wait_us += us;
++		if (us > vita_waits.finish_wait_max_us)
++			vita_waits.finish_wait_max_us = us;
++	} else {
++		vita_waits.sweep_waits++;
++		vita_waits.sweep_wait_us += us;
++		if (us > vita_waits.sweep_wait_max_us)
++			vita_waits.sweep_wait_max_us = us;
++	}
++}
++
++/* LOCKING: the GC lock is held. kind 0 = a major sgen forced serial because the heap was over soft-heap-limit (the concurrent collector
++ * only: the serial one runs every major serially anyway), 1 = the cap rule (an allocation max-heap-size refuses) */
++void
++sgen_vita_forced_note (int kind)
++{
++	if (kind == 0)
++		vita_waits.soft_forced++;
++	else
++		vita_waits.cap_forced++;
++}
++
++/* LOCKING: the GC lock is held */
++static gint64
++vita_major_used_size (void)
++{
++	vita_used_stats.calls++;
++	if (sgen_vita_used_mode == 0) {
++		vita_used_stats.walks++;
++		return vita_used_stats.last_walk = sgen_major_collector.get_used_size ();
++	}
++	gboolean same = vita_cache_valid && vita_cache_collections == vita_collections && vita_cache_allocated == sgen_total_allocated_major;
++	/* the counter is the book of a COMPLETE sweep: while a sweep is still running (concurrent sweep) it falls back to the walk */
++	gboolean swept = sgen_major_collector.have_swept ();
++	gint64 counter = (sgen_vita_used_mode >= 2 && swept) ? (gint64) sgen_memgov_vita_major_in_use () : -1;
++	if (sgen_vita_used_mode == 1 && same) {
++		vita_used_stats.cache_hits++;
++		return vita_cache_major;
++	}
++	if (sgen_vita_used_mode == 2 && counter >= 0) {
++		vita_used_stats.cache_hits++;   /* (mode 2: "reused" = answered from the counter, no walk) */
++		vita_used_stats.last_counter = counter;
++		return counter;
++	}
++	/* mode 1 miss, or mode 3: walk */
++	gint64 walked = sgen_major_collector.get_used_size ();
++	vita_used_stats.walks++;
++	vita_used_stats.last_walk = walked;
++	if (sgen_vita_used_mode == 3) {
++		if (same) {
++			vita_used_stats.cache_checked++;
++			if (vita_cache_major != walked)
++				vita_used_stats.cache_mismatches++;
++		}
++		if (counter >= 0)
++			vita_used_stats.counter_checked++;
++		vita_used_stats.last_counter = counter;
++		if (counter >= 0 && counter != walked) {
++			gint64 d = counter > walked ? counter - walked : walked - counter;
++			vita_used_stats.counter_mismatches++;
++			if (d > vita_used_stats.worst_counter_diff)
++				vita_used_stats.worst_counter_diff = d;
++		}
++	}
++	/* the walk may have swept blocks; neither changes the two keys */
++	vita_cache_major = walked;
++	vita_cache_collections = vita_collections;
++	vita_cache_allocated = sgen_total_allocated_major;
++	vita_cache_valid = TRUE;
++	return walked;
++}
++#endif
++
+ size_t
+ sgen_gc_get_used_size (void)
+ {
+@@ -3231,7 +3444,11 @@
+ 	LOCK_GC;
+ 	tot = sgen_los_memory_usage;
+ 	tot += sgen_nursery_section->end_data - sgen_nursery_section->data;
++#ifdef HOST_VITA
++	tot += sgen_vita_used_mode ? vita_major_used_size () : sgen_major_collector.get_used_size ();   /* (mode 0: kit #8's call, no counter) */
++#else
+ 	tot += sgen_major_collector.get_used_size ();
++#endif
+ 	/* FIXME: account for pinned objects */
+ 	UNLOCK_GC;
+ 	return GINT64_TO_SIZE (tot);
+@@ -3649,6 +3866,35 @@
+ 				continue;
+ 			}
+ 
++#ifdef HOST_VITA
++			/* SHEPHERD-VITA kit #9 gc (per-scene nursery sizing): a dynamic nursery with the host's range; the host's per-scene target
++			 * (mono_vita_gc_set_nursery_target) moves it inside [min, max]; the whole max is reserved at start, the nursery starts at min */
++			if (g_str_has_prefix (opt, "vita-nursery-min=") || g_str_has_prefix (opt, "vita-nursery-max=")) {
++				gboolean is_min = g_str_has_prefix (opt, "vita-nursery-min=");
++				size_t val;
++				opt = strchr (opt, '=') + 1;
++				if (*opt && mono_gc_parse_environment_string_extract_number (opt, &val) && !(val & (val - 1)) && val >= SGEN_MAX_NURSERY_WASTE) {
++					if (sgen_minor_collector.is_split) {
++						sgen_env_var_error (MONO_GC_PARAMS_NAME, "Using default value.", "vita-nursery-min/max not supported with split-nursery.");
++						continue;
++					}
++					if (is_min)
++						min_nursery_size = val;
++					else
++						max_nursery_size = val;
++					if (!min_nursery_size)
++						min_nursery_size = SGEN_DEFAULT_NURSERY_MIN_SIZE;
++					if (!max_nursery_size)
++						max_nursery_size = SGEN_DEFAULT_NURSERY_SIZE;
++					if (min_nursery_size > max_nursery_size)
++						min_nursery_size = max_nursery_size;
++					dynamic_nursery = TRUE;
++				} else {
++					sgen_env_var_error (MONO_GC_PARAMS_NAME, "Using default value.", "`vita-nursery-min/max` must be a power of two of at least %d bytes.", SGEN_MAX_NURSERY_WASTE);
++				}
++				continue;
++			}
++#endif
+ 			if (!strcmp (opt, "dynamic-nursery")) {
+ 				if (sgen_minor_collector.is_split)
+ 					sgen_env_var_error (MONO_GC_PARAMS_NAME, "Using default value.",
+diff -ruN a/src/mono/mono/sgen/sgen-marksweep.c b/src/mono/mono/sgen/sgen-marksweep.c
+--- a/src/mono/mono/sgen/sgen-marksweep.c
++++ b/src/mono/mono/sgen/sgen-marksweep.c
+@@ -901,8 +901,19 @@
+ 
+  wait:
+ 	job = sweep_job;
++#ifdef HOST_VITA
++	if (job) {
++		/* kit #9 gc review: a major's start, a forced finish or the used-size walk waits here for sgen's worker to finish the concurrent
++		 * sweep (the GC lock held, often the world stopped): the device's scheduler decides how long */
++		gint64 vita_w0 = sgen_vita_stats_on ? mono_100ns_ticks () : 0;
++		sgen_thread_pool_job_wait (sweep_pool_context, job);
++		if (sgen_vita_stats_on)
++			sgen_vita_wait_note (1, mono_100ns_ticks () - vita_w0);
++	}
++#else
+ 	if (job)
+ 		sgen_thread_pool_job_wait (sweep_pool_context, job);
++#endif
+ 	SGEN_ASSERT (0, !sweep_job, "Why did the sweep job not null itself?");
+ 	SGEN_ASSERT (0, sweep_state == SWEEP_STATE_SWEPT, "How is the sweep job done but we're not swept?");
+ }
+@@ -1521,6 +1532,12 @@
+ static size_t *sweep_slots_available;
+ static size_t *sweep_slots_used;
+ static size_t *sweep_num_blocks;
++#ifdef HOST_VITA
++/* SHEPHERD-VITA kit #9 gc (the used-size counter, sgen-gc.c vita_major_used_size): the live bytes of the blocks with pinned objects, which
++ * sweep_slots_used leaves out -- this sweep's running sum and the last complete sweep's (sgen_memgov_vita_major_in_use adds it) */
++static volatile mword vita_sweep_pinned_used;
++mword sgen_vita_pinned_used_last;
++#endif
+ 
+ static volatile size_t num_major_sections_before_sweep;
+ static volatile size_t num_major_sections_freed_in_sweep;
+@@ -1566,6 +1583,9 @@
+ 
+ 	for (i = 0; i < num_block_obj_sizes; ++i)
+ 		sweep_slots_available [i] = sweep_slots_used [i] = sweep_num_blocks [i] = 0;
++#ifdef HOST_VITA
++	vita_sweep_pinned_used = 0;
++#endif
+ 
+ 	/* clear all the free lists */
+ 	for (i = 0; i < MS_BLOCK_TYPE_MAX; ++i) {
+@@ -1691,6 +1711,10 @@
+ 			sweep_slots_used [obj_size_index] += nused;
+ 			sweep_slots_available [obj_size_index] += count;
+ 		}
++#ifdef HOST_VITA
++		else if (sgen_vita_used_mode >= 2)   /* (kit #9 gc review: only the counter / check modes read it) */
++			SGEN_ATOMIC_ADD_P (vita_sweep_pinned_used, (mword) nused * block->obj_size);
++#endif
+ 
+ 		/*
+ 		 * If there are free slots in the block, add
+@@ -1825,6 +1849,10 @@
+ 
+ 		used_slots_size += sweep_slots_used [i] * block_obj_sizes [i];
+ 	}
++#ifdef HOST_VITA
++	if (sgen_vita_used_mode >= 2)
++		sgen_vita_pinned_used_last = vita_sweep_pinned_used;
++#endif
+ 
+ 	sgen_memgov_major_post_sweep (used_slots_size);
+ 
+@@ -2071,8 +2099,17 @@
+ 		 * sweep_blocks_job set, it means that it has already been run.
+ 		 */
+ 		SgenThreadPoolJob *job = sweep_blocks_job;
++#ifdef HOST_VITA
++		if (job) {
++			gint64 vita_w0 = sgen_vita_stats_on ? mono_100ns_ticks () : 0;   /* (kit #9 gc review: as in major_finish_sweep_checking) */
++			sgen_thread_pool_job_wait (sweep_pool_context, job);
++			if (sgen_vita_stats_on)
++				sgen_vita_wait_note (1, mono_100ns_ticks () - vita_w0);
++		}
++#else
+ 		if (job)
+ 			sgen_thread_pool_job_wait (sweep_pool_context, job);
++#endif
+ 	}
+ 
+ 	if (lazy_sweep && !concurrent_sweep)
+diff -ruN a/src/mono/mono/sgen/sgen-memory-governor.c b/src/mono/mono/sgen/sgen-memory-governor.c
+--- a/src/mono/mono/sgen/sgen-memory-governor.c
++++ b/src/mono/mono/sgen/sgen-memory-governor.c
+@@ -136,6 +136,17 @@
+ 	return sgen_major_collector.get_num_major_sections () * sgen_major_collector.section_size + sgen_los_memory_usage;
+ }
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA kit #9 gc: the major heap in use by sgen's own book (mono_vita_gc_set_used_size_mode 2 / 3): the last sweep's live
++ * slots + every major allocation since the last major collection ended (update_gc_info's major_size_in_use, kept current) */
++extern mword sgen_vita_pinned_used_last;   /* (sgen-marksweep.c: the pinned blocks' live bytes at the last complete sweep) */
++mword
++sgen_memgov_vita_major_in_use (void)
++{
++	return last_used_slots_size + sgen_vita_pinned_used_last + sgen_total_allocated_major - total_allocated_major_end;
++}
++#endif
++
+ static void
+ update_gc_info (mword used_slots_size)
+ {
+@@ -160,6 +171,20 @@
+ 	sgen_gc_info.memory_load_bytes = physical_ram_size ? sgen_gc_info.total_available_memory_bytes - (guint64)(((double)sgen_gc_info.total_available_memory_bytes*mono_determine_physical_ram_available_size ())/physical_ram_size) : 0;
+ }
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA kit #9 gc review (vita/notes/kit9-gc.md "Review fixes"): the concurrent collector's CAP RULE (mono_vita_gc_set_conc_cap;
++ * off by default = stock sgen). The serial collector (kit #8) answers an allocation that max-heap-size would refuse with a full major
++ * whose sweep ends inside the pause (space_needed > available below: a serial major with the serial sweep), and the allocation retries
++ * on the freed blocks. Stock sgen's CONCURRENT collector does not: while a concurrent mark runs it looks only at the heap's growth
++ * (no collection: the allocation is refused), while its concurrent sweep runs it skips the collection (!have_swept), and otherwise it
++ * STARTS a concurrent major, which frees nothing before the retry -- an OutOfMemoryException (or a NULL on the interpreter's unchecked
++ * box paths) where kit #8 recovered. With the rule, such an allocation gets what the serial collector does: a forced serial major (a
++ * running concurrent mark finished first), its sweep completed before the retry (sgen_memgov_major_collection_end, forced). Reached only
++ * with the concurrent collector and only when the allocation does not fit under the cap; part 2 (below, in the mark-in-progress branch)
++ * finishes a running concurrent mark with a forced serial major once the heap is over soft-heap-limit. */
++gboolean sgen_vita_conc_cap;
++#endif
++
+ gboolean
+ sgen_need_major_collection (mword space_needed, gboolean *forced)
+ {
+@@ -167,9 +192,32 @@
+ 
+ 	*forced = FALSE;
+ 
++#ifdef HOST_VITA
++	if (sgen_vita_conc_cap && sgen_major_collector.is_concurrent && space_needed && space_needed > sgen_memgov_available_free_space ()) {
++		*forced = TRUE;
++		if (sgen_vita_stats_on)
++			sgen_vita_forced_note (1);
++		return TRUE;
++	}
++#endif
++
+ 	if (sgen_get_concurrent_collection_in_progress ()) {
+ 		heap_size = get_heap_size ();
+ 
++#ifdef HOST_VITA
++		/* kit #9 gc review, the cap rule (part 2): above soft-heap-limit the serial collector runs a serial major at its next check (see
++		 * the end of this function); stock sgen's concurrent mark ignores the soft limit (only its growth ratio below finishes it) and
++		 * lets the heap run into the cap while it marks -- the next nursery collection's promotions are then refused block by block
++		 * (vlx cap test, max-heap-size 90m / soft 74m: 11,331 refusals and the memory guard's red END, where kit #8 had 3 refusals and
++		 * passed). So with the rule, a mark that meets the soft limit is finished at once by a forced serial major, as the serial
++		 * collector would run one there. */
++		if (sgen_vita_conc_cap && heap_size > soft_heap_limit) {
++			*forced = TRUE;
++			if (sgen_vita_stats_on)
++				sgen_vita_forced_note (0);
++			return TRUE;
++		}
++#endif
+ 		if (heap_size <= major_collection_trigger_size)
+ 			return FALSE;
+ 
+@@ -196,6 +244,12 @@
+ 	heap_size = get_heap_size ();
+ 
+ 	*forced = heap_size > soft_heap_limit;
++#ifdef HOST_VITA
++	/* kit #9 gc review: a major the concurrent collector runs SERIALLY because the heap is over soft-heap-limit (cap - 16 MiB) -- lever 32
++	 * does nothing for it; counted for the K9 GC end line */
++	if (sgen_vita_stats_on && *forced && sgen_major_collector.is_concurrent && heap_size > major_collection_trigger_size)
++		sgen_vita_forced_note (0);
++#endif
+ 	return heap_size > major_collection_trigger_size;
+ }
+ 
+diff -ruN a/src/mono/mono/sgen/sgen-memory-governor.h b/src/mono/mono/sgen/sgen-memory-governor.h
+--- a/src/mono/mono/sgen/sgen-memory-governor.h
++++ b/src/mono/mono/sgen/sgen-memory-governor.h
+@@ -63,5 +63,10 @@
+ /* Error handling */
+ void sgen_assert_memory_alloc (void *ptr, size_t requested_size, const char *assert_description);
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA kit #9 gc: the major heap in use by sgen's own book (sgen-memory-governor.c) */
++mword sgen_memgov_vita_major_in_use (void);
++#endif
++
+ #endif
+ 
+diff -ruN a/src/mono/mono/sgen/sgen-nursery-allocator.c b/src/mono/mono/sgen/sgen-nursery-allocator.c
+--- a/src/mono/mono/sgen/sgen-nursery-allocator.c
++++ b/src/mono/mono/sgen/sgen-nursery-allocator.c
+@@ -915,13 +915,57 @@
+ 	sgen_minor_collector.init_nursery (&mutator_allocator, sgen_nursery_start, sgen_nursery_end);
+ }
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA kit #9 gc (vita/notes/kit9-gc.md): the per-scene nursery size the host learned (0 = sgen's own rule below) */
++volatile size_t sgen_vita_nursery_target;
++
++void mono_vita_gc_set_nursery_target (size_t bytes);
++void mono_vita_gc_get_nursery (size_t *size, size_t *min, size_t *max);
++
+ void
++mono_vita_gc_set_nursery_target (size_t bytes)
++{
++	sgen_vita_nursery_target = bytes;
++}
++
++void
++mono_vita_gc_get_nursery (size_t *size, size_t *min, size_t *max)
++{
++	if (size)
++		*size = sgen_nursery_size;
++	if (min)
++		*min = sgen_nursery_min_size;
++	if (max)
++		*max = sgen_nursery_max_size;
++}
++#endif
++
++void
+ sgen_resize_nursery (gboolean need_shrink)
+ {
+ 	size_t major_size;
+ 
+ 	if (sgen_nursery_min_size == sgen_nursery_max_size)
+ 		return;
++
++#ifdef HOST_VITA
++	{
++		/* the host's per-scene size: straight to it (a power of two in [min, max]); the section grows to cover it, and when the
++		 * nursery shrinks the section keeps its end (it may still hold pinned objects there), as sgen's own halving does */
++		size_t t = sgen_vita_nursery_target;
++		if (t) {
++			size_t want = sgen_nursery_min_size;
++			while (want < t && want < sgen_nursery_max_size)
++				want <<= 1;
++			if (want != sgen_nursery_size) {
++				if ((size_t)(sgen_nursery_section->end_data - sgen_nursery_section->data) < want)
++					sgen_nursery_section->end_data = sgen_nursery_section->data + want;
++				sgen_nursery_size = want;
++			}
++			return;
++		}
++	}
++#endif
+ 
+ 	major_size = sgen_major_collector.get_num_major_sections () * sgen_major_collector.section_size + sgen_los_memory_usage;
+ 	/*
+diff -ruN a/src/mono/mono/sgen/sgen-thread-pool.c b/src/mono/mono/sgen/sgen-thread-pool.c
+--- a/src/mono/mono/sgen/sgen-thread-pool.c
++++ b/src/mono/mono/sgen/sgen-thread-pool.c
+@@ -173,6 +173,10 @@
+ 	void *thread_data = NULL;
+ 
+ 	sgen_client_thread_register_worker ();
++#ifdef HOST_VITA
++	/* SHEPHERD-VITA kit #9 gc (lever 32): the host pins the worker (concurrent mark / sweep) to its core and logs it, before any work */
++	mono_vita_sgen_worker_started (worker_index);
++#endif
+ 
+ 	for (current_context = 0; current_context < contexts_num; current_context++) {
+ 		if (worker_index >= pool_contexts [current_context].num_threads ||
+diff -ruN a/src/mono/mono/utils/mono-mmap-vita.c b/src/mono/mono/utils/mono-mmap-vita.c
+--- a/src/mono/mono/utils/mono-mmap-vita.c
++++ b/src/mono/mono/utils/mono-mmap-vita.c
+@@ -253,6 +253,60 @@
+ 	return VITA_ALLOC_NO_SPACE;
+ }
+ 
++/* ---- device kit #9, track gc, M8: the TWO-ENDED arena (vita/notes/kit9-gc.md; mono_vita_vm_arena_set_policy) ----
++ * The kit #2-#8 device logs show the arena in 23-24 free extents at the menu (largest 20-39 MiB) and a boot peak with the largest free
++ * extent 19 MiB: sgen's major heap takes 512 KiB runs of 16 KiB blocks and frees single blocks, the large-object space takes 1 MiB
++ * sections and whole big objects, all first fit from the bottom, so the two interleave and the freed blocks' holes split the free space.
++ * Policy 1 keeps them apart: the LOS (and, with high_min, other big requests) top-down from the high end, everything else first fit
++ * from the low end as before -- one big free run stays between the two ends. Policy 2 is the mirror image: the major heap's block runs
++ * top-down from the high end, the LOS and everything else first fit from the bottom. Policy 0 = kit #8 exactly (this code is never
++ * reached). */
++static int arena_policy;          /* MONO_VITA_ARENA_FIRST_FIT (0) / _TWO_ENDED (1: the LOS high) / _TWO_ENDED_MAJOR_HIGH (2: the major heap high) */
++static size_t arena_high_min;     /* 0 = only the LOS goes high */
++static guint32 n_high;            /* allocations placed from the high end */
++static guint32 low_top_page;      /* watermark: the highest end page of a low-end allocation */
++static guint32 high_bottom_page;  /* watermark: the lowest start page of a high-end allocation (arena_pages: none yet) */
++
++/* The page index of the HIGHEST range of 'pages' pages aligned to 'align' bytes that fits in a free extent, or VITA_ALLOC_*. */
++static gint64
++arena_alloc_high_locked (guint32 pages, size_t align)
++{
++	for (guint32 i = n_extents; i-- > 0;) {
++		if (extents [i].count < pages)
++			continue;
++		gsize lo = (gsize)(arena_base + (size_t)extents [i].start * VITA_PAGE);
++		gsize hi = (gsize)(arena_base + ((size_t)extents [i].start + extents [i].count) * VITA_PAGE);
++		gsize at = (hi - (size_t)pages * VITA_PAGE) & ~(gsize)(align - 1);
++		if (at < lo)
++			continue;
++		guint32 start = (guint32)((at - (gsize)arena_base) / VITA_PAGE);
++		return extent_carve (i, start, pages) ? start : VITA_ALLOC_TABLE_FULL;
++	}
++	return VITA_ALLOC_NO_SPACE;
++}
++
++void
++mono_vita_vm_arena_set_policy (int policy, size_t high_min)
++{
++	pthread_mutex_lock (&arena_mutex);
++	arena_policy = policy == MONO_VITA_ARENA_TWO_ENDED || policy == MONO_VITA_ARENA_TWO_ENDED_MAJOR_HIGH ? policy : MONO_VITA_ARENA_FIRST_FIT;
++	arena_high_min = high_min;
++	pthread_mutex_unlock (&arena_mutex);
++}
++
++void
++mono_vita_vm_arena_get_ends (unsigned *high_allocs, size_t *low_top, size_t *high_bottom)
++{
++	pthread_mutex_lock (&arena_mutex);
++	if (high_allocs)
++		*high_allocs = n_high;
++	if (low_top)
++		*low_top = (size_t)low_top_page * VITA_PAGE;
++	if (high_bottom)
++		*high_bottom = (size_t)(n_high ? high_bottom_page : arena_pages) * VITA_PAGE;
++	pthread_mutex_unlock (&arena_mutex);
++}
++
+ typedef enum {
+ 	VITA_FREE_OK,
+ 	VITA_FREE_OVERLAP,     /* double free: the range overlaps the free extent in *conflict */
+@@ -322,7 +376,22 @@
+ 	gboolean corrupt = FALSE;
+ 	pthread_mutex_lock (&arena_mutex);
+ 	if (arena_ensure_locked ()) {
+-		gint64 p = arena_alloc_locked ((guint32)(bytes / VITA_PAGE), alignment, (guint8 *)addr, (flags & MONO_MMAP_FIXED) != 0);
++		guint32 np = (guint32)(bytes / VITA_PAGE);
++		/* kit #9 gc, M8: the two-ended policy sends the LOS (+ big non-major requests) to the high end; never a hinted / fixed request */
++		gboolean high = arena_policy != MONO_VITA_ARENA_FIRST_FIT && !addr && !(flags & MONO_MMAP_FIXED) &&
++			(arena_policy == MONO_VITA_ARENA_TWO_ENDED_MAJOR_HIGH ? type == MONO_MEM_ACCOUNT_SGEN_MARKSWEEP
++			 : (type == MONO_MEM_ACCOUNT_SGEN_LOS || (arena_high_min && bytes >= arena_high_min && type != MONO_MEM_ACCOUNT_SGEN_MARKSWEEP)));
++		gint64 p = high ? arena_alloc_high_locked (np, alignment)
++			: arena_alloc_locked (np, alignment, (guint8 *)addr, (flags & MONO_MMAP_FIXED) != 0);
++		if (p >= 0 && arena_policy != MONO_VITA_ARENA_FIRST_FIT) {
++			if (high) {
++				n_high++;
++				if (n_high == 1 || (guint32)p < high_bottom_page)
++					high_bottom_page = (guint32)p;
++			} else if ((guint32)p + np > low_top_page) {
++				low_top_page = (guint32)p + np;
++			}
++		}
+ 		if (p == VITA_ALLOC_TABLE_FULL) {
+ 			corrupt = TRUE;
+ 			fill_stats_locked (&st);
+@@ -442,6 +511,23 @@
+ 	/* No page protection for user memory on the Vita: PROT_NONE guard pages are not enforced
+ 	 * (explicit null checks and stack-limit checks are used instead). */
+ 	return 0;
++}
++
++/* ---- device kit #9, track gc, lever 32: sgen's worker threads (sgen-thread-pool.c thread_func calls mono_vita_sgen_worker_started) */
++static MonoVitaGcThreadFn gc_thread_fn;
++
++void
++mono_vita_set_gc_thread_callback (MonoVitaGcThreadFn fn)
++{
++	gc_thread_fn = fn;
++}
++
++void mono_vita_sgen_worker_started (int index);
++void
++mono_vita_sgen_worker_started (int index)
++{
++	if (gc_thread_fn)
++		gc_thread_fn (index);
+ }
+ 
+ /* ---- V6: max-heap-size refusals (sgen-memory-governor.c, MONO_VITA_HEAP_LIMIT_HOOK) */
+diff -ruN a/src/mono/mono/utils/mono-vita.h b/src/mono/mono/utils/mono-vita.h
+--- a/src/mono/mono/utils/mono-vita.h
++++ b/src/mono/mono/utils/mono-vita.h
+@@ -93,6 +93,75 @@
+  * Default 1 MiB. The Vita has no guard pages: a stack overflow corrupts memory instead of faulting. */
+ MONO_VITA_API void mono_vita_set_default_thread_stack_size (size_t size);
+ 
++/* ---- device kit #9, track gc (vita/notes/kit9-gc.md; vita/patches/k9-gc.patch). Every default below is kit #8's behaviour. ---- */
++/* M8, the two-ended arena. policy 0 (default) = first fit from the low end for every request (kit #8); 1 = sgen's large-object space
++ * (MONO_MEM_ACCOUNT_SGEN_LOS) -- and, when high_min is not 0, any other request of at least high_min bytes that is not a major-heap
++ * block run -- is placed at the HIGHEST address that fits (top-down), everything else first fit from the bottom as before; 2 = the major
++ * heap's block runs from the high end instead (high_min unused), the LOS and the rest first fit. Call before
++ * mono_jit_init* (or at any time: only later requests follow it). Only where memory comes from changes. */
++#define MONO_VITA_ARENA_FIRST_FIT 0
++#define MONO_VITA_ARENA_TWO_ENDED 1
++#define MONO_VITA_ARENA_TWO_ENDED_MAJOR_HIGH 2   /* the mirror image: the major heap's block runs from the high end, the LOS + the rest first fit */
++MONO_VITA_API void mono_vita_vm_arena_set_policy (int policy, size_t high_min);
++/* how many allocations were placed from the high end, and the lowest address the high end has reached (offset from the arena base;
++ * the arena size when none) -- the gap between the two ends is what the largest free extent can be */
++MONO_VITA_API void mono_vita_vm_arena_get_ends (unsigned *high_allocs, size_t *low_top, size_t *high_bottom);
++/* lever 32: called on every sgen worker thread (concurrent mark / sweep) as it starts, before it takes any work (pin it, name it, log it).
++ * Must not call into Mono. index = the worker's index in sgen's thread pool. */
++typedef void (*MonoVitaGcThreadFn) (int index);
++MONO_VITA_API void mono_vita_set_gc_thread_callback (MonoVitaGcThreadFn fn);
++/* the sgen per-frame used-size fix: GC.GetTotalMemory's major-heap figure (sgen_gc_get_used_size).
++ * 0 (default) = walk every major-heap object under the GC lock (kit #8; ~8 ms of vlx time at the menu's heap);
++ * 1 = reuse the previous walk while no collection ran and nothing was allocated in the major heap since (the same answer by construction);
++ * 2 = counter: sgen's own book of the major heap in use (the last sweep's live slots + every major allocation since) -- no walk;
++ * 3 = check: walk every time AND compare with modes 1 and 2 (counts each one's mismatches: the proof run). */
++MONO_VITA_API void mono_vita_gc_set_used_size_mode (int mode);
++typedef struct {
++	unsigned calls, walks, cache_hits;
++	unsigned cache_checked, cache_mismatches;       /* mode 3: calls where mode 1 would have reused, and how many of those differed */
++	unsigned counter_checked, counter_mismatches;   /* mode 3: every call, and how many differed from the walk */
++	int64_t last_walk, last_counter;                /* the last major-heap figures (bytes) */
++	int64_t worst_counter_diff;                     /* mode 3: the largest |counter - walk| seen */
++} MonoVitaUsedSizeStats;
++MONO_VITA_API void mono_vita_gc_get_used_size_stats (MonoVitaUsedSizeStats *stats);
++/* STRETCH "a separate pinned-object area", count first: how often nursery collections keep (pin) objects in the nursery -- every pinned
++ * object splits the nursery's free space into fragments. Counted on every pinning pass over the nursery (each nursery collection, and the
++ * nursery part of each major). */
++typedef struct {
++	unsigned pinnings, with_pinned;      /* pinning passes, and those that pinned at least one object */
++	unsigned objects, max_objects;       /* pinned objects in total, the most in one pass */
++	uint64_t bytes;                      /* their bytes in total */
++	unsigned max_bytes;                  /* the most bytes in one pass */
++} MonoVitaPinStats;
++MONO_VITA_API void mono_vita_gc_get_pin_stats (MonoVitaPinStats *stats);
++/* per-scene nursery sizing (needs a dynamic nursery: MONO_GC_PARAMS vita-nursery-min=/vita-nursery-max=, simple minor collector):
++ * the size sgen moves the nursery to at the end of the next nursery collection (a power of two, clamped to [min, max]); 0 (default) =
++ * sgen's own rule. Callable from any thread at any time (one word; sgen reads it inside a collection). */
++MONO_VITA_API void mono_vita_gc_set_nursery_target (size_t bytes);
++/* the nursery's current size and its [min, max] range (bytes; min == max = a fixed nursery) */
++MONO_VITA_API void mono_vita_gc_get_nursery (size_t *size, size_t *min, size_t *max);
++/* kit #9 gc review. The kit #9 counters (the nursery pinning counts above, the waits and forced majors below) run only after
++ * mono_vita_gc_set_stats (1) (default 0: every collection runs kit #8's code). */
++MONO_VITA_API void mono_vita_gc_set_stats (int on);
++/* the concurrent collector's CAP RULE (default 0 = stock sgen): an allocation that max-heap-size would refuse gets a forced serial
++ * major (a running concurrent mark finished first) whose sweep completes before the allocation retries -- what the serial collector
++ * does at the cap; and a concurrent mark still running when the heap is over soft-heap-limit is finished at once by a forced serial
++ * major (the serial collector runs one there). Stock concurrent sgen instead refuses the allocation during a mark or a concurrent sweep,
++ * or starts a concurrent major that frees nothing in time, and lets a mark run on past the soft limit. No effect with the serial collector. */
++MONO_VITA_API void mono_vita_gc_set_conc_cap (int on);
++typedef struct {
++	unsigned finish_waits, finish_wait_max_us;   /* concurrent finishing pauses: the wait for sgen's worker to stop (world stopped) */
++	uint64_t finish_wait_us;
++	unsigned sweep_waits, sweep_wait_max_us;     /* waits for the concurrent sweep (a major's start, a forced finish, the used-size walk) */
++	uint64_t sweep_wait_us;
++	unsigned soft_forced;                        /* majors the concurrent collector ran serially: the heap over soft-heap-limit */
++	unsigned cap_forced;                         /* majors the cap rule forced (an allocation max-heap-size would refuse) */
++	unsigned explicit_collections;               /* explicit full collections (GC.Collect: sgen_gc_collect with a generation > 0) */
++} MonoVitaGcWaitStats;
++MONO_VITA_API void mono_vita_gc_get_wait_stats (MonoVitaGcWaitStats *stats);
++/* 1 while an explicit full collection runs (the counters on): ask from the profiler's gc_event (PRE_STOP_WORLD) on the collecting thread */
++MONO_VITA_API int mono_vita_gc_explicit_running (void);
++
+ #ifdef __cplusplus
+ }
+ #endif

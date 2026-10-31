@@ -1,4 +1,6 @@
+using Shepherd.Engine.Runtime;
 using Shepherd.Engine.Native;
+using Shepherd.Engine.Runtime;
 using UnityEngine;
 namespace Shepherd.Engine.Impl;
 
@@ -38,7 +40,7 @@ static class MathIcalls
         if (d < -0.999999f) { var ax = Vector3.Cross(Vector3.right, f); if (ax.sqrMagnitude < 1e-6f) ax = Vector3.Cross(Vector3.up, f); a[2] = TransformIcalls.AxisAngle(ax, MathF.PI); return null; }
         var c = Vector3.Cross(f, t); a[2] = M.QNorm(new Quaternion(c.x, c.y, c.z, 1f + d)); return null;
     }
-    [Icall("UnityEngine.Quaternion::Internal_FromEulerRad_Injected")] static object FromEuler(object[] a) { a[1] = M.Euler((Vector3)a[0]); return null; }
+    [Icall("UnityEngine.Quaternion::Internal_FromEulerRad_Injected")] static object FromEuler(object[] a) { a[1] = K9Memo.Box(M.Euler((Vector3)a[0])); return null; }
     [Icall("UnityEngine.Quaternion::Internal_ToEulerRad_Injected")] static object ToEuler(object[] a) { a[1] = M.ToEuler((Quaternion)a[0]); return null; }
     [Icall("UnityEngine.Quaternion::Internal_ToAxisAngleRad_Injected")] static object ToAxisAngle(object[] a)
     {
@@ -88,9 +90,24 @@ static class MathIcalls
     [Icall("UnityEngine.Matrix4x4::ValidTRS_Injected")] static object Valid(object[] a) => true;
     [Icall("UnityEngine.Matrix4x4::CompareApproximately_Injected")] static object Cmp(object[] a) { var x = (Matrix4x4)a[0]; var y = (Matrix4x4)a[1]; float th = (float)a[2]; for (int i = 0; i < 16; i++) if (MathF.Abs(x[i] - y[i]) > th) return false; return true; }
 
-    [Icall("UnityEngine.Mathf::ClosestPowerOfTwo")] static object Cp2(object[] a) { int v = (int)a[0]; if (v <= 0) return 0; int p = 1; while (p < v) p <<= 1; return (p - v) > (v - (p >> 1)) ? p >> 1 : p; }
-    [Icall("UnityEngine.Mathf::NextPowerOfTwo")] static object Np2(object[] a) { int v = (int)a[0]; if (v <= 0) return 0; int p = 1; while (p < v) p <<= 1; return p; }
-    [Icall("UnityEngine.Mathf::IsPowerOfTwo")] static object IsP2(object[] a) { int v = (int)a[0]; return v > 0 && (v & (v - 1)) == 0; }
+    // kit #9 fidelity (stand-in fix "pow2", kit7-tests.md finding 7): Unity's own unsigned bit arithmetic -- the oracle's mathf-native, 300 / 300 on
+    // both players: NextPowerOfTwo smears v - 1 (0 and negatives give 0, above 2^30 int.MinValue), ClosestPowerOfTwo picks prev = next >> 1 when
+    // v - prev < next - v (unsigned; ties to next), IsPowerOfTwo = (v & (v - 1)) == 0 (0 and int.MinValue are true). Kit #8's loops (kept as
+    // the switch-off path) never ended above 2^30 and answered false for 0.
+    static uint Np2U(uint v) { v -= 1; v |= v >> 16; v |= v >> 8; v |= v >> 4; v |= v >> 2; v |= v >> 1; return v + 1; }
+    [Icall("UnityEngine.Mathf::ClosestPowerOfTwo")] static object Cp2(object[] a)
+    {
+        int v = (int)a[0];
+        if (K9Fidelity.FixPow2) { uint u = (uint)v, n = Np2U(u), p0 = n >> 1; return (int)(u - p0 < n - u ? p0 : n); }
+        if (v <= 0) return 0; int p = 1; while (p < v) p <<= 1; return (p - v) > (v - (p >> 1)) ? p >> 1 : p;
+    }
+    [Icall("UnityEngine.Mathf::NextPowerOfTwo")] static object Np2(object[] a)
+    {
+        int v = (int)a[0];
+        if (K9Fidelity.FixPow2) return (int)Np2U((uint)v);
+        if (v <= 0) return 0; int p = 1; while (p < v) p <<= 1; return p;
+    }
+    [Icall("UnityEngine.Mathf::IsPowerOfTwo")] static object IsP2(object[] a) { int v = (int)a[0]; return K9Fidelity.FixPow2 ? (v & (v - 1)) == 0 : v > 0 && (v & (v - 1)) == 0; }
     [Icall("UnityEngine.Mathf::GammaToLinearSpace")] static object G2L(object[] a) { float c = (float)a[0]; return c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f); }
     [Icall("UnityEngine.Mathf::LinearToGammaSpace")] static object L2G(object[] a) { float c = (float)a[0]; return c <= 0.0031308f ? c * 12.92f : 1.055f * MathF.Pow(c, 1f / 2.4f) - 0.055f; }
     [Icall("UnityEngine.Mathf::FloatToHalf")] static object F2H(object[] a) => BitConverter.HalfToUInt16Bits((Half)(float)a[0]);

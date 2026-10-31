@@ -11,6 +11,7 @@ rm -rf $OUT; mkdir -p $OUT/src; : > $OUT/build.txt
 echo "mini tests from $MINI ($(git -C ${MINI:h:h:h:h} log --oneline -1 2>/dev/null | cut -c1-60))" >> $OUT/build.txt
 $MCS -nologo -out:$OUT/conformance.exe $T/Driver.cs >> $OUT/build.txt 2>&1 || { echo "driver did not compile"; cat $OUT/build.txt; exit 1; }
 $MCS -nologo -target:library -out:$OUT/conf-fpmode.dll $T/FpMode.cs >> $OUT/build.txt 2>&1
+$MCS -nologo -target:library -out:$OUT/conf-f2imode.dll $T/F2iMode.cs >> $OUT/build.txt 2>&1   # kit #9 fidelity: float -> integer edge probes
 for f in basic basic-float basic-long basic-math basic-calls objects arrays generics exceptions devirtualization gshared aot-tests mixed ratests unaligned basic-vectors; do
   [[ -f $MINI/$f.cs ]] || continue
   cp $MINI/$f.cs $OUT/src/; sha=$(shasum -a 256 $MINI/$f.cs | cut -c1-16)

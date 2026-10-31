@@ -1,3 +1,6 @@
+#if !SHEPHERD_EBOOT
+#define SHEPHERD_LOADPROF   // (kit #10: the loader profile's zone calls -- Assets/LoadProf.cs -- are compiled into Mac / engine-tools builds only)
+#endif
 using System.Collections;
 using System.Reflection;
 using Shepherd.Engine.Impl;
@@ -14,6 +17,11 @@ public static class Cloner
     public static string[] TraceNames = (Environment.GetEnvironmentVariable("SHEPHERD_TRACE_INST") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries);
     public static UObject Clone(UObject original, Transform parent, bool worldStays, Vector3? pos, Quaternion? rot)
     {
+        if (!Assets.LoadProf.On) return CloneCore(original, parent, worldStays, pos, rot);
+        Assets.LoadProf.Enter(Assets.LoadProf.Clone); try { return CloneCore(original, parent, worldStays, pos, rot); } finally { Assets.LoadProf.Exit(Assets.LoadProf.Clone); }
+    }
+    static UObject CloneCore(UObject original, Transform parent, bool worldStays, Vector3? pos, Quaternion? rot)
+    {
         var n = Objects.Get(original);
         if (n == null) { Log.Error("Instantiate: original is null/destroyed"); return null; }
         if (!_fieldCopyLogged) { _fieldCopyLogged = true; Log.Info(FieldCopy.StartLine()); }   // kit #5 menus: how fields are copied (once)
@@ -21,12 +29,16 @@ public static class Cloner
         if (go == null) return CloneLoose(n);
 
         var map = new Dictionary<NObj, NObj>();
-        var newRoot = CloneTree(go, null, map);
+        NGameObject newRoot;
+        if (Assets.LoadProf.On) { Assets.LoadProf.Enter(Assets.LoadProf.CloneTree); try { newRoot = CloneTree(go, null, map); } finally { Assets.LoadProf.Exit(Assets.LoadProf.CloneTree); } }
+        else newRoot = CloneTree(go, null, map);
         newRoot.Name = go.Name + "(Clone)"; foreach (var c in newRoot.Components) c.Name = newRoot.Name;
         if (TraceNames.Any(t => go.Name.Contains(t)))
             Log.Info($"[instantiate] '{go.Name}' active={go.ActiveSelf} <- {string.Join(" < ", new System.Diagnostics.StackTrace(2).GetFrames().Take(6).Select(f => f.GetMethod()?.DeclaringType?.Name + "." + f.GetMethod()?.Name))}");
         // copy serialized MonoBehaviour fields + property bags now that every clone exists (references can be remapped)
         foreach (var (src, dst) in map) CopyState(src, dst, map);
+        Assets.LoadProf.CloneDone(map.Count);
+        if (Assets.LoadDump.On) { foreach (var (_, dst) in map) Assets.LoadDump.Created(dst); Assets.LoadDump.Point("instantiate " + go.Name); }
 
         var t = newRoot.Transform; var p = Objects.Get<NTransform>(parent);
         Scenes.RemoveRoot(newRoot);
@@ -45,7 +57,11 @@ public static class Cloner
         t.MarkChanged();
         newRoot.ActiveSelf = wasActive;
         Render.SceneRenderer.LayoutNewRootCanvases(newRoot);   // k4-display: Unity lays a new root canvas out before its scripts wake up
-        if (newRoot.ActiveInHierarchy) Lifecycle.BecameActive(newRoot);
+        if (newRoot.ActiveInHierarchy)
+        {
+            if (Assets.LoadProf.On) { Assets.LoadProf.Enter(Assets.LoadProf.CloneActivate); try { Lifecycle.BecameActive(newRoot); } finally { Assets.LoadProf.Exit(Assets.LoadProf.CloneActivate); } }
+            else Lifecycle.BecameActive(newRoot);
+        }
         return map.TryGetValue(n, out var res) ? res.Managed : newRoot.Managed;
     }
 
@@ -68,7 +84,11 @@ public static class Cloner
                 nt.Parent = newParent; newParent?.Children.Add(nt);
             }
             if (rec is NBehaviour b && c is NBehaviour sb) b.Enabled = sb.Enabled;
-            if (rec is NMono) Objects.RunCtor(managed);
+            if (rec is NMono)
+            {
+                if (Assets.LoadProf.On) { Assets.LoadProf.Enter(Assets.LoadProf.GameCtor); try { Objects.RunCtor(managed); } finally { Assets.LoadProf.Exit(Assets.LoadProf.GameCtor); } }
+                else Objects.RunCtor(managed);
+            }
         }
         foreach (var ch in src.Transform.Children) CloneTree(ch.Go, go.Transform, map);
         return go;
@@ -76,7 +96,16 @@ public static class Cloner
 
     static void CopyState(NObj src, NObj dst, Dictionary<NObj, NObj> map)
     {
-        if (src.Props != null) foreach (var kv in PropBag.Entries(src.Props)) dst.Set(kv.Key, Remap(kv.Value, map));
+        if (!Assets.LoadProf.On) { CopyStateCore(src, dst, map); return; }
+        Assets.LoadProf.Enter(Assets.LoadProf.CloneFields); try { CopyStateCore(src, dst, map); } finally { Assets.LoadProf.Exit(Assets.LoadProf.CloneFields); }
+    }
+    static void CopyStateCore(NObj src, NObj dst, Dictionary<NObj, NObj> map)
+    {
+        if (src.Props != null)
+        {
+            if (Assets.LoadProf.On) { Assets.LoadProf.Enter(Assets.LoadProf.CloneProps); try { CopyProps(src, dst, map); } finally { Assets.LoadProf.Exit(Assets.LoadProf.CloneProps); } }
+            else CopyProps(src, dst, map);
+        }
         if (src is Physics.NRigidbody2D or Physics.NCollider2D or Physics.NCollider3D) Physics.PhysRecords.Copy(src, dst);   // physics stage 0 (plan 1.4): the typed state
         if (src is NMono)
         {
@@ -90,6 +119,27 @@ public static class Cloner
             }
         }
     }
+
+    /// <summary>The source's property bag into the clone's: one Set per entry, in order, each value remapped (kit #9). Kit #10 E3
+    /// (SHEPHERD_K10_CLONEPROG): a shaped source bag into a clone without a bag -- every new clone -- is copied in one step: the Set sequence
+    /// from an empty bag reaches the source's own shape (a shape is the one PropShape that With from Empty reaches for its key sequence, and a
+    /// shaped bag's keys are distinct), so the clone's bag is the source's array with each value remapped, PropsVer counted per key as the Sets
+    /// did. Before: each Set copied the growing array (a 34-key renderer bag: 34 arrays).</summary>
+    static void CopyProps(NObj src, NObj dst, Dictionary<NObj, NObj> map)
+    {
+        if (K10LoadTrack.CloneProg && src.Props is object[] s && dst.Props == null && PropBag.Shaped)
+        {
+            var t = (object[])s.Clone();
+            for (int i = 1; i < t.Length; i++) t[i] = Remap(t[i], map);
+            dst.Props = t;
+            if (dst is NRenderer r) r.PropsVer += t.Length - 1;
+            _propsFast++;
+            return;
+        }
+        foreach (var kv in PropBag.Entries(src.Props)) dst.Set(kv.Key, Remap(kv.Value, map));
+    }
+    static long _propsFast, _deepKinds;
+    public static string Summary() => !K10LoadTrack.CloneProg ? null : $"[k10] clone programs: {_propsFast} property bags copied in one step, DeepCopy decisions kept for {_deepKinds} types";
 
     /// <summary>kit3 (sub-menus): what DeepCopy decides per serialized field, decided once per type. Opening the Settings screen clones
     /// 17,787 objects with 117,450 serialized fields (+29,185 nested): DeepCopy ran for every one of them, and asked the runtime type of
@@ -172,11 +222,29 @@ public static class Cloner
         return v;
     }
 
+    /// <summary>Kit #10 E3 (SHEPHERD_K10_CLONEPROG): DeepCopy's chain of tests on a value's runtime type -- built-in value, array (of built-in
+    /// values), List&lt;T&gt; (of built-in values), AnimationCurve / Gradient, not serializable, a pure struct, a class or struct to copy -- answered
+    /// once per type (each test is a function of the type) and kept: one lookup instead of the chain per value.</summary>
+    enum DK : byte { Builtin, ArrayBuiltin, Array, ListBuiltin, List, Shared, Plan }
+    static readonly Dictionary<Type, int> DeepKinds = new();   // (int values: no enum-valued instantiation in the AOT image)
+    static DK DeepKindOf(Type t)
+    {
+        if (DeepKinds.TryGetValue(t, out var ki)) return (DK)ki;
+        DK k;
+        if (SerRules.IsBuiltinValue(t)) k = DK.Builtin;
+        else if (t.IsArray) k = SerRules.IsBuiltinValue(t.GetElementType()) ? DK.ArrayBuiltin : DK.Array;
+        else if (t.IsGenericType && t.GetGenericTypeDefinition() == typeof(List<>)) k = SerRules.IsBuiltinValue(t.GetGenericArguments()[0]) ? DK.ListBuiltin : DK.List;
+        else if (t == typeof(AnimationCurve) || t == typeof(Gradient) || !t.IsSerializable) k = DK.Shared;
+        else k = t.IsValueType && PlanOf(t).Pure ? DK.Builtin : DK.Plan;
+        _deepKinds++;
+        DeepKinds[t] = (int)k; return k;
+    }
     public static object DeepCopy(object v, Type declared, Dictionary<NObj, NObj> map, int depth)
     {
         if (v == null || depth > 12) return v;
         var t = v.GetType();
         if (v is UObject) return Remap(v, map);
+        if (K10LoadTrack.CloneProg) return DeepCopyKind(v, t, DeepKindOf(t), map, depth);
         if (SerRules.IsBuiltinValue(t)) return v;
         if (t.IsArray)
         {
@@ -212,6 +280,34 @@ public static class Cloner
         for (int i = 0; i < fs.Length; i++) { var f = fs[i]; var x = f.GetValue(v); f.SetValue(copy, plan.Deep[i] ? DeepCopy(x, f.FieldType, map, depth + 1) : x); }
         return copy;
     }
+    /// <summary>DeepCopy after its first tests, by the kept decision: each branch is DeepCopy's own code for that kind, line for line.</summary>
+    static object DeepCopyKind(object v, Type t, DK k, Dictionary<NObj, NObj> map, int depth)
+    {
+        switch (k)
+        {
+            case DK.Builtin: case DK.Shared: return v;
+            case DK.ArrayBuiltin: { var src = (Array)v; var arr = Array.CreateInstance(t.GetElementType(), src.Length); Array.Copy(src, arr, src.Length); return arr; }
+            case DK.Array: { var src = (Array)v; var et = t.GetElementType(); var arr = Array.CreateInstance(et, src.Length); for (int i = 0; i < src.Length; i++) arr.SetValue(DeepCopy(src.GetValue(i), et, map, depth + 1), i); return arr; }
+            case DK.ListBuiltin: { var src = (IList)v; var dst = (IList)Activator.CreateInstance(t); foreach (var e in src) dst.Add(e); return dst; }
+            case DK.List: { var src = (IList)v; var dst = (IList)Activator.CreateInstance(t); var et = t.GetGenericArguments()[0]; foreach (var e in src) dst.Add(DeepCopy(e, et, map, depth + 1)); return dst; }
+        }
+        var plan = PlanOf(t);
+        object copy;
+        try
+        {
+            if (t.IsValueType) copy = v;
+            else
+            {
+                if (!plan.CtorLooked) { plan.Ctor = t.GetConstructor(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, Type.EmptyTypes); plan.CtorLooked = true; }
+                copy = plan.Ctor is { } c ? c.Invoke(null) : System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(t);
+            }
+        }
+        catch { return v; }
+        if (plan.Fast != null) { CopyFieldsFast(plan, v, copy, map, depth + 1, false); return copy; }
+        var fs = plan.Fields;
+        for (int i = 0; i < fs.Length; i++) { var f = fs[i]; var x = f.GetValue(v); f.SetValue(copy, plan.Deep[i] ? DeepCopy(x, f.FieldType, map, depth + 1) : x); }
+        return copy;
+    }
 
     static UObject CloneLoose(NObj n)
     {
@@ -224,6 +320,7 @@ public static class Cloner
             foreach (var f in SerRules.Fields(t)) f.SetValue(managed, DeepCopy(f.GetValue(n.Managed), f.FieldType, new(), 0));
             Lifecycle.ScriptableAwakeEnable(rec);
         }
+        if (Assets.LoadDump.On) { Assets.LoadDump.Created(rec); Assets.LoadDump.Point("instantiate-loose " + n.Name); }
         return managed;
     }
 }

@@ -129,8 +129,8 @@ public static unsafe class InputState
     static bool MouseBit(int bits, object button) => bits != 0 && button is int b && (uint)b < 31u && (bits >> b & 1) != 0;
     [Icall("UnityEngine.Input::get_mousePosition_Injected")] static object MPos(object[] a) { a[0] = Mouse; return null; }
     [Icall("UnityEngine.Input::get_mouseScrollDelta_Injected")] static object MScroll(object[] a) { a[0] = Vector2.zero; return null; }
-    [Icall("UnityEngine.Input::get_mousePresent")] static object MPresent(object[] a) => Runtime.Boxes.True;
-    [Icall("UnityEngine.Input::get_touchCount")] static object Touches(object[] a) => IntZero;
+    [Icall("UnityEngine.Input::get_mousePresent")] static object MPresent(object[] a) => Runtime.Boxes.True;   // kit #9 E5 MIRROR: while Shepherd.Hooks.Mirror.On the stub answers Mirror.MousePresent (true) itself (tools/Rewriter/TypedPass.cs) -- change this body and you must change that formula (Runtime/K9Typed.cs binds the mirror only while THIS method is the key's hook; SHEPHERD_K9_MIRROR=check compares them)
+    [Icall("UnityEngine.Input::get_touchCount")] static object Touches(object[] a) => IntZero;   // kit #9 E5 MIRROR: while Shepherd.Hooks.Mirror.On the stub answers Mirror.TouchCount (0) itself (tools/Rewriter/TypedPass.cs) -- change this body and you must change that formula (Runtime/K9Typed.cs binds the mirror only while THIS method is the key's hook; SHEPHERD_K9_MIRROR=check compares them)
     static readonly object IntZero = 0;   // (menu-speed: one int box)
     [Icall("UnityEngine.Input::get_touchSupported")] static object TouchSup(object[] a) => false;
     [Icall("UnityEngine.Input::get_inputString")] static object InStr(object[] a) => "";
@@ -154,4 +154,20 @@ public static unsafe class InputState
     [Icall("UnityEngine.Cursor::get_lockState")] static object CurLock(object[] a) => CursorLockMode.None;
     [Icall("UnityEngine.Cursor::set_lockState")] static object SetCurLock(object[] a) => null;
     [Icall("UnityEngine.Cursor::SetCursor_Injected")] static object SetCursor(object[] a) => null;
+
+    // kit #9 track runtime (lever 10; Icalls/K9Reg.cs, Runtime/K9Typed.cs): the typed twins of the hooks above -- the same expressions (the late
+    // input latch Q() first, as each hook), no object[] / boxes (Box() and the shared bool boxes hold exactly these values).
+    internal static void K9(K9Reg r)
+    {
+        r.Add("UnityEngine.Internal.InputUnsafeUtility::GetAxis", (Func<string, float>)(n => { Q(); return Axis(n); }), GetAxis);
+        r.Add("UnityEngine.Internal.InputUnsafeUtility::GetAxisRaw", (Func<string, float>)(n => { Q(); return AxisRaw(n); }), GetAxisRaw);
+        r.Add("UnityEngine.Internal.InputUnsafeUtility::GetButton", (Func<string, bool>)(n => { Q(); return Button(n, 0); }), GetButton);
+        r.Add("UnityEngine.Input::GetKeyInt", (Func<int, bool>)(k => { Q(); return Held.Contains(k); }), GetKey);   // KeyInt(boxed KeyCode) = its int
+        r.Add("UnityEngine.Input::GetMouseButton", (Func<int, bool>)(b => MouseHeld != 0 && (uint)b < 31u && (MouseHeld >> b & 1) != 0), MB);   // MouseBit(MouseHeld, (object)b)
+    }
+    /// <summary>kit #9 E5 (review fix): the constant mirrors of this class (key, the hook the stub copies, its answer) -- see RenderIcalls.K9MirrorConsts.</summary>
+    internal static IEnumerable<(string key, Shepherd.Hooks.IcallImpl hook, object value)> K9MirrorConsts() => new (string, Shepherd.Hooks.IcallImpl, object)[]
+    {
+        ("UnityEngine.Input::get_mousePresent", MPresent, true), ("UnityEngine.Input::get_touchCount", Touches, 0),
+    };
 }

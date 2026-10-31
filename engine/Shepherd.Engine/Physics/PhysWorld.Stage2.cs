@@ -86,7 +86,7 @@ public static partial class PhysWorld
     /// R(angle) of the body's mirror pose times the body-space affine the shape was built with (R(-theta_b) body2x2 rel, Stage 1's KeyOf).</summary>
     internal static unsafe bool CoreColliderMatrix(NBehaviour b, out Matrix4x4 m)
     {
-        m = Matrix4x4.identity;
+        m = PG.Identity;   // kit #9 glue math rule
         if (!Sim2 || b is not NCollider2D c || c.PS?.Body is not { } pb || pb.Handle <= 0) return false;
         var mir = _core.MirrorAt(pb.Mirror);
         var k = c.PS.Key;

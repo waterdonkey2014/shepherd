@@ -24,6 +24,8 @@ case $APP in
          [[ -f $W/obj/shepherd.suprx && -f $W/obj/module-imports.txt ]] && cp "$W/obj/module-imports.txt" "$R/app0/module/shepherd-imports.txt"
          [[ -f $W/obj/shepherd.suprx ]] && cp "$HERE/../shepherd/module-load-libs.txt" "$R/app0/module/load-libs.txt"
          for d in managed pack data persistent; do cp -Rc "$OWN/$d" "$R/ux0/data/shepherd/" 2>/dev/null || cp -R "$OWN/$d" "$R/ux0/data/shepherd/"; done
+         # kit #9 fidelity review: the owner folder's managed-* folders too (host.c SHEPHERD_K9_FLOATPC=1|<name>: the FloatPc-rewritten DLLs)
+         for d in "$OWN"/managed-*(N/); do cp -Rc "$d" "$R/ux0/data/shepherd/" 2>/dev/null || cp -R "$d" "$R/ux0/data/shepherd/"; done
          cp "$OWN/pad.txt" "$R/ux0/data/shepherd/" ;;
   *) echo "usage: stage.sh hello|menu <root>"; exit 2 ;;
 esac

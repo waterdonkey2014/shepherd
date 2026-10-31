@@ -1,0 +1,6 @@
+# device kit #9 (track jit, vita/notes/kit9-jit.md section 8): ONE lockstep start of Cult of the Lamb (play) -- every run of every
+# compiled piece is checked against the normal way of running the game, on your Vita (slower on purpose). Its J2 line must say
+# MISMATCHES 0 and 'on a first run 0'. Delete this file afterwards. The other apps ignore these lines.
+# (review fix) its own learning list: a lockstep start must never write the list the normal starts read
+SHEPHERD_JIT=lockstep
+SHEPHERD_JIT_LEARN=ux0:data/shepherd/cache/jit-learn-lockstep.tsv

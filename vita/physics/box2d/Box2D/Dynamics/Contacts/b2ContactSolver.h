@@ -1,3 +1,5 @@
+// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): b2ContactSolverDef::island (NULL = stock).
+// Listed in vita/physics/box2d/PATCHES.md (row P3). The original notice follows unchanged.
 /*
 * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
 *
@@ -26,6 +28,7 @@
 class b2Contact;
 class b2Body;
 class b2StackAllocator;
+class b2Island;   // Shepherd P3
 struct b2ContactPositionConstraint;
 
 struct b2VelocityConstraintPoint
@@ -64,6 +67,7 @@ struct b2ContactSolverDef
 	b2Position* positions;
 	b2Velocity* velocities;
 	b2StackAllocator* allocator;
+	const b2Island* island;   // Shepherd P3: NULL = stock (bodies' m_islandIndex); else the island's P3IndexOf (shared static bodies)
 };
 
 class b2ContactSolver

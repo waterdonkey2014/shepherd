@@ -19,7 +19,9 @@ static class Core
     // ---------------- Object ----------------
     [Icall("UnityEngine.Object::CurrentThreadIsMainThread")] static object MainThreadQ(object[] a) => Environment.CurrentManagedThreadId == MainThread;
     [Icall("UnityEngine.Object::GetOffsetOfInstanceIDInCPlusPlusObject")] static object IdOffset(object[] a) => 8;
-    [Icall("UnityEngine.Object::GetName")] static object GetName(object[] a) => Objects.Get(a[0])?.Name ?? "";
+    // kit #9 fidelity (stand-in fix "destroyedname", kit7-tests.md finding 16; the oracle's d-obj-instantiate 300 / 300): the name of a destroyed
+    // object (no live record) throws NullReferenceException in Unity; kit #8 answered "" (the switch-off path)
+    [Icall("UnityEngine.Object::GetName")] static object GetName(object[] a) => Objects.Get(a[0])?.Name ?? (K9Fidelity.FixDestroyedName && a[0] is UnityEngine.Object ? throw new NullReferenceException() : "");
     [Icall("UnityEngine.Object::SetName")] static object SetName(object[] a) { var n = Objects.Get(a[0]); if (n != null) { n.Name = (string)a[1] ?? ""; if (n is NGameObject g) foreach (var c in g.Components) c.Name = n.Name; } return null; }
     [Icall("UnityEngine.Object::ToString")] static object ToStr(object[] a) { var n = Objects.Get(a[0]); return n == null ? "null" : $"{n.Name} ({a[0].GetType().FullName})"; }
     [Icall("UnityEngine.Object::get_hideFlags")] static object GetHide(object[] a) => (HideFlags)(Objects.Get(a[0])?.HideFlags ?? 0);
@@ -40,19 +42,29 @@ static class Core
     static Array FindOfType(Type t, bool includeInactive)
     {
         var list = new List<UObject>();
-        foreach (var n in Objects.Snapshot())
+        // kit #9 engine (SHEPHERD_K9_FIND): the records of type t from their per-type list (Native/Registry.cs ForType: the scan's matches in the
+        // scan's order), the same tests below; =check scans too, returns the scan's answer and counts differences
+        var reg = Runtime.K9Engine.Find && t != null ? Registry.ForType(t, Runtime.Time.FrameCount) : null;
+        if (reg != null && !Runtime.K9Engine.FindCheck) { Runtime.K9Engine.FindIndexed++; foreach (var n in reg.Snapshot()) FindTest(n, t, includeInactive, list); }
+        else
         {
-            if (n.Destroyed || n.Managed is null || !t.IsInstanceOfType(n.Managed)) continue;
-            var go = n as NGameObject ?? (n as NComponent)?.Go;
-            if (go != null && !includeInactive && !go.ActiveInHierarchy) continue;
-            // Unity: scene objects only -- a prefab asset's GameObjects and components (Scene 0: in no scene) are never found. Before,
-            // MonoSingleton<T>.Instance (FindObjectOfType) could return the prefab's component, so the real instance destroyed itself as
-            // a duplicate (polish round 1: UIManager -> its controller/binding templates were never assigned, Settings' Controls tab threw)
-            if (go != null && go.Scene == 0) continue;
-            if (go == null && n.HasSource && !(n.Managed is ScriptableObject)) continue;   // unloaded-ish assets are not "found" by FindObjectsOfType
-            list.Add(n.Managed);
+            foreach (var n in Objects.Snapshot()) FindTest(n, t, includeInactive, list);
+            if (reg != null) { var l2 = new List<UObject>(); foreach (var n in reg.Snapshot()) FindTest(n, t, includeInactive, l2); Runtime.K9Engine.CheckFind(t, list, l2); }
+            Runtime.K9Engine.FindScans++;
         }
         var arr = Array.CreateInstance(t, list.Count); for (int i = 0; i < list.Count; i++) arr.SetValue(list[i], i); return arr;
+    }
+    static void FindTest(NObj n, Type t, bool includeInactive, List<UObject> list)
+    {
+        if (n.Destroyed || n.Managed is null || !t.IsInstanceOfType(n.Managed)) return;
+        var go = n as NGameObject ?? (n as NComponent)?.Go;
+        if (go != null && !includeInactive && !go.ActiveInHierarchy) return;
+        // Unity: scene objects only -- a prefab asset's GameObjects and components (Scene 0: in no scene) are never found. Before,
+        // MonoSingleton<T>.Instance (FindObjectOfType) could return the prefab's component, so the real instance destroyed itself as
+        // a duplicate (polish round 1: UIManager -> its controller/binding templates were never assigned, Settings' Controls tab threw)
+        if (go != null && go.Scene == 0) return;
+        if (go == null && n.HasSource && !(n.Managed is ScriptableObject)) return;   // unloaded-ish assets are not "found" by FindObjectsOfType
+        list.Add(n.Managed);
     }
     [Icall("UnityEngine.Object::FindObjectsOfType")] static object FindOfType(object[] a) => FindOfType((Type)a[0], (bool)a[1]);
     [Icall("UnityEngine.Object::FindObjectsByType")] static object FindByType(object[] a) => FindOfType((Type)a[0], Convert.ToInt32(a[1]) == 1);
@@ -68,17 +80,25 @@ static class Core
     // ---------------- GameObject ----------------
     [Icall("UnityEngine.GameObject::Internal_CreateGameObject")] static object CreateGo(object[] a) { var go = Lifecycle.NewGameObject((GameObject)a[0], (string)a[1]); return null; }
     [Icall("UnityEngine.GameObject::get_transform")] static object GoTransform(object[] a) => N<NGameObject>(a[0])?.Transform.Managed;
-    [Icall("UnityEngine.GameObject::get_activeSelf")] static object ActiveSelf(object[] a) => N<NGameObject>(a[0])?.ActiveSelf ?? false;
+    [Icall("UnityEngine.GameObject::get_activeSelf")] static object ActiveSelf(object[] a) => K9Memo.Bool(N<NGameObject>(a[0])?.ActiveSelf ?? false);
     [Icall("UnityEngine.GameObject::get_active")] static object ActiveOld(object[] a) => N<NGameObject>(a[0])?.ActiveInHierarchy ?? false;
     [Icall("UnityEngine.GameObject::get_activeInHierarchy")] static object ActiveH(object[] a) => Boxes.Of(N<NGameObject>(a[0])?.ActiveInHierarchy ?? false);
     [Icall("UnityEngine.GameObject::SetActive")] static object SetActive(object[] a) { var g = N<NGameObject>(a[0]); if (g != null) Lifecycle.SetActive(g, (bool)a[1]); return null; }
     [Icall("UnityEngine.GameObject::set_active")] static object SetActiveOld(object[] a) => SetActive(a);
     [Icall("UnityEngine.GameObject::SetActiveRecursively")] static object SetActiveRec(object[] a) { var g = N<NGameObject>(a[0]); if (g != null) foreach (var x in Scenes.Walk(g).ToArray()) Lifecycle.SetActive(x, (bool)a[1]); return null; }
     [Icall("UnityEngine.GameObject::get_layer")] static object Layer(object[] a) => N<NGameObject>(a[0])?.Layer ?? 0;
-    [Icall("UnityEngine.GameObject::set_layer")] static object SetLayer(object[] a) { var g = N<NGameObject>(a[0]); if (g != null) { g.Layer = (int)a[1]; if (g.Transform.PhysInterest != 0) Physics.PhysWorld.LayerChanged(g); } return null; }   // physics stage 0: the layer hook
+    // kit #9 fidelity (stand-in fix "layer", kit7-tests.md finding 16; the oracle's d-obj-tags 300 / 300): Unity refuses a layer outside 0..31
+    // (the object keeps its layer; Unity logs "A game object can only be in one layer. The layer needs to be in the range [0...31]")
+    [Icall("UnityEngine.GameObject::set_layer")] static object SetLayer(object[] a)
+    {
+        var g = N<NGameObject>(a[0]); if (g == null) return null;
+        if (K9Fidelity.FixLayer && (uint)(int)a[1] > 31u) { Log.Warn("[k9] GameObject.layer = " + (int)a[1] + " refused on '" + g.Name + "' (Unity: the range is [0...31]; it keeps layer " + g.Layer + ")"); return null; }
+        g.Layer = (int)a[1]; if (g.Transform.PhysInterest != 0) Physics.PhysWorld.LayerChanged(g);   // physics stage 0: the layer hook
+        return null;
+    }
     [Icall("UnityEngine.GameObject::get_tag")] static object Tag(object[] a) => N<NGameObject>(a[0])?.Tag ?? "Untagged";
     [Icall("UnityEngine.GameObject::set_tag")] static object SetTag(object[] a) { var g = N<NGameObject>(a[0]); if (g != null) g.Tag = (string)a[1]; return null; }
-    [Icall("UnityEngine.GameObject::CompareTag")] static object CompareTag(object[] a) => N<NGameObject>(a[0])?.Tag == (string)a[1];
+    [Icall("UnityEngine.GameObject::CompareTag")] static object CompareTag(object[] a) => K9Memo.Bool(N<NGameObject>(a[0])?.Tag == (string)a[1]);
     [Icall("UnityEngine.GameObject::get_isStatic")] static object IsStatic(object[] a) => N<NGameObject>(a[0])?.IsStatic ?? false;
     [Icall("UnityEngine.GameObject::set_isStatic")] static object SetStatic(object[] a) { var g = N<NGameObject>(a[0]); if (g != null) g.IsStatic = (bool)a[1]; return null; }
     [Icall("UnityEngine.GameObject::get_isStaticBatchable")] static object Batchable(object[] a) => false;
@@ -174,7 +194,7 @@ static class Core
             {
                 if (!r.ActiveInHierarchy) continue;
                 if (parts.Length == 1) { var g = FindActiveByName(r.Transform, parts[0]); if (g != null) return g.Managed; }
-                else if (r.Name == parts[0]) { var t = FindPath(r.Transform, parts, 1, true); if (t != null) return t.Go.Managed; }
+                else if (r.Name == parts[0]) { var t = FindPath(r.Transform, parts, 1, !K9Fidelity.FixFind); if (t != null) return t.Go.Managed; }   // kit #9 "find": below an active root a path finds inactive objects too (Unity, d-obj-tags 300 / 300)
             }
         return null;
     }
@@ -200,8 +220,10 @@ static class Core
         return null;
     }
     // kit #8 speed: the tag index (Runtime/K8Speed.cs TagIndex: the walk's answers in the walk's order; SHEPHERD_K8_TAGS=0 = the walk below)
-    [Icall("UnityEngine.GameObject::FindGameObjectWithTag")] static object FindTag(object[] a) => K8Speed.Tags ? TagIndex.FindOne((string)a[0]) : Scenes.AllGameObjects().FirstOrDefault(g => g.Tag == (string)a[0] && g.ActiveInHierarchy)?.Managed;
-    [Icall("UnityEngine.GameObject::FindGameObjectsWithTag")] static object FindTags(object[] a) => K8Speed.Tags ? TagIndex.FindAll((string)a[0]) : Scenes.AllGameObjects().Where(g => g.Tag == (string)a[0] && g.ActiveInHierarchy).Select(g => (GameObject)g.Managed).ToArray();
+    // kit #9 fidelity (stand-in fix "find"): Unity keeps no list of untagged objects -- FindWithTag("Untagged") is null (the oracle's d-obj-tags:
+    // 36 / 36 such cases; kit #8 returned the first untagged object) and FindGameObjectsWithTag("Untagged") is empty
+    [Icall("UnityEngine.GameObject::FindGameObjectWithTag")] static object FindTag(object[] a) => K9Fidelity.FixFind && (string)a[0] == "Untagged" ? null : K8Speed.Tags ? TagIndex.FindOne((string)a[0]) : Scenes.AllGameObjects().FirstOrDefault(g => g.Tag == (string)a[0] && g.ActiveInHierarchy)?.Managed;
+    [Icall("UnityEngine.GameObject::FindGameObjectsWithTag")] static object FindTags(object[] a) => K9Fidelity.FixFind && (string)a[0] == "Untagged" ? Array.Empty<GameObject>() : K8Speed.Tags ? TagIndex.FindAll((string)a[0]) : Scenes.AllGameObjects().Where(g => g.Tag == (string)a[0] && g.ActiveInHierarchy).Select(g => (GameObject)g.Managed).ToArray();
     /// <summary>Like Unity: each call makes a new GameObject + MeshFilter + MeshRenderer, but they reference SHARED built-in assets
     /// (one "Quad"/"Cube"/... Mesh per primitive type, one default Material) instead of allocating a Mesh and a Material per call.
     /// Beffio Stylizer.Update destroys and rebuilds its Pixelator (+ CreatePrimitive quad) every frame when Pixelate is off, which
@@ -276,8 +298,9 @@ static class Core
                 if (c is not NMono m || m.Destroyed) continue;
                 for (var t = m.Managed.GetType(); t != null && t != typeof(MonoBehaviour); t = t.BaseType)
                 {
-                    var mi = t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).FirstOrDefault(q => q.Name == method && q.GetParameters().Length <= 1);
-                    if (mi == null) continue;
+                    // kit #9 engine (SHEPHERD_K9_MEMO): the walk's answer for the concrete type, memoized (Runtime/K9Memo.cs) -- one pass of this loop
+                    var mi = K9Memo.On ? K9Memo.SendTarget(t, method) : t.GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly).FirstOrDefault(q => q.Name == method && q.GetParameters().Length <= 1);
+                    if (mi == null) { if (K9Memo.On) break; continue; }
                     any = true;
                     try
                     {
@@ -317,7 +340,7 @@ static class Core
     // ---------------- Behaviour / MonoBehaviour ----------------
     [Icall("UnityEngine.Behaviour::get_enabled")] static object Enabled(object[] a) => Boxes.Of(Objects.Get(a[0]) is NBehaviour b ? b.Enabled : (Objects.Get(a[0])?.Get("enabled") as bool? ?? true));
     [Icall("UnityEngine.Behaviour::set_enabled")] static object SetEnabled(object[] a) { if (Objects.Get(a[0]) is NBehaviour b) Lifecycle.SetEnabled(b, (bool)a[1]); return null; }
-    [Icall("UnityEngine.Behaviour::get_isActiveAndEnabled")] static object ActEn(object[] a) => Objects.Get(a[0]) is NBehaviour b && b.Enabled && b.Go != null && b.Go.ActiveInHierarchy && (b is not NMono m || m.IsEnabledCalled);
+    [Icall("UnityEngine.Behaviour::get_isActiveAndEnabled")] static object ActEn(object[] a) => K9Memo.Bool(Objects.Get(a[0]) is NBehaviour b && b.Enabled && b.Go != null && b.Go.ActiveInHierarchy && (b is not NMono m || m.IsEnabledCalled));
     [Icall("UnityEngine.MonoBehaviour::StartCoroutineManaged2")] static object StartCo(object[] a)
     {
         var m = N<NMono>(a[0]); if (m == null) return null;
@@ -361,4 +384,18 @@ static class Core
     [Icall("UnityEngine.ScriptableObject::CreateScriptableObjectInstanceFromName")] static object CreateSOName(object[] a) => CreateSOType(new object[] { TypeByName((string)a[0]), true });
     [Icall("UnityEngine.ScriptableObject::ResetAndApplyDefaultInstances")] static object ResetSO(object[] a) => null;
     [Icall("UnityEngine.ScriptableObject::SetDirty")] static object SODirty(object[] a) => null;
+
+    // kit #9 track runtime (lever 10 + D6; Icalls/K9Reg.cs, Runtime/K9Typed.cs): the typed twins of the hooks above -- the same expressions,
+    // no object[] / boxes. Each is bound only while the hook named next to it is the one bound for the key (SHEPHERD_K9_TYPED=0: none).
+    internal static void K9(K9Reg r)
+    {
+        r.Add("UnityEngine.Component::get_gameObject", (Func<object, object>)(s => N<NComponent>(s)?.Go?.Managed), CGo);
+        r.Add("UnityEngine.Component::get_transform", (Func<object, object>)(s => N<NComponent>(s)?.Go?.Transform.Managed), CTr);
+        r.Add("UnityEngine.GameObject::get_transform", (Func<object, object>)(s => N<NGameObject>(s)?.Transform.Managed), GoTransform);
+        r.Add("UnityEngine.GameObject::get_activeInHierarchy", (Func<object, bool>)(s => N<NGameObject>(s)?.ActiveInHierarchy ?? false), ActiveH);
+        r.Add("UnityEngine.Behaviour::get_isActiveAndEnabled", (Func<object, bool>)(s => Objects.Get(s) is NBehaviour b && b.Enabled && b.Go != null && b.Go.ActiveInHierarchy && (b is not NMono m || m.IsEnabledCalled)), ActEn);
+        r.Add("UnityEngine.Behaviour::get_enabled", (Func<object, bool>)(s => Objects.Get(s) is NBehaviour b ? b.Enabled : (Objects.Get(s)?.Get("enabled") as bool? ?? true)), Enabled);
+        // D6: the physics results' hop (RaycastHit2D.collider, Collision2D ...): Objects.ById itself, no second table (ids are never reused)
+        r.Add("UnityEngine.Object::FindObjectFromInstanceID", (Func<int, object>)(id => Objects.ById.TryGetValue(id, out var n) ? n.Managed : null), FromId);
+    }
 }

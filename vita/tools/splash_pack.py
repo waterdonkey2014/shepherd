@@ -12,17 +12,31 @@ are the clip's -- the engine's length table and the clip agree). For the Devolve
 FMOD event (event:/music/devolver_pre_roll/DevolverSplash) from the owner's audio bake (--audio-bake), the sound the PC game plays with
 the logo, as 16-bit stereo PCM (the bake's encoder delay removed, its frame count kept) -- the launcher plays it with the splash.
 
+Device kit #9 (track device, vita/notes/kit9-device.md): the owner's Vita gave NO picture for the first access unit of kit #8's clips
+(the hardware decoder returns pictures some access units after it gets them). Kit #8's clips already had no B-frames and said
+max_num_reorder_frames 0 (x264 writes it for bframes=0); what was left is the decoded picture buffer the SPS allows the decoder,
+max_dec_frame_buffering = the reference count (3). --ref sets it: the default stays 3 = kit #8's clips, byte for byte from the same source
+and x264 (kit #9 review round 2, finding 3: the pictures are the ones kit #8's records hold, and no device run has shown yet that the
+decoder's delay follows max_dec_frame_buffering -- the launcher and the engine tolerate the delay whatever the clip, vita/shepherd/k8_avc.h);
+--ref 1 (opt-in, owner-local: `STAGE_SPLASH_ONLY=1 STAGE_SPLASH_REF=1 stage-owner.sh <out>` writes ONLY data/video/*.shv into the existing
+card <out>/shepherd -- kit #9 integration review fix: a plain `stage-owner.sh` rebuilds the whole card, managed/ included, from the install +
+runtime/ManagedVita, which no kit #9 eboot boots on (the typed modules' MVIDs); or copy the gated
+$SHEPHERD_WORK/kit9/device-work/clips-ref1/*.shv into the card's data/video/) gives max_dec_frame_buffering 1 -- the smallest buffer a decoder may hold
+back for, i.e. at most one held picture at the clip's end -- a slightly different encode (PSNR min 48.60 / mean 54.31 dB vs 48.65 / 54.33
+for the Devolver logo); the .shv's flags carry F_DPB1 for it. Once on the card the engine's clip path is fixed (data/video/<clip>.shv):
+re-staging with the default gives kit #8's clips back.
+
 The output is GAME-DERIVED (the owner's videos): owner folder only (ux0:data/shepherd/data/video/), never in git, never in a VPK.
 --check decodes each .shv's pictures back with ffmpeg and compares them with the scaled source frames (PSNR per frame; the minimum and the
 mean are printed), and checks the frame count against the source's.
 
-usage: splash_pack.py <Videos dir | clip.mp4> -o <out dir> [--clips Name,Name] [--audio-bake <audiobake/menu>] [--crf 12] [--check]
+usage: splash_pack.py <Videos dir | clip.mp4> -o <out dir> [--clips Name,Name] [--audio-bake <audiobake/menu>] [--crf 12] [--ref 3] [--check]
 Only reads its inputs; standard library + the local ffmpeg / ffprobe (no download)."""
 import argparse, json, os, struct, subprocess, sys, tempfile
 
 HDR = 192
 MAGIC = 0x31564853
-F_NO_BFRAMES, F_BT601, F_AUDIO_BAKE = 1, 2, 4
+F_NO_BFRAMES, F_BT601, F_AUDIO_BAKE, F_DPB1 = 1, 2, 4, 8   # F_DPB1 (kit #9): one reference picture, max_dec_frame_buffering 1
 W, H = 960, 544
 EVENT_FOR_CLIP = {"Devolver_Animated_Logo_v001_4k_Audio-_HQ_HBR_MP4": "event:/music/devolver_pre_roll/DevolverSplash"}
 DEFAULT_CLIPS = ["Devolver_Animated_Logo_v001_4k_Audio-_HQ_HBR_MP4", "Intro"]   # the two clips the kit routes reach
@@ -96,14 +110,14 @@ def bake_audio(bake_dir, event):
     if len(pcm) < frames * 4: pcm += b"\x00" * (frames * 4 - len(pcm))
     return pcm, frames, f"{event} take 0 ({t['file']}, {frames} frames, encoder delay {skip} removed)"
 
-def pack(src, out_dir, crf, bake_dir, tmp):
+def pack(src, out_dir, crf, bake_dir, tmp, ref=3):
     name = os.path.splitext(os.path.basename(src))[0]
     sw, sh, num, den, frames = probe(src)
     vf, (cw, ch, cx, cy) = vfilter(sw, sh)
     h264 = os.path.join(tmp, name + ".h264")
     run(["ffmpeg", "-v", "error", "-y", "-i", src, "-an", "-vf", vf, "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "slow",
          "-crf", str(crf), "-profile:v", "main", "-level:v", "3.1", "-x264-params",
-         "bframes=0:ref=3:keyint=600:min-keyint=600:scenecut=0:aud=1:vbv-maxrate=14000:vbv-bufsize=14000:colorprim=smpte170m:transfer=smpte170m:colormatrix=smpte170m",
+         "bframes=0:ref=%d:keyint=600:min-keyint=600:scenecut=0:aud=1:vbv-maxrate=14000:vbv-bufsize=14000:colorprim=smpte170m:transfer=smpte170m:colormatrix=smpte170m" % ref,
          "-f", "h264", h264])
     aus = split_aus(open(h264, "rb").read())
     if len(aus) != frames: raise SystemExit(f"{name}: {len(aus)} access units for {frames} frames")
@@ -115,7 +129,7 @@ def pack(src, out_dir, crf, bake_dir, tmp):
     es_off = index_off + 8 * frames
     es = b"".join(aus)
     audio_off = (es_off + len(es) + 15) & ~15
-    flags = F_NO_BFRAMES | F_BT601 | (F_AUDIO_BAKE if pcm else 0)
+    flags = F_NO_BFRAMES | F_BT601 | (F_AUDIO_BAKE if pcm else 0) | (F_DPB1 if ref == 1 else 0)
     fields = [MAGIC, 1, HDR, W, H, num, den, frames, index_off, es_off, len(es), max(len(a) for a in aus),
               audio_off if pcm else 0, len(pcm), 48000 if pcm else 0, 2 if pcm else 0, aframes,
               frames, num, den, flags, cw, ch, cx, cy, os.path.getsize(src), fnv32(head)]
@@ -130,7 +144,7 @@ def pack(src, out_dir, crf, bake_dir, tmp):
     with open(out + ".tmp", "wb") as f: f.write(body)
     os.replace(out + ".tmp", out)
     note = (f"{name}.shv: {frames} frames at {num}/{den} ({frames * den / num:.3f} s) from {os.path.basename(src)} ({sw}x{sh}, {os.path.getsize(src)} B); "
-            f"picture {cw}x{ch} at {cx},{cy} in {W}x{H}; H.264 Main 3.1, no B-frames, CRF {crf}: {len(es)} B ({len(es) * 8 * num / den / frames / 1e6:.2f} Mbit/s), "
+            f"picture {cw}x{ch} at {cx},{cy} in {W}x{H}; H.264 Main 3.1, no B-frames, {ref} reference picture(s) (max_dec_frame_buffering {ref}), CRF {crf}: {len(es)} B ({len(es) * 8 * num / den / frames / 1e6:.2f} Mbit/s), "
             f"largest picture {max(len(a) for a in aus)} B; audio: {aw}; file {len(body)} B")
     return out, note, h264, vf
 
@@ -155,6 +169,7 @@ def main():
     ap.add_argument("src"); ap.add_argument("-o", "--out", required=True)
     ap.add_argument("--clips", default=",".join(DEFAULT_CLIPS), help="clip names (default: the Devolver logo and the intro); 'all' = every .mp4")
     ap.add_argument("--audio-bake", default=""); ap.add_argument("--crf", type=int, default=12); ap.add_argument("--check", action="store_true")
+    ap.add_argument("--ref", type=int, default=3, choices=[1, 2, 3], help="reference pictures = the SPS's max_dec_frame_buffering (default 3 = kit #8's clips byte for byte; 1 = kit #9's opt-in)")
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
     if os.path.isfile(a.src): srcs = [a.src]
@@ -167,7 +182,7 @@ def main():
     rc = 0
     with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as tmp:
         for s in srcs:
-            out, note, h264, vf = pack(s, a.out, a.crf, a.audio_bake, tmp)
+            out, note, h264, vf = pack(s, a.out, a.crf, a.audio_bake, tmp, a.ref)
             print(note)
             if a.check:
                 n, mn, mean = check(s, out, h264, vf, tmp)

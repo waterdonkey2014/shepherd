@@ -72,6 +72,9 @@ static class AutoProps
         Log.Info($"auto-props: {Registered} get/set hooks backed by property bags");
     }
     static object Default(string key, Type t) => Defaults.TryGetValue(key, out var d) && t.IsInstanceOfType(d) ? d : null;
+    /// <summary>Kit #9 fidelity: exactly what an auto getter of <paramref name="key"/> returns for <paramref name="self"/> (the explicit
+    /// getters that replace one keep this as their switch-off path).</summary>
+    public static object Read(object self, string key, Type t) => Conv.To(Objects.Get(self)?.Get(key) ?? Default(key, t), t);
 }
 
 /// <summary>Whole hook families that are safe as no-ops (profiling, analytics, command buffers…). Returns a harmless

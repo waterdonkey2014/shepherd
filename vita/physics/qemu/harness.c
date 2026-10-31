@@ -374,6 +374,13 @@ int harness_main(void)
         ls(&l, " records "); ldec(&l, r.records); ls(&l, " status "); ldec(&l, st); lend(&l);
         if (st != 0) a = 0;
     }
+    {   /* Stage 7 item 2 self-test (tests/sp_s7.cpp, kit #9: patch P3's worlds, serial here -- no threads): vs the Mac's t1_runner s7 */
+        sp_t1_result r;
+        int32_t st = sp_s7_run(NULL, NULL, &r);
+        ls(&l, st == 0 ? "QEMU S7 RESULT PASS hash " : "QEMU S7 RESULT FAIL hash "); lhex(&l, r.hash_hi); lhex(&l, r.hash_lo);
+        ls(&l, " records "); ldec(&l, r.records); ls(&l, " status "); ldec(&l, st); lend(&l);
+        if (st != 0) a = 0;
+    }
     set_fpscr(get_fpscr() | (1u << 24));                                 /* flush-to-zero what-if */
     run_pass('C', 0);
     out(a ? "QEMU RESULT PASS\n" : "QEMU RESULT FAIL\n");

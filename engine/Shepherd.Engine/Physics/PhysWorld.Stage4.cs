@@ -205,7 +205,7 @@ public static partial class PhysWorld
             int n = _core.ShapeGetPolygon(_world, h, buf);
             if (n <= 0) continue;
             var p = new Vector2[Math.Min(n, 8)];
-            for (int i = 0; i < p.Length; i++) p[i] = new Vector2(buf[2 * i], buf[2 * i + 1]);
+            for (int i = 0; i < p.Length; i++) p[i] = PG.V2(buf[2 * i], buf[2 * i + 1]);   // kit #9 glue math rule
             r.Add(p);
         }
         return r.ToArray();

@@ -1,0 +1,120 @@
+--- a/src/mono/mono/mini/aot-runtime.c
++++ b/src/mono/mono/mini/aot-runtime.c
+@@ -6034,6 +6034,8 @@
+ 	/* The caller expects an ftnptr */
+ 	return mono_create_ftnptr (MINI_ADDR_TO_FTNPTR (code));
+ }
++
++gint32 mono_shepherd_k9_unbox_arbitrary;   /* SHEPHERD-VITA kit #9 (k9-unbox-cache-fix.patch): every arbitrary unbox trampoline taken, by any path */
+ 
+ gpointer
+ mono_aot_get_unbox_arbitrary_trampoline (gpointer addr)
+@@ -6042,6 +6044,7 @@
+ 	guint8 *code;
+ 	guint32 got_offset;
+ 
++	mono_atomic_inc_i32 (&mono_shepherd_k9_unbox_arbitrary);   /* SHEPHERD-VITA kit #9: a count only (the host's END line) */
+ 	if (USE_PAGE_TRAMPOLINES) {
+ 		code = (guint8 *)get_new_unbox_arbitrary_trampoline_frome_page (addr);
+ 	} else {
+@@ -6082,7 +6085,71 @@
+ 	guint32 f = amodule->info.flags;
+ 	return (f & MONO_AOT_FILE_FLAG_INTERP) && !(f & MONO_AOT_FILE_FLAG_FULL_AOT);
+ }
++
++/*
++ * SHEPHERD-VITA device kit #9, track runtime (vita/patches/k9-unbox-cache-fix.patch, vita/notes/kit9-runtime.md "Review fixes"): this
++ * fork's fix A (vita/gameaot/mechanics/fork-partial-aot.patch: a value-type method a partial image did not compile -- the owner modules'
++ * profile-only images since kit #5, CoreLib trimmed by the kit #9 keep list since kit #9 -- enters the interpreter through the arbitrary
++ * unbox trampoline) took a NEW trampoline from CoreLib's fixed pool (nunbox-arbitrary-trampolines=1024; running out is a fatal g_error)
++ * on every lookup, and ldvirtfn_internal / the delegate trampoline ask again on every execution. Now cached per method, exactly as the
++ * LLVM / JIT runtimes' vita/patches/k9-partial-unbox.patch: the same method with the same target address gets the same trampoline (it only
++ * unboxes `this` and jumps to that address: the same behaviour). Counters for the host's END line: methods, lookups, and every arbitrary
++ * trampoline taken by any path (upstream's interpreted-image case included, which stays as it was).
++ */
++gint32 mono_shepherd_k9_unbox_fallbacks;   /* distinct methods (int-sized: the host declares it `extern int` weakly) */
++gint32 mono_shepherd_k9_unbox_lookups;     /* fallback lookups (calls) */
++typedef struct { gpointer addr, code; } K9UnboxFallback;
++static GHashTable *k9_unbox_cache;         /* MonoMethod* -> K9UnboxFallback* (aot_mutex) */
++static int k9_unbox_cache_on = -1;         /* SHEPHERD_K9_UNBOX_CACHE: unset / 1 = cached + jit info; 0 = the uncached fallback (switch back) */
++
++/*
++ * Each new fallback trampoline also gets a jit info naming METHOD (a trampoline jit info, as the found case below registers for the image's
++ * own unbox trampolines): AOT code's `ldvirtftn` + delegate constructor (mono_ldvirtfn, then mono_delegate_ctor -> mini_init_delegate)
++ * recovers the target method from the address it was handed; for an arbitrary trampoline with no jit info it found none and stopped on
++ * g_assert (method || del->interp_method) -- found by vita/tests/il/K9Unbox.cs (a delegate over a boxed int's virtual ToString with
++ * Int32.ToString trimmed). The ARM arbitrary unbox trampoline is 16 bytes (aot-compiler.c arch_emit_unbox_arbitrary_trampoline).
++ * SHEPHERD_K9_UNBOX_CACHE=0 (env file): every lookup takes a new trampoline with no jit info -- the uncached fallback of the gameaot fork's
++ * fix A (kit #8's 00095 / 00194) and of session 2's k9-partial-unbox.patch.
++ */
++static gpointer
++k9_unbox_fallback (MonoMethod *method, gpointer addr)
++{
++	K9UnboxFallback *f;
++	gpointer code;
+ 
++	if (G_UNLIKELY (k9_unbox_cache_on < 0)) {
++		const char *e = getenv ("SHEPHERD_K9_UNBOX_CACHE");
++		k9_unbox_cache_on = (e && (!strcmp (e, "0") || !strcmp (e, "off"))) ? 0 : 1;
++	}
++	if (!k9_unbox_cache_on) {   /* the switch back: exactly the uncached fallback */
++		mono_atomic_inc_i32 (&mono_shepherd_k9_unbox_lookups);
++		return mono_aot_get_unbox_arbitrary_trampoline (addr);
++	}
++	mono_aot_lock ();
++	mono_shepherd_k9_unbox_lookups++;
++	if (!k9_unbox_cache)
++		k9_unbox_cache = g_hash_table_new (NULL, NULL);
++	f = (K9UnboxFallback *) g_hash_table_lookup (k9_unbox_cache, method);
++	if (f && f->addr == addr) {
++		code = f->code;
++	} else {
++		code = mono_aot_get_unbox_arbitrary_trampoline (addr);   /* (aot_mutex is recursive: get_numerous_trampoline takes it too) */
++		MonoTrampInfo *tinfo = mono_tramp_info_create (NULL, (guint8 *) code, 16, NULL, NULL);
++		tinfo->method = method;
++		tinfo->unwind_ops = mono_arch_get_cie_program ();
++		mono_aot_tramp_info_register (tinfo, NULL);   /* (the jit info table and memory manager locks are leaf locks) */
++		if (!f) {
++			f = g_new0 (K9UnboxFallback, 1);
++			g_hash_table_insert (k9_unbox_cache, method, f);
++			mono_shepherd_k9_unbox_fallbacks++;
++		}
++		f->addr = addr;
++		f->code = code;
++	}
++	mono_aot_unlock ();
++	return code;
++}
++
+ gpointer
+ mono_aot_get_unbox_trampoline (MonoMethod *method, gpointer addr)
+ {
+@@ -6136,15 +6203,15 @@
+ 		/* Search the llvm_unbox_tramp_indexes table using a binary search */
+ 		if (amodule->info.llvm_unbox_tramp_elemsize == sizeof (guint32)) {
+ 			void *ptr = mono_binary_search (GINT_TO_POINTER (method_index), amodule->info.llvm_unbox_tramp_indexes, amodule->info.llvm_unbox_tramp_num, amodule->info.llvm_unbox_tramp_elemsize, i32_idx_comparer);
+-			if (!ptr && mono_use_interpreter)   /* SHEPHERD-VITA (partial AOT): not compiled here, see below */
+-				return mono_aot_get_unbox_arbitrary_trampoline (addr);
++			if (!ptr && mono_use_interpreter)   /* SHEPHERD-VITA (partial AOT): not compiled here, see below (kit #9: cached) */
++				return k9_unbox_fallback (method, addr);
+ 			g_assert (ptr);
+ 			g_assert (*(int*)ptr == method_index);
+ 			unbox_tramp_idx = (guint32*)ptr - (guint32*)amodule->info.llvm_unbox_tramp_indexes;
+ 		} else {
+ 			void *ptr = mono_binary_search (GINT_TO_POINTER (method_index), amodule->info.llvm_unbox_tramp_indexes, amodule->info.llvm_unbox_tramp_num, amodule->info.llvm_unbox_tramp_elemsize, ui16_idx_comparer);
+-			if (!ptr && mono_use_interpreter)   /* SHEPHERD-VITA (partial AOT): not compiled here, see below */
+-				return mono_aot_get_unbox_arbitrary_trampoline (addr);
++			if (!ptr && mono_use_interpreter)   /* SHEPHERD-VITA (partial AOT): not compiled here, see below (kit #9: cached) */
++				return k9_unbox_fallback (method, addr);
+ 			g_assert (ptr);
+ 			g_assert (*(guint16*)ptr == method_index);
+ 			unbox_tramp_idx = (guint16*)ptr - (guint16*)amodule->info.llvm_unbox_tramp_indexes;
+@@ -6201,7 +6268,7 @@
+ 	 */
+ 	if (!found) {
+ 		g_assert (mono_use_interpreter);
+-		return mono_aot_get_unbox_arbitrary_trampoline (addr);
++		return k9_unbox_fallback (method, addr);   /* SHEPHERD-VITA kit #9: cached (k9-unbox-cache-fix.patch, above) */
+ 	}
+ 
+ 	if (amodule->info.flags & MONO_AOT_FILE_FLAG_CODE_EXEC_ONLY)

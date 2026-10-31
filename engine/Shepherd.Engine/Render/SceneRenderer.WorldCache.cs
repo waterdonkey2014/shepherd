@@ -37,6 +37,9 @@ public static partial class SceneRenderer
         Material[] _shared; Material _m0; NMaterial _mat; bool _matSet;
         string _shName; uint _blend;
         float _order, _layer; Func<NComponent, float> _layFn; int _layN;
+        /// <summary>Kit #9 engine (SHEPHERD_K9_SORT): this renderer's item index in the camera pass that last saw it (valid only while that pass's
+        /// item there is this renderer). Declared last: on the Vita it takes the record from 92 to 96 bytes, the same SGen size class.</summary>
+        internal int PassIdx;
 
         bool Fresh(NRenderer r, ushort bit) { if (_ver != r.PropsVer) { _ver = r.PropsVer; _valid = 0; } return (_valid & bit) != 0; }
         /// <summary>1 = SpriteRenderer, 2 = MeshRenderer, 3 = SpriteShapeRenderer (fidelity round 1: Registry's by-name type test), 0 = none of

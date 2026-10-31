@@ -24,14 +24,18 @@ namespace Shepherd.Engine.Impl;
 /// Unity's per-operation float32 ones whatever the runtime's float evaluation -- with float32 on (today's Vita runtime, CoreCLR) the casts
 /// change no bit; with intermediates kept in double (Mono -O=-float32, the runtime track's fidelity fix) the old `t * min + (1 - t) * max`
 /// differed in 3,777 of 14,400 values (MEASURED-M, Unity's Mono: vita/tests/il/FpRandom.cs) and the cast form in none.
-/// SHEPHERD_UNITY_RANDOM=1 (env file) turns it on; off (default) = kit #6's System.Random,
-/// so every kit #6 record holds. Default-on needs the owner's decision: it changes every frame where the game draws random numbers.</summary>
+/// Kit #9 fidelity (owner decision 2026-10-21, vita/notes/kit9-fidelity.md): ON by default under the Vita profile (Runtime/K9Fidelity.cs);
+/// SHEPHERD_UNITY_RANDOM=0 (or SHEPHERD_K9_FIDELITY=0) = kit #8's System.Random, so every kit #8 record holds; SHEPHERD_UNITY_RANDOM=1 forces
+/// it in any profile. The start-up seed stays the engine's deterministic 1234: Unity seeds its generator from the clock at every launch, so
+/// any fixed seed is one of the original's possible starts, while every seeded sequence (InitState / state) now equals Unity's exactly.</summary>
 [ProfileOnly]   // (reads no property-bag keys: its literals stay out of the V3 diet's readable-key scan, Assets/Diet.cs)
 public static class UnityRandom
 {
-    public static readonly bool On = Environment.GetEnvironmentVariable("SHEPHERD_UNITY_RANDOM") == "1";
+    public static readonly bool On = Runtime.K9Fidelity.UnityRandom;   // (kit #9: on by default; SHEPHERD_UNITY_RANDOM=0 = kit #8)
     static uint _s0, _s1, _s2, _s3;
     static UnityRandom() { InitState(1234); }   // (the engine's deterministic default seed, as AppIcalls' System.Random(1234))
+    /// <summary>Random.seed's getter in Unity: the first state word (kit #9 fidelity, second review: the oracle's k9-seed-mpb probe).</summary>
+    public static int Seed => (int)_s0;
     public static void InitState(int seed) { _s0 = (uint)seed; _s1 = _s0 * 1812433253u + 1u; _s2 = _s1 * 1812433253u + 1u; _s3 = _s2 * 1812433253u + 1u; }
     public static uint Next()
     {

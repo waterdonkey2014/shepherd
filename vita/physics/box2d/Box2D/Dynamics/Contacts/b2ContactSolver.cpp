@@ -1,3 +1,7 @@
+// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): with b2ContactSolverDef::island set (the shim's
+// parallel island solve) a body's slot comes from b2Island::P3IndexOf -- a static body shared by islands solved at the same time has
+// no single m_islandIndex; island NULL (every stock path) = stock. Listed in vita/physics/box2d/PATCHES.md (row P3). The original
+// notice follows unchanged.
 /*
 * Copyright (c) 2006-2011 Erin Catto http://www.box2d.org
 *
@@ -23,6 +27,7 @@
 #include <Box2D/Dynamics/b2Fixture.h>
 #include <Box2D/Dynamics/b2World.h>
 #include <Box2D/Common/b2StackAllocator.h>
+#include <Box2D/Dynamics/b2Island.h>   // Shepherd P3: P3IndexOf
 
 #define B2_DEBUG_SOLVER 0
 
@@ -53,6 +58,7 @@ b2ContactSolver::b2ContactSolver(b2ContactSolverDef* def)
 	m_positions = def->positions;
 	m_velocities = def->velocities;
 	m_contacts = def->contacts;
+	const b2Island* p3 = def->island;   // Shepherd P3
 
 	// Initialize position independent portions of the constraints.
 	for (int32 i = 0; i < m_count; ++i)
@@ -76,8 +82,8 @@ b2ContactSolver::b2ContactSolver(b2ContactSolverDef* def)
 		vc->friction = contact->m_friction;
 		vc->restitution = contact->m_restitution;
 		vc->tangentSpeed = contact->m_tangentSpeed;
-		vc->indexA = bodyA->m_islandIndex;
-		vc->indexB = bodyB->m_islandIndex;
+		vc->indexA = p3 ? p3->P3IndexOf(bodyA) : bodyA->m_islandIndex;   // Shepherd P3
+		vc->indexB = p3 ? p3->P3IndexOf(bodyB) : bodyB->m_islandIndex;
 		vc->invMassA = bodyA->m_invMass;
 		vc->invMassB = bodyB->m_invMass;
 		vc->invIA = bodyA->m_invI;
@@ -88,8 +94,8 @@ b2ContactSolver::b2ContactSolver(b2ContactSolverDef* def)
 		vc->normalMass.SetZero();
 
 		b2ContactPositionConstraint* pc = m_positionConstraints + i;
-		pc->indexA = bodyA->m_islandIndex;
-		pc->indexB = bodyB->m_islandIndex;
+		pc->indexA = p3 ? p3->P3IndexOf(bodyA) : bodyA->m_islandIndex;   // Shepherd P3
+		pc->indexB = p3 ? p3->P3IndexOf(bodyB) : bodyB->m_islandIndex;
 		pc->invMassA = bodyA->m_invMass;
 		pc->invMassB = bodyB->m_invMass;
 		pc->localCenterA = bodyA->m_sweep.localCenter;

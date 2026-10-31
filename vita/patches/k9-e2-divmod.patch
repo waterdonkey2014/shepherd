@@ -1,0 +1,68 @@
+--- a/src/mono/mono/mini/jit-icalls.c
++++ b/src/mono/mono/mini/jit-icalls.c
+@@ -348,6 +348,29 @@
+ 	return 0;
+ }
+ 
++/*
++ * SHEPHERD-VITA device kit #9, track runtime, row E2 (vita/patches/k9-e2-divmod.patch, vita/notes/kit9-runtime.md): the A9 has no divide
++ * instruction, so AOT code's 64-bit division / remainder comes here (through the opcode's emulation icall) and on to libgcc's
++ * __aeabi_ldivmod / __udivmoddi4, a 64-bit shift-subtract loop. Most of these calls divide values that fit in 32 bits -- CoreLib's
++ * Dictionary / HashSet bucket index on a 32-bit target is `(uint)hashCode % buckets.Length`, a uint % int done in 64 bits -- so when
++ * both operands are in [0, 2^32) (the divisor >= 1) the 32-bit unsigned division gives the same quotient and remainder (exactly: for
++ * non-negative operands signed and unsigned division agree, and they fit). Every other case, and every exception check before it, is
++ * as before. SHEPHERD_K9_DIVMOD=0 (env file) = kit #8's path for every call.
++ */
++int mono_shepherd_k9_divmod = -1;   /* -1 not read yet; 1 on; 0 off (host.c reads it weakly for its H8 line) */
++static inline gboolean
++k9_divmod_on (void)
++{
++	int m = mono_shepherd_k9_divmod;
++	if (G_UNLIKELY (m < 0)) {
++		const char *e = getenv ("SHEPHERD_K9_DIVMOD");
++		m = (e && (!strcmp (e, "0") || !strcmp (e, "off"))) ? 0 : 1;
++		mono_shepherd_k9_divmod = m;
++	}
++	return m;
++}
++#define K9_U32(v) ((guint64) (v) <= 0xffffffffULL)
++
+ gint64
+ mono_lldiv (gint64 a, gint64 b)
+ {
+@@ -365,6 +388,8 @@
+ 		return 0;
+ 	}
+ #endif
++	if (k9_divmod_on () && K9_U32 (a) && b >= 1 && K9_U32 (b))   /* SHEPHERD-VITA kit #9 E2 */
++		return (gint64) ((guint32) a / (guint32) b);
+ 	return a / b;
+ }
+ 
+@@ -385,6 +410,8 @@
+ 		return 0;
+ 	}
+ #endif
++	if (k9_divmod_on () && K9_U32 (a) && b >= 1 && K9_U32 (b))   /* SHEPHERD-VITA kit #9 E2 */
++		return (gint64) ((guint32) a % (guint32) b);
+ 	return a % b;
+ }
+ 
+@@ -399,6 +426,8 @@
+ 		return 0;
+ 	}
+ #endif
++	if (k9_divmod_on () && K9_U32 (a) && K9_U32 (b))   /* SHEPHERD-VITA kit #9 E2 (b != 0: checked above) */
++		return (guint64) ((guint32) a / (guint32) b);
+ 	return a / b;
+ }
+ 
+@@ -413,6 +442,8 @@
+ 		return 0;
+ 	}
+ #endif
++	if (k9_divmod_on () && K9_U32 (a) && K9_U32 (b))   /* SHEPHERD-VITA kit #9 E2 (b != 0: checked above) */
++		return (guint64) ((guint32) a % (guint32) b);
+ 	return a % b;
+ }
+ 

@@ -144,7 +144,11 @@ public sealed class NGameObject : NObj
 {
     public readonly List<NComponent> Components = new();
     public NTransform Transform => (NTransform)Components[0];
-    public bool ActiveSelf = true; public int Layer; public bool IsStatic;
+    /// <summary>Kit #9 engine (SHEPHERD_K9_STAMPS): a property (was a field) so that a change bumps the hierarchy epoch the activeInHierarchy
+    /// stamps are checked against (<see cref="NTransform.HierEpoch"/>). The value itself is the same bool as before.</summary>
+    public bool ActiveSelf { get => _activeSelf; set { if (_activeSelf != value) { _activeSelf = value; if (Components.Count > 0 && Components[0] is NTransform t) t.HierChangedHere(); else NTransform.HierChanged(); } } }
+    bool _activeSelf = true;
+    public int Layer; public bool IsStatic;
     /// <summary>Kit #8 speed track: a property (was a field) so that a change moves the record in the tag index (Runtime/K8Speed.cs TagIndex;
     /// SHEPHERD_K8_TAGS=0: the index is not kept). The value itself is the same string as before.</summary>
     public string Tag { get => _tag; set { var old = _tag; _tag = value; if (old != value) Runtime.TagIndex.Moved(this, old, value); } }
@@ -155,10 +159,21 @@ public sealed class NGameObject : NObj
     int _scene = 1;
     /// <summary>menu-speed (SceneRenderer.UiCache.cs): equals the UI pass's holder generation while a live CanvasGroup record sits on this object.</summary>
     internal int UiHolderGen;
-    public bool ActiveInHierarchy { get { for (var t = Transform; t != null; t = t.Parent) if (!t.Go.ActiveSelf) return false; return true; } }
+    public bool ActiveInHierarchy { get { if (NTransform.AhOn) return Transform.ChainActive(); for (var t = Transform; t != null; t = t.Parent) if (!t.Go.ActiveSelf) return false; return true; } }
 }
 
-public class NComponent : NObj { public NGameObject Go; }
+public class NComponent : NObj
+{
+    public NGameObject Go;
+    // Kit #9 engine, the objects' sizes (review round 2): on the Vita (32-bit Mono, GC-aware auto layout: references first, then the other fields
+    // in declaration order at their own alignment; each class's size rounded to its min_align, 8 here because of NObj's long PathId) NComponent's
+    // fields end at 68 and the class rounds to 72 -- 4 bytes of padding every component record already carries. The transform's activeInHierarchy
+    // stamp lives there (NTransform below), so no record grows: NTransform stays at SGen's 200-byte size class (the next is 256: the physics
+    // track's kit #9 lesson, +3 MiB on the walk), NMono at 96 (next 128). engine-work/tools/fields (a copy of the physics track's) prints the layout.
+    /// <summary>Kit #9 engine (SHEPHERD_K9_STAMPS): a transform's activeInHierarchy stamp (<see cref="NTransform.ChainActive"/>); unused (0) on
+    /// other components.</summary>
+    private protected int _ahStamp;
+}
 /// <summary>menu-speed (top hotspots): a Renderer's record (Lifecycle.NewComponentRecord), with SceneRenderer's world-pass cache of its
 /// property-bag reads (Render/SceneRenderer.WorldCache.cs); otherwise a plain component record.</summary>
 public sealed class NRenderer : NComponent
@@ -168,10 +183,18 @@ public sealed class NRenderer : NComponent
     internal int PropsVer;
     internal Shepherd.Engine.Render.SceneRenderer.WCache WC;
 }
-public class NBehaviour : NComponent { public bool Enabled = true; }
+public class NBehaviour : NComponent
+{
+    public bool Enabled = true;
+    /// <summary>Kit #9 engine (SHEPHERD_K9_WHEEL): an NMono's count of live coroutines / Invoke timers (255 = at least that many, never counted down
+    /// again): 0 lets StopCoroutine / StopAllCoroutines / CancelInvoke / IsInvoking skip the search of every live one. Declared here, in the padding
+    /// after Enabled (NBehaviour's fields end at 73 and round to 80), so NMono stays 96 bytes on the Vita (in NMono it was 104 = SGen's 128 class).</summary>
+    internal byte CoN, InvN;
+}
 public sealed class NMono : NBehaviour
 {
     public bool Awoken, Started, IsEnabledCalled;    // IsEnabledCalled: OnEnable delivered and not yet matched by OnDisable
+    // (kit #9 engine: CoN / InvN, the wheel's per-behaviour counts, are declared in NBehaviour: the object's size)
     /// <summary>kit3 (sub-menus): Lifecycle queued it for Start at least once (only such a behaviour can be in its PendingStart list).</summary>
     public bool StartQueued;
     internal object LifecycleMsgs;                   // Lifecycle's message table of the managed type (stage 2)
@@ -183,8 +206,123 @@ public sealed class NMono : NBehaviour
 public class NTransform : NComponent
 {
     public readonly List<NTransform> Children = new();
-    public bool HasChanged = true;
+    /// <summary>Transform.hasChanged (get_hasChanged / set_hasChanged). Kit #9 (physics-plan-v2 Stage 7 item 4, decision D5 "lazy hasChanged";
+    /// vita/notes/kit9-physics.md): with <see cref="HcLazy"/> (the default; SHEPHERD_LAZY_HASCHANGED=0 = kit #8's eager flags) MarkChanged walks
+    /// no subtree for the flag. Each transform keeps ONE long, _hcMark (its last MarkChanged: it and its whole subtree changed then); the few
+    /// transforms whose hasChanged was ever WRITTEN keep (clear, self) in a weak side table. The eager flag starts true and only a
+    /// write makes it false, so a transform never written reads true; a written one reads true when its last write was true (self) or any
+    /// _hcMark on its chain (itself and its ancestors) is newer than its last write (clear) -- exactly the eager flag (the eager MarkChanged sets
+    /// the flag on the transform and every descendant, set_hasChanged touches one transform). A parent change rebases the written transforms of
+    /// the moved subtree first (each keeps its value: clear = now, self = the value), so marks made before the move by the old or the new
+    /// ancestors never count, as eager flags never move with a subtree; with no transform ever written (the usual case: no game DLL reads
+    /// hasChanged, physics-plan-v2 1.5 -- TMP only writes it) a parent change costs nothing. MarkChanged's walk now descends only into subtrees with physics interest
+    /// (PhysDesc > 0: the dirty hook's targets, in the eager walk's order). SHEPHERD_CHECK_PHYS=lazy keeps the eager flags as well and compares
+    /// both values of every transform every frame (<see cref="HcCompareAll"/>, Physics/PhysWorld.cs). Memory: 8 bytes a transform (a 64-bit
+    /// clock: no wrap in any session).</summary>
+    public bool HasChanged
+    {
+        get => HcLazy ? HcValue() : _hc;
+        set
+        {
+            if (HcLazy) HcWrite(value);
+            if (!HcLazy || HcCheck) _hc = value;
+        }
+    }
+    // (_hc and _hcMark are declared below, beside DrivenProperties and _isRect: see "the object's size" there)
+    sealed class HcState { public long Clear; public bool Self; }
+    static readonly ConditionalWeakTable<NTransform, HcState> _hcWritten = new();
+    static long _hcClock = 1;
+    static bool _hcAnyWritten;
+    /// <summary>Kit #9: the lazy hasChanged (default on; SHEPHERD_LAZY_HASCHANGED=0 = kit #8's eager MarkChanged walk and flags).</summary>
+    public static readonly bool HcLazy = Environment.GetEnvironmentVariable("SHEPHERD_LAZY_HASCHANGED") != "0";
+    /// <summary>Kit #9: SHEPHERD_CHECK_PHYS=lazy (or all): the eager flags kept beside the lazy form and compared.</summary>
+    public static readonly bool HcCheck = HcCheckAsked();
+    static bool HcCheckAsked() { var c = (Environment.GetEnvironmentVariable("SHEPHERD_CHECK_PHYS") ?? "").Trim().ToLowerInvariant(); return HcLazy && (c == "all" || c.Split(',').Contains("lazy") || c.Split(',').Contains("lazyw")); }
+    /// <summary>Kit #9 review fix: SHEPHERD_CHECK_PHYS=lazyw (test only; implies lazy): every frame, after the comparison, hasChanged is WRITTEN on a
+    /// seeded ~1/32 of the live transforms (true or false, seeded), so the comparison also covers WRITTEN transforms -- the side table, the
+    /// ancestors' marks, the parent-change rebase -- on a real scene. The drives' own game code writes and reads none (the walk / combat:
+    /// "reads 0, writes 0"), so without this every transform reads true both ways and the comparison cannot fail. No game code reads
+    /// hasChanged (physics-plan-v2 1.5), so a drive's results must stay its goldens with it.</summary>
+    public static readonly bool HcCheckW = HcCheck && (Environment.GetEnvironmentVariable("SHEPHERD_CHECK_PHYS") ?? "").Trim().ToLowerInvariant().Split(',').Contains("lazyw");
+    static uint _hcwSeed = 0x2545F491u;
+    /// <summary>SHEPHERD_CHECK_PHYS=lazyw: the seeded writes (above); the count goes into HcCheckWrites.</summary>
+    public static void HcCheckWrite(IEnumerable<NObj> transforms)
+    {
+        if (!HcCheckW) return;
+        foreach (var o in transforms)
+        {
+            if (o is not NTransform t || t.Destroyed) continue;
+            _hcwSeed = _hcwSeed * 1664525u + 1013904223u;
+            if ((_hcwSeed >> 27) != 0) continue;
+            t.HasChanged = (_hcwSeed & 0x10000u) != 0;
+            HcCheckWrites++;
+        }
+    }
+    /// <summary>Kit #9 counters (the exit summary): MarkChanged calls, the transforms its walk visited, parent-change rebases and their visits,
+    /// hasChanged reads and writes, and (check mode) frames / transforms compared and mismatches.</summary>
+    public static long HcMarks, HcVisits, HcRebases, HcRebaseVisits, HcReads, HcWrites, HcCheckFrames, HcChecked, HcMismatches, HcCheckWrites;
+    static long HcTick() => ++_hcClock;
+    void HcWrite(bool value)
+    {
+        HcWrites++;
+        long t = HcTick();
+        var st = _hcWritten.GetValue(this, _ => new HcState());
+        _hcAnyWritten = true;
+        st.Clear = t; st.Self = value;
+    }
+    bool HcValue()
+    {
+        HcReads++;
+        return HcValueOf(this);
+    }
+    static bool HcValueOf(NTransform t0)
+    {
+        if (!_hcAnyWritten || !_hcWritten.TryGetValue(t0, out var st)) return true;   // never written: the eager flag is true
+        if (st.Self) return true;
+        long c = st.Clear;
+        for (var t = t0; t != null; t = t._parent) if (t._hcMark > c) return true;
+        return false;
+    }
+    /// <summary>Before a parent change (lazy form): every written transform of this subtree keeps its current value, independent of ancestors.</summary>
+    void HcRebase()
+    {
+        if (!_hcAnyWritten) return;
+        HcRebases++;
+        long anc = 0;
+        for (var p = _parent; p != null; p = p._parent) if (p._hcMark > anc) anc = p._hcMark;
+        HcRebase(this, anc);
+    }
+    static void HcRebase(NTransform t, long anc)
+    {
+        HcRebaseVisits++;
+        long m = t._hcMark > anc ? t._hcMark : anc;
+        if (_hcWritten.TryGetValue(t, out var st)) { bool v = st.Self || m > st.Clear; st.Clear = HcTick(); st.Self = v; }
+        foreach (var c in t.Children) HcRebase(c, m);
+    }
+    /// <summary>SHEPHERD_CHECK_PHYS=lazy: the lazy value of every live transform against its eager flag (both maintained); returns the mismatches.</summary>
+    public static int HcCompareAll(IEnumerable<NObj> transforms)
+    {
+        if (!HcLazy || !HcCheck) return 0;
+        HcCheckFrames++;
+        int bad = 0;
+        foreach (var o in transforms)
+        {
+            if (o is not NTransform t || t.Destroyed) continue;
+            HcChecked++;
+            bool lazy = HcValueOf(t);
+            if (lazy != t._hc && bad++ < 4 && HcMismatches + bad <= 8) Log.Warn($"[hc] lazy hasChanged check f{Runtime.Time.FrameCount}: '{t.Go?.Name}' lazy {lazy}, eager {t._hc}");
+        }
+        HcMismatches += bad;
+        return bad;
+    }
     public NObj DrivenBy; public int DrivenProperties;
+    // Kit #9, the object's size: on the Vita (32-bit Mono, GC-aware auto layout = the reference fields first, then the others in declaration
+    // order, each at its own alignment; a long at 8) kit #8's NTransform is 200 bytes, EXACTLY SGen's 200-byte size class (the next one is
+    // 256). The lazy hasChanged's long, declared beside the old flag, made it 208 = a 256-byte slot: +56 bytes a transform, +3 MiB on the
+    // intro walk's arena peak (VLX, vita/notes/kit9-physics.md section 7d). Declared here instead -- the long right after DrivenProperties (an
+    // 8-aligned offset, no padding) and _hc among the bools beside _isRect -- it is 200 again. Any field added to NTransform (or NObj /
+    // NComponent) crosses into the 256 class: physics-work/tools/fields prints the layout.
+    long _hcMark = 1;   // kit #9 lazy hasChanged (above)
     /// <summary>Polish round 1: SceneRenderer's per-frame SortingGroup membership (its SGroup for this transform, valid only while the
     /// group's frame stamp is the current pass's; otherwise stale and ignored).</summary>
     internal object SortGroup;
@@ -195,8 +333,45 @@ public class NTransform : NComponent
     // (menu-speed hop fix: the initial values are field stores, not Unity's Quaternion.identity / Vector3.one / Vector2 constructor;
     // the same values: (0,0,0,1), (1,1,1), (0.5,0.5), (100,100))
     NTransform _parent; Vector3 _lp; Quaternion _lr = Um.QIdentity; Vector3 _ls = Um.One3;
-    bool _isRect; Vector2 _aMin = Um.V2(0.5f, 0.5f), _aMax = Um.V2(0.5f, 0.5f), _aPos, _sd = Um.V2(100f, 100f), _piv = Um.V2(0.5f, 0.5f);
-    public NTransform Parent { get => _parent; set { if (_parent != value) { if (PhysDesc != 0) Physics.PhysWorld.ParentChanging(this, _parent, value); _parent = value; Changed(); } } }
+    bool _isRect; bool _hc = true; Vector2 _aMin = Um.V2(0.5f, 0.5f), _aMax = Um.V2(0.5f, 0.5f), _aPos, _sd = Um.V2(100f, 100f), _piv = Um.V2(0.5f, 0.5f);
+    public NTransform Parent { get => _parent; set { if (_parent != value) { if (HcLazy) HcRebase(); if (PhysDesc != 0) Physics.PhysWorld.ParentChanging(this, _parent, value); _parent = value; HierChangedHere(); Changed(); } } }
+    // ---- kit #9 engine (SHEPHERD_K9_STAMPS): activeInHierarchy from a stamp ----
+    // NGameObject.ActiveInHierarchy walked the chain up to the root on every read (every world renderer per camera pass, every UI node, every
+    // lifecycle and icall test). Its answer is a function of the chain's parent links and each link's GameObject.activeSelf only; every write of
+    // either goes through NGameObject.ActiveSelf / NTransform.Parent, which bump HierEpoch. A transform keeps the chain's answer with the epoch it
+    // was computed at, so while nothing in any hierarchy changed it answers at once, and a walk after a change reuses each ancestor's answer
+    // (computed once per epoch): the same value as the walk (an ancestor's answer IS the walk from it; the recursion visits the same links in
+    // the same order and stops at the same inactive link). =check walks too, returns the walk's answer and counts differences.
+    internal static readonly bool AhOn = Runtime.K9Engine.Stamps;
+    static readonly bool AhCheck = Runtime.K9Engine.StampsCheck;
+    /// <summary>Bumped by every activeSelf change and parent link change; starts at 1 (never reused: on reaching 2^30 every stamp is cleared and it
+    /// restarts at 1).</summary>
+    internal static int HierEpoch = 1;
+    // The chain's answer with its epoch, in ONE int (epoch << 1 | answer; 0 = none: an epoch is >= 1) -- NComponent._ahStamp, in the padding every
+    // component record already has (above): a single store, so a reader never pairs a new epoch with an old answer.
+    internal static void HierChanged() { if (++HierEpoch == 1 << 30) Objects.ClearAhStamps(); }
+    internal void ClearAhStamp() => _ahStamp = 0;
+    /// <summary>A change at this link (its GameObject's activeSelf, its parent link): only this transform's subtree can answer differently. A
+    /// transform without children clears just its own stamp; otherwise the epoch moves (every stamp is stale).</summary>
+    internal void HierChangedHere() { if (Children.Count == 0) _ahStamp = 0; else HierChanged(); }
+    /// <summary>The walk's answer for the chain from this transform up (this transform's GameObject active, and so on up to the root).</summary>
+    internal bool ChainActive()
+    {
+        int e = HierEpoch, st = _ahStamp;
+        if (!AhCheck) { if (st >> 1 == e) { Runtime.K9Engine.AhHits++; return (st & 1) != 0; } return Compute(e); }
+        bool v = st >> 1 == e ? (st & 1) != 0 : Compute(e), w = true;   // =check: the walk of every read, compared (its links counted: kit #8's work)
+        for (var t = this; t != null; t = t.Parent) { Runtime.K9Engine.AhRefLinks++; if (!t.Go.ActiveSelf) { w = false; break; } }
+        if (w != v) Runtime.K9Engine.Diff("activeInHierarchy", Name);
+        return w;
+    }
+    /// <summary>This link's answer at epoch e: its GameObject's activeSelf and the parent's answer (the parent's stamp when it has one).</summary>
+    bool Compute(int e)
+    {
+        bool v = Go.ActiveSelf;
+        if (v && _parent != null) { int ps = _parent._ahStamp; v = ps >> 1 == e ? (ps & 1) != 0 : _parent.Compute(e); }
+        _ahStamp = e << 1 | (v ? 1 : 0); Runtime.K9Engine.AhWalks++;
+        return v;
+    }
     /// <summary>Physics stage 0 (physics-plan-v2 1.5; Physics/PhysWorld.cs): bit 1 = this transform's GameObject owns a Rigidbody2D, bit 2 = it has
     /// 2D colliders; PhysDesc = the interested transforms in this subtree, itself included (kept through attach / detach / reparent /
     /// destroy; Stage 7 walks MarkChanged only into PhysDesc > 0); PhysDirty = in the sync check's dirty set. Always 0 at SHEPHERD_PHYS=none.</summary>
@@ -244,7 +419,24 @@ public class NTransform : NComponent
     internal const int NrcQueueCap = 960;   // (a queue / candidate array of 960 references stays a small object: 7,680 bytes)
     /// <summary>A transform could not be queued (the queue was full): the next NotifyRectChanges is the full walk.</summary>
     internal static bool NrcOverflow;
-    Memo M_() => _m ??= new Memo { Ver = ++_clock };
+    Memo M_() => _m ??= NewMemo();
+    // ---- kit #9 engine (SHEPHERD_K9_RECYCLE): a destroyed transform's memo serves the next transform that needs one ----
+    // Objects.Kill hands the memo over (the dead record's _m is cleared first: a later read of the dead record makes itself a new one) and
+    // NewMemo resets it to exactly a new memo's state (every key -1, Wv 0, no parent, no boxes; the value fields are only read under a matching
+    // key). The clock is advanced at the same point as `new Memo { Ver = ++_clock }`, so every version and stamp value is the one kit #8 makes.
+    static readonly bool MemoRecycle = Runtime.K9Engine.Recycle;
+    static readonly Stack<Memo> _memoFree = new();
+    static Memo NewMemo()
+    {
+        if (!MemoRecycle || _memoFree.Count == 0) return new Memo { Ver = ++_clock };
+        var m = _memoFree.Pop(); Runtime.K9Engine.Recycled++;
+        m.Ver = ++_clock; m.WvSelf = -1; m.WvParentVer = -1; m.Wv = 0; m.WvEpoch = -1; m.WvParent = null;
+        m.LocalKey = m.LtwKey = m.RectKey = m.W2lKey = m.RotKey = m.LossyKey = m.SizeSeenKey = m.PosKey = -1; m.Bx = null;
+        return m;
+    }
+    /// <summary>Objects.Kill: this dead transform's memo goes to the free list (at most 1,024 kept; the purgeable arena may drop them).</summary>
+    internal void RecycleMemo() { var m = _m; if (m == null || !MemoRecycle) return; _m = null; if (_memoFree.Count < 1024) _memoFree.Push(m); }
+    internal static int PurgeMemos() { int n = _memoFree.Count; _memoFree.Clear(); return n; }
     /// <summary>A stamp that changes whenever this transform's state, any ancestor's state or any parent link on the way to the
     /// root changes: every value derived from the chain (rects, local and world matrices) is a function of exactly that.
     /// menu-speed (top hotspots): a stamp validated since the last transform write is returned as it is -- the chain validation would find
@@ -432,7 +624,20 @@ public class NTransform : NComponent
     /// <summary>Transform.hasChanged for this subtree. Physics stage 0's hook (plan 1.5, the corrected guard): an interested transform is
     /// dirtied unless it is the one transform physics itself is writing; its descendants are visited as before (a child body follows by
     /// H-CHILDSYNC = follow). Inert in stage 0 (PhysWorld.Dirty only feeds SHEPHERD_CHECK_PHYS=sync).</summary>
-    public void MarkChanged() { HasChanged = true; if (PhysInterest != 0 && !ReferenceEquals(this, Physics.PhysWorld.WritingTransform)) Physics.PhysWorld.Dirty(this); foreach (var c in Children) c.MarkChanged(); }
+    public void MarkChanged()
+    {
+        if (!HcLazy) { HcMarks++; MarkEager(); return; }
+        HcMarks++;
+        _hcMark = HcTick();                   // kit #9: this transform and its subtree changed now (the lazy hasChanged)
+        if (HcCheck) HcEagerFlags();          // (SHEPHERD_CHECK_PHYS=lazy: the eager flags too)
+        MarkPhys();
+    }
+    /// <summary>Kit #8's MarkChanged exactly (SHEPHERD_LAZY_HASCHANGED=0): the flag on every transform of the subtree, the dirty hook on each.</summary>
+    void MarkEager() { HcVisits++; HasChanged = true; if (PhysInterest != 0 && !ReferenceEquals(this, Physics.PhysWorld.WritingTransform)) Physics.PhysWorld.Dirty(this); foreach (var c in Children) c.MarkEager(); }
+    /// <summary>Kit #9: the dirty hook's walk alone -- into the children whose subtree holds an interested transform (PhysDesc > 0); the interested
+    /// transforms are reached in the eager walk's order, so the dirty queue is the same.</summary>
+    void MarkPhys() { HcVisits++; if (PhysInterest != 0 && !ReferenceEquals(this, Physics.PhysWorld.WritingTransform)) Physics.PhysWorld.Dirty(this); foreach (var c in Children) if (c.PhysDesc > 0) c.MarkPhys(); }
+    void HcEagerFlags() { _hc = true; foreach (var c in Children) c.HcEagerFlags(); }
     public NTransform Root { get { var t = this; while (t.Parent != null) t = t.Parent; return t; } }
     public bool IsChildOf(NTransform other) { for (var t = this; t != null; t = t.Parent) if (t == other) return true; return false; }
 }
@@ -476,7 +681,7 @@ public static class Objects
         if (n.Slot >= 0) SlotsExact = false;   // bound twice: its old id stays in ById, which the slot mirror does not model
         n.InstanceId = asset ? (_nextAssetId += 2) : (_nextRuntimeId -= 2);
         if (PtrIndex && n.Ptr != IntPtr.Zero) (_rebound ??= new())[n.Ptr] = n;   // bound twice: the earlier block keeps finding n (ByPtr never dropped it)
-        n.Ptr = Marshal.AllocHGlobal(BlockBytes);
+        n.Ptr = BlockRecycle && _freeBlocks.Count > 0 ? TakeBlock() : Marshal.AllocHGlobal(BlockBytes);   // kit #9 engine (SHEPHERD_K9_RECYCLE): a dead record's block first (cleared below, as a new one)
         unsafe { new Span<byte>((void*)n.Ptr, BlockBytes).Clear(); *(int*)(n.Ptr + 8) = n.InstanceId; }
         n.Managed = managed; CachedPtr(managed) = n.Ptr;
         if (PtrIndex)
@@ -555,10 +760,36 @@ public static class Objects
         else ByPtr.Remove(n.Ptr);
         if (ById.Remove(n.InstanceId)) _freeSlots.Push(n.Slot);
         Registry.Killed(n);
-        Marshal.FreeHGlobal(n.Ptr); n.Ptr = IntPtr.Zero;
+        if (n is NTransform kt) kt.RecycleMemo();   // kit #9 engine (SHEPHERD_K9_RECYCLE)
+        if (BlockRecycle && _freeBlocks.Count < 8192) _freeBlocks.Push(n.Ptr); else Marshal.FreeHGlobal(n.Ptr);
+        n.Ptr = IntPtr.Zero;
     }
+    // ---- kit #9 engine (SHEPHERD_K9_RECYCLE): a dead record's native block serves the next record bound ----
+    // A block is only ever read at +8 (the instance id: Unity's GetInstanceID) and +12 (the record index, L4b), both written by Bind after it
+    // clears the block, and a dead record's managed object no longer points at it (Kill clears m_CachedPtr first): handing the block to the
+    // next Bind is what malloc may do with it anyway (Get's rule already covers a reused block), without the malloc / free pair. At most 8,192
+    // blocks wait (196 KiB of newlib); the purgeable arena frees them on a scene load.
+    static readonly bool BlockRecycle = Runtime.K9Engine.Recycle;
+    static readonly Stack<IntPtr> _freeBlocks = new();
+    static IntPtr TakeBlock() { Runtime.K9Engine.Recycled++; return _freeBlocks.Pop(); }
+    /// <summary>The purgeable arena: the waiting blocks back to newlib, the snapshot buffers and transform memos dropped (rebuilt on next use).</summary>
+    internal static long PurgeCaches(bool all, int frame)
+    {
+        long bytes = 0;
+        if (all) { while (_freeBlocks.Count > 0) { Marshal.FreeHGlobal(_freeBlocks.Pop()); bytes += 24; } bytes += NTransform.PurgeMemos() * 368L; }
+        lock (SnapPool)
+        {
+            if (all || frame - _bigRent > 300) while (SnapPool.Count > 0) bytes += 16 + 4L * SnapPool.Pop().Length;
+            if (all) while (SmallSnapPool.Count > 0) bytes += 16 + 4L * SmallSnapPool.Pop().Length;
+        }
+        return bytes;
+    }
+    static int _bigRent;
 
     public static IEnumerable<NObj> All => ById.Values;
+    /// <summary>Kit #9 engine: the hierarchy epoch reached 2^30 -- every transform's activeInHierarchy stamp is cleared and the epoch restarts at 1
+    /// (an epoch value is never reused while a stamp could still hold it).</summary>
+    internal static void ClearAhStamps() { foreach (var n in ById.Values) if (n is NTransform t) t.ClearAhStamp(); NTransform.HierEpoch = 1; }
 
     // ---- menu-speed (top hotspots): GameObject names ----
     /// <summary>A counting filter of the names of the bound, live GameObject records (Bind adds, Kill and a rename remove): 71,424 byte counters,
@@ -617,6 +848,7 @@ public static class Objects
     static NObj[] Rent(int n)
     {
         NObj[] a = null; var pool = n >= BigSnap ? SnapPool : SmallSnapPool;
+        if (n >= BigSnap) _bigRent = Runtime.Time.FrameCount;   // (kit #9 purgeable arena: a big buffer not asked for in 300 frames is dropped)
         lock (SnapPool) if (pool.Count > 0) a = pool.Pop();
         if (a == null || a.Length < n) a = new NObj[Math.Max(1024, n + n / 4)];   // headroom: the count grows in steps while scenes load
         return a;

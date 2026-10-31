@@ -34,7 +34,15 @@
  *   keeps it, as Unity's does across a pause) -- the game resumes where it stopped, as a console game does -- and the clocks are checked and
  *   raised again where a standby lowered them below the app's (CLK resume line; a clock above the app's -- a plugin's -- is kept, never
  *   lowered). SHEPHERD_K7_SUSPEND=0 (and SHEPHERD_STRICT_ORIGINAL=1): kit #6 (the 5 s watchdog loop; op 4 answers -1, the engine keeps
- *   Unity's clamp). The watchdog's own 5 s work (a card write of the live black box) is outside the watched time (k7_susp_busy). */
+ *   Unity's clamp). The watchdog's own 5 s work (a card write of the live black box) is outside the watched time (k7_susp_busy).
+ *   Device kit #9 (track device, vita/notes/kit9-device.md): kit #7's and kit #8's device runs never showed a SUSP line although the owner
+ *   pressed the PS button and POWER (STEP 9): on the Vita the PROCESS clock STOPS while the app is suspended, so there is no gap to book --
+ *   and the play clock (process time too) never sees one, so the game already resumes where it stopped. The suspension is now seen with the
+ *   RTC: every watchdog tick compares sceRtcGetCurrentTick (the wall clock, which runs on through a suspension) minus the process clock with
+ *   the tick before; a jump of more than 1.5 s is a suspension -- one SUSP line ("seen by the RTC"), the clocks raised again where a standby
+ *   lowered them (CLK resume) -- and NOTHING is booked for the play clock (it never saw the time). A gap in the process clock itself (kit #7's
+ *   model) is still booked as before. SHEPHERD_K9_SUSP_RTC=0: kit #8 (the process-clock watch only). A change of the system clock while the
+ *   app runs looks the same (the line says so); it only re-checks the clocks. */
 
 static int g_clock_launch [4] = { -1, -1, -1, -1 };   /* arm, bus, gpu, xbar at launch; restored at exit when they were changed */
 static int g_clock_set;                                /* 1 = clocks_start changed them */
@@ -43,8 +51,21 @@ static int g_clock_base_arm = 444;                     /* kit #7: the app's norm
 static int g_k7_clk = 1, g_k7_profile = 1;
 #ifdef SHEPHERD_GL
 static int g_k7_susp = 1;
+static int g_k9_susp_rtc = 1;   /* kit #9 (device track): the P3 watch also reads the RTC (SHEPHERD_K9_SUSP_RTC=0: kit #8) */
 #endif
 static int k7_off (const char *k) { const char *e = getenv (k); return e && !strcmp (e, "0"); }
+/* device kit #9, track device: 500 MHz BY DEFAULT in the play apps (owner decision 2026-10-22) -- shepherd_vita_k6 op 0's bit 28 tells the
+ * engine's CPU Speed row (Runtime/VitaToggles.cs) that this app's default is 500; the measurement app 00099 (SHP_TEST_CLOCK) and the headless
+ * 00011 keep 444. The app still cannot raise the clock itself (the stock kernel refuses 500: rc 0x802b0000; no plugin exports a way): the row
+ * keeps 500 as the choice and says what is needed. SHEPHERD_K9_ARM500_DEFAULT=0: kit #8 (444 by default). */
+static int k9_state_bits (void)
+{
+#ifdef SHP_PLAY_APP
+	return k7_off ("SHEPHERD_K9_ARM500_DEFAULT") ? 0 : (1 << 28);
+#else
+	return 0;
+#endif
+}
 static void k7_config (void)
 {
 	g_k7_clk = !k7_off ("SHEPHERD_K7_CLK");
@@ -55,10 +76,12 @@ static void k7_config (void)
 	 *  P3's watch off too: kit #6's 5 s loop, op 4 = -1, no SUSP line that would claim the play clock left a suspension out) */
 	const char *so = getenv ("SHEPHERD_STRICT_ORIGINAL");
 	g_k7_susp = !k7_off ("SHEPHERD_K7_SUSPEND") && !(so && !strcmp (so, "1"));
+	g_k9_susp_rtc = !k7_off ("SHEPHERD_K9_SUSP_RTC");   /* kit #9 device track: the RTC sees a suspension the process clock does not */
 #endif
 }
 
 #ifdef SHEPHERD_GL   /* (the headless engine-AOT app, 00011, has 12-138 KiB of eboot room left: it gets the launch-clock rule only) */
+#include <psp2/rtc.h>   /* kit #9: sceRtcGetCurrentTick (the P3 watch) */
 /* ---- the ARM clock, measured */
 static unsigned __attribute__ ((noinline)) k7_spin (unsigned n)
 {
@@ -234,20 +257,43 @@ static int g_susp_busy;                /* kit #7 integration review: 1 while the
                                         * a STALL? line, a clock line): that time is not a suspension -- nothing is booked meanwhile */
 /* the watchdog's tick and every engine frame on the play clock (op 4): a gap of more than 1.5 s since the last one = the app was suspended
  * (no thread ran); booked once, minus one tick (the part the watchdog would have slept anyway). Returns the total booked, ms. */
+/* kit #9: the RTC minus the process clock at the watchdog's last tick (us); 0 = not read yet */
+static long long g_susp_rtc_off;
+static int g_susp_rtc_have;
+static unsigned g_susp_rtc_n, g_susp_rtc_ms;
 static unsigned k7_susp_book (int engine)
 {
+	SceRtcTick rt;
+	int rtc_ok = !engine && g_k9_susp_rtc && sceRtcGetCurrentTick (&rt) >= 0;   /* (the watchdog only: the engine's op 4 stays kit #8's) */
 	pthread_mutex_lock (&g_susp_mu);
 	SceUInt64 now = sceKernelGetProcessTimeWide (), last = g_susp_tick;
-	unsigned gap_ms = 0;
+	unsigned gap_ms = 0, rtc_gap_ms = 0;
 	if (last && now > last + K7_SUSP_GAP_US && !g_susp_hold && !g_susp_busy) {
 		gap_ms = (unsigned) ((now - last - K7_SUSP_TICK_US) / 1000u);
 		g_susp_ms += gap_ms;
 		g_susp_n++;
 		g_susp_reapply = 1;
 	}
+	if (rtc_ok) {   /* kit #9: the wall clock ran on while the process clock stood still = a suspension the play clock never saw */
+		long long off = (long long) rt.tick - (long long) now;
+		if (g_susp_rtc_have && off - g_susp_rtc_off > (long long) K7_SUSP_GAP_US && !gap_ms) {
+			rtc_gap_ms = (unsigned) ((off - g_susp_rtc_off) / 1000);
+			g_susp_rtc_ms += rtc_gap_ms;
+			g_susp_rtc_n++;
+			g_susp_n++;
+			g_susp_reapply = 1;
+		}
+		g_susp_rtc_off = off;
+		g_susp_rtc_have = 1;
+	}
 	g_susp_tick = now;
-	unsigned total = g_susp_ms, n = g_susp_n;
+	unsigned total = g_susp_ms, n = g_susp_n, rtc_total = g_susp_rtc_ms;
 	pthread_mutex_unlock (&g_susp_mu);
+	if (rtc_gap_ms)
+		LOG ("SUSP #%u at %.1f s: the app was suspended for ~%.1f s (the PS button or standby -- seen by the RTC: the process clock stops while an app is "
+		     "suspended, so it never saw the gap; or the system clock was changed): the play clock never saw it either -- nothing to leave out, the game "
+		     "resumes where it stopped; %.1f s seen this way in all; the clocks are checked again (kit #9; SHEPHERD_K9_SUSP_RTC=0: kit #8's process-clock watch only)",
+		     n, wall_s (), rtc_gap_ms / 1000.0, rtc_total / 1000.0);
 	if (gap_ms)
 		LOG ("SUSP #%u at %.1f s: the app was suspended for ~%.1f s (nothing ran from %.1f s on: the PS button or standby; booked by %s): the play clock "
 		     "leaves it out -- the game resumes where it stopped, as a console game does (kit #7 P3; SHEPHERD_K7_SUSPEND=0 = kit #6: Unity's one "

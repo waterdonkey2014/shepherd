@@ -117,7 +117,11 @@ public static class FieldCopy
         if (!ok && _mismatches++ == 0) _first = $"{f.DeclaringType?.Name}.{f.Name} ({f.FieldType.Name})";
     }
     static FieldCopy() { On = MenusCfg.FastClone && OffsetOf != null && SelfTest(); }
-    public static string Summary() => !Check ? null
-        : $"[k5] clone check: fast field copy {(On ? "on" : "OFF")}, {_checked} fields compared with reflection, {_mismatches} mismatches{(_first != null ? ", first " + _first : "")}";
+    public static string Summary()
+    {
+        K10LoadTrack.End();   // kit #10 load track (Instantiate path): its end lines ride on this end-of-run call (Boot.cs is the boot track's file)
+        return !Check ? null
+            : $"[k5] clone check: fast field copy {(On ? "on" : "OFF")}, {_checked} fields compared with reflection, {_mismatches} mismatches{(_first != null ? ", first " + _first : "")}";
+    }
     public static string StartLine() => $"[k5] Instantiate field copy: {(On ? "by field offset (Mono GetFieldOffset; self test passed)" : MenusCfg.FastClone ? $"reflection ({(OffsetOf == null ? "no RuntimeFieldInfo.GetFieldOffset in this runtime" : "the self test failed: " + _why)})" : "reflection (SHEPHERD_FAST_CLONE=0)")}";
 }

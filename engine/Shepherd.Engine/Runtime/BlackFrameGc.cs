@@ -69,6 +69,7 @@ public static class BlackFrameGc
             return;
         }
         long inUse0 = GC.GetTotalMemory(false);
+        K9House.BeforeCollect();   // kit #9 engine (SHEPHERD_K9_PURGE): the purgeable arena is dropped so this collection reclaims it
         var sw = Stopwatch.StartNew();
         GC.Collect();
         sw.Stop();

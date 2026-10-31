@@ -15,7 +15,14 @@
  * the log is (the host's log file, which the launcher writes itself then) and exits after START or 60 s.
  *
  * No newlib, no pthread: Sce* imports only (two newlib copies would share the main thread's TLS slot 0x89 with the module's newlib), so
- * memset / memcpy are defined here. Built -nostdlib -nostartfiles; _start is the entry the kernel calls on the main thread. */
+ * memset / memcpy are defined here. Built -nostdlib -nostartfiles; _start is the entry the kernel calls on the main thread.
+ *
+ * Device kit #9, track device (vita/notes/kit9-device.md): the owner's Vita showed NO splash picture in kit #8.1 -- "frame 0: the decoder
+ * gave no picture": the hardware decoder returns its pictures some access units after it got them (k8_avc.h, OUTPUT DELAY), and kit #8's
+ * video_main stopped at the first access unit without one. Now it keeps feeding while pictures are pending (up to K8_AVC_MAX_DELAY access
+ * units before the first one), asks for the held pictures after the last access unit (sceAvcdecDecodeStop), and times the frames by the
+ * pictures that come OUT (picture n is due at the first picture's vblank + n / rate; its access unit's index does not matter). The delay the
+ * decoder showed is logged ("output delay N"). SHEPHERD_K9_AVC_DELAY=0 = kit #8's loop (no picture for an access unit = the splash stops). */
 #include <stdint.h>
 #include <stdarg.h>
 #include <psp2/kernel/processmgr.h>
@@ -185,39 +192,172 @@ static int audio_main (SceSize args, void *argp)
 	return 0;
 }
 
+/* kit #9: frame buffers for the pictures the decoder still holds after the last access unit (made at the first drain, freed with the splash;
+ * the decoder may hand them all back in one call: each needs a buffer that is not on the screen) */
+#define K9_XFB (K8_AVC_MAX_DELAY - 1u)
+static SceUID g_xfb_mem [K9_XFB] = { [0 ... K9_XFB - 1] = -1 };
+static void *g_xfb [K9_XFB];
+static unsigned g_xfb_n;
+/* kit #9 review fix (finding 3; round 2, finding 1): sceAvcdecDecodeStop has never run on a Vita -- the shared, persistent guard of k8_avc.h
+ * (k9_avc_drain_*: the engine's real video uses the same files): a marker around every end-of-stream call; a marker found later (a call
+ * that never returned) turns the call off on every start until runtime/k9-avc-drain.off is deleted; skipped, the splash ends at the last
+ * picture before the held ones. (Round 1: a marker of the launcher's own, skipped ONCE then deleted -- with the engine's separate guard a
+ * call that always crashes crashed 3 starts out of 4.) */
+static int g_no_drain;
+static const char *g_no_drain_why;
+/* round 2: the video thread is inside the end-of-stream call (release ()'s timeout then turns the call off: runtime/k9-avc-drain.off, so a
+ * call that returns late and removes the marker is still remembered), and release () walked away from the thread (a decoder call that
+ * returns after that touches neither the display nor the K8Launch block: the engine owns both by then) */
+static volatile int g_in_drain, g_abandon;
+/* device kit #10, track boot: the drain (k8_avc.h "THE DRAIN") -- SHEPHERD_K10_AVC_FLUSH (default refeed: the clip's own access units fed again
+ * after its last one bring the held pictures out, one per call into the buffer not on the screen; 0 = kit #9's end-of-stream call) */
+static int g_k10_flush = K10_FLUSH_REFEED, g_k10_refeed_off;
+/* kit #10 review fixes: the flush access units' own time stamp (finding 5: SHEPHERD_K10_AVC_TAG=0 = none) and the refeed's persistent guard
+ * (finding 7, k8_avc.h: the marker from the first flush access unit to the flush's end; release () turns a refeed it walked away from into
+ * runtime/k10-avc-refeed.off) */
+static int g_k10_tag = 1, g_refeed_marked;
+static volatile int g_in_refeed;
+static void k9_more_fbs (unsigned want)
+{
+	while (g_xfb_n < want && g_xfb_n < K9_XFB) {
+		SceUID b = cdram ("shepherd-splash-fb-x", FB_BYTES, &g_xfb [g_xfb_n]);
+		if (b < 0) break;
+		g_xfb_mem [g_xfb_n++] = b;
+	}
+}
+
 static int video_main (SceSize args, void *argp)
 {
 	(void) args; (void) argp;
 	const K8ShvHeader *h = (const K8ShvHeader *) g_clip;
 	unsigned long long t0 = 0;
-	for (unsigned i = 0; i < h->frames; i++) {
-		unsigned len;
-		const unsigned char *au = k8shv_au (g_clip, i, &len);
-		void *fb = g_fb [i & 1];
+	unsigned i = 0;   /* the picture to show next = pictures out so far (kit #9: not the access unit's index) */
+	void *on = 0;     /* the buffer on the screen */
+	while (i < h->frames) {
+		void *outs [K8_AVC_MAX_DELAY];
 		unsigned long long d0 = now_us ();
-		int got = 0, r = k8avc_decode (&g_avc, au, len, fb, FB_W, &got);
+		int got = 0, r, drain = g_avc.fed >= h->frames;
+		if (!drain) {
+			unsigned len;
+			const unsigned char *au = k8shv_au (g_clip, g_avc.fed, &len);
+			outs [0] = g_fb [i & 1];   /* the buffer not on the screen (the one shown last is g_fb [(i - 1) & 1]) */
+			r = k8avc_decode (&g_avc, au, len, outs [0], FB_W, &got);
+		} else if (g_k10_flush != K10_FLUSH_KIT9) {   /* kit #10: the drain (kit #8's loop never gets here either) */
+			outs [0] = g_fb [i & 1];   /* the buffer not on the screen, as for every access unit */
+			if (g_k10_flush == K10_FLUSH_REFEED && !g_k10_refeed_off) {
+				unsigned len;
+				const unsigned char *au = k8shv_au (g_clip, g_avc.refed % h->frames, &len);
+				if (!g_refeed_marked) { k10_avc_refeed_begin (); g_refeed_marked = 1; }   /* review fix (finding 7): the refeed's guard */
+				g_in_refeed = 1;
+				r = k10avc_refeed (&g_avc, au, len, outs [0], FB_W, &got, g_k10_tag);
+				g_in_refeed = 0;
+				if (g_abandon)   /* (release () walked away from this thread inside the refeed: its .off is written; nothing more here) */
+					break;
+				if (r < 0) {   /* refused: stop1 once (behind kit #9's shared guard), then the held pictures stay held */
+					g_k10_refeed_off = 1; g_l.k10_fallback = 1;
+					k10_avc_refeed_end (); g_refeed_marked = 0;   /* (the call came back: refused is not a crash) */
+					llog ("launcher: the decoder refused flush access unit %u (0x%08x): the end-of-stream call with one picture per call (stop1) instead", g_avc.refed, (unsigned) r);
+					continue;
+				}
+				if (g_avc.second) {   /* review fix (finding 5): a picture of the clip's SECOND copy -- never shown (it is in the buffer not on the screen) */
+					sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: a picture of the clip's second copy came out of flush access unit %u (the decoder did not hand "
+							 "back its held pictures at the refed IDR): not shown -- %u of %u pictures shown, as kit #9", i, g_avc.refed, i, h->frames);
+					break;
+				}
+				if (got < 1) {
+					if (g_avc.refed <= K8_AVC_MAX_DELAY) { g_l.decode_us_total += (unsigned) (now_us () - d0); continue; }
+					sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: no picture after %u flush access units (the clip's own, fed again: %u of %u pictures)",
+							 i, g_avc.refed, i, h->frames);
+					break;
+				}
+			} else {
+				if (g_no_drain) {   /* (kit #9's guard covers every end-of-stream call) */
+					sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: the end-of-stream call skipped (%s); %u of %u pictures shown",
+							 i, g_no_drain == 2 ? "SHEPHERD_K9_AVC_DRAIN=0" : "runtime/k9-avc-drain.off", i, h->frames);
+					break;
+				}
+				k9_avc_drain_begin ();
+				g_in_drain = 1;
+				r = k10avc_stop1 (&g_avc, outs [0], FB_W, &got);
+				g_in_drain = 0;
+				k9_avc_drain_end ();
+				if (!g_abandon && r < 0) {
+					sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: %s (0x%08x); %u of %u pictures shown", i, g_avc.why, (unsigned) r, i, h->frames);
+					break;
+				}
+				if (!g_abandon && got < 1) {
+					sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: the end-of-stream call (stop1) returned no more pictures; %u of %u pictures shown", i, i, h->frames);
+					break;
+				}
+			}
+		} else {   /* (kit #9 only: kit #8's loop never gets here -- fed == frames means i == frames) */
+			if (g_no_drain) {   /* review fix (finding 3; round 2: the shared guard) */
+				sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: the end-of-stream call skipped (%s); %u of %u pictures shown",
+						 i, g_no_drain == 2 ? "SHEPHERD_K9_AVC_DRAIN=0" : "runtime/k9-avc-drain.off", i, h->frames);
+				break;
+			}
+			unsigned want = h->frames - i, n = 0;
+			if (want > K8_AVC_MAX_DELAY) want = K8_AVC_MAX_DELAY;
+			k9_more_fbs (want - 1u);
+			void *all [2 + K9_XFB];
+			unsigned na = 0;
+			all [na++] = g_fb [0]; all [na++] = g_fb [1];
+			for (unsigned k = 0; k < g_xfb_n; k++) all [na++] = g_xfb [k];
+			for (unsigned k = 0; k < na && n < want; k++) if (all [k] != on) outs [n++] = all [k];
+			k9_avc_drain_begin ();   /* review fix (finding 3; round 2: the shared marker -- left behind if the call never returns) */
+			g_in_drain = 1;
+			r = k8avc_drain_n (&g_avc, outs, n, FB_W, &got);
+			g_in_drain = 0;
+			k9_avc_drain_end ();
+		}
+		if (g_abandon)   /* round 2: release () gave up on this thread while it was in the decoder -- nothing more here */
+			break;
 		unsigned dus = (unsigned) (now_us () - d0);
-		if (r < 0 || got != 1) {
-			sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: %s (0x%08x, %d pictures)", i, r < 0 ? g_avc.why : "the decoder gave no picture",
-					 (unsigned) (r < 0 ? r : 0), got);
+		if (r < 0 || got < 1) {
+			if (r >= 0 && g_l.k9_delay && !drain && g_avc.fed - i < K8_AVC_MAX_DELAY) {   /* kit #9: the decoder holds it -- feed the next access unit */
+				g_l.decode_us_total += dus;
+				continue;
+			}
+			if (r < 0 || !g_l.k9_delay)
+				sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: %s (0x%08x, %d pictures)", i, r < 0 ? g_avc.why : "the decoder gave no picture",
+						 (unsigned) (r < 0 ? r : 0), got);
+			else if (drain)
+				sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: the decoder returned no more pictures after the last access unit (%u of %u pictures; %u returned by the end-of-stream call)",
+						 i, i, h->frames, g_avc.drained);
+			else
+				sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "frame %u: no picture after %u access units (the decoder does not answer)", i, g_avc.fed);
 			break;
 		}
+		if (!i) g_l.out_delay = g_avc.fed - 1u;   /* kit #9: access units it took before its first picture (0 = a picture per access unit) */
 		g_l.decode_us_total += dus;
 		if (dus > g_l.decode_us_max) g_l.decode_us_max = dus;
-		/* frame i is due at t0 + i / rate (t0 = the first frame's vblank); it reaches the screen at the vblank after the set */
-		if (i) {
-			unsigned long long due = t0 + (unsigned long long) i * h->rate_den * 1000000ull / h->rate_num, n = now_us ();
-			if (due > n + 17000) sceKernelDelayThread ((SceUInt) (due - n - 17000));
-			else if (n > due + 17000) g_l.frames_late++;
+		for (int k = 0; k < got && i < h->frames; k++) {
+			/* frame i is due at t0 + i / rate (t0 = the first frame's vblank); it reaches the screen at the vblank after the set */
+			if (i) {
+				unsigned long long due = t0 + (unsigned long long) i * h->rate_den * 1000000ull / h->rate_num, n = now_us ();
+				if (due > n + 17000) sceKernelDelayThread ((SceUInt) (due - n - 17000));
+				else if (n > due + 17000) g_l.frames_late++;
+			}
+			show (outs [k], SCE_DISPLAY_SETBUF_NEXTFRAME);
+			sceDisplayWaitVblankStart ();   /* the new buffer is scanned from here: the other one may be decoded into */
+			on = outs [k];
+			if (!i) {
+				t0 = g_l.t_first_frame = now_us ();
+				if (g_astart >= 0) sceKernelSignalSema (g_astart, 1);
+			}
+			g_l.frames_shown++;
+			i++;
 		}
-		show (fb, SCE_DISPLAY_SETBUF_NEXTFRAME);
-		sceDisplayWaitVblankStart ();   /* the new buffer is scanned from here: the other one may be decoded into */
-		if (!i) {
-			t0 = g_l.t_first_frame = now_us ();
-			if (g_astart >= 0) sceKernelSignalSema (g_astart, 1);
-		}
-		g_l.frames_shown++;
 	}
+	if (g_abandon) {   /* round 2: the host runs (it never waits for g_vdone again): exit without touching its block */
+		sceKernelExitThread (0);
+		return 0;
+	}
+	if (g_refeed_marked) { k10_avc_refeed_end (); g_refeed_marked = 0; }   /* kit #10 review fix (finding 7): the flush is over, the refeed came back */
+	g_l.fed = g_avc.fed; g_l.drained = g_avc.drained;
+	g_l.k10_flush = g_k10_flush; g_l.refed = g_avc.refed; g_l.flushed = g_avc.flushed; g_l.flush_rc = g_avc.flush_rc;   /* kit #10 */
+	g_l.k10_tag = g_k10_tag; g_l.second = g_avc.second;   /* kit #10 review fix (finding 5) */
+	g_l.pts_seen = g_avc.pts_seen; g_l.pts_bad = g_avc.pts_bad; g_l.flush_ok = g_avc.flush_ok;   /* kit #10 integration review */
 	g_l.t_splash_end = now_us ();
 	g_l.splash_state = g_l.frames_shown == h->frames ? 2 : -1;
 	if (g_astart >= 0 && !g_l.t_first_frame) sceKernelSignalSema (g_astart, 1);   /* (no picture: let the audio thread end) */
@@ -246,6 +386,8 @@ static void splash_free (void)
 {
 	k8avc_close (&g_avc);
 	for (int i = 0; i < 2; i++) if (g_fb_mem [i] >= 0) { sceKernelFreeMemBlock (g_fb_mem [i]); g_fb_mem [i] = -1; g_fb [i] = 0; }
+	for (unsigned i = 0; i < g_xfb_n; i++) if (g_xfb_mem [i] >= 0) { sceKernelFreeMemBlock (g_xfb_mem [i]); g_xfb_mem [i] = -1; g_xfb [i] = 0; }   /* kit #9 */
+	g_xfb_n = 0;
 	if (g_clip_mem >= 0) { sceKernelFreeMemBlock (g_clip_mem); g_clip_mem = -1; g_clip = 0; }
 	if (g_vdone >= 0) { sceKernelDeleteSema (g_vdone); g_vdone = -1; }
 	if (g_astart >= 0) { sceKernelDeleteSema (g_astart); g_astart = -1; }
@@ -286,6 +428,7 @@ static int splash_start (const char *path)
 	if (h->width != FB_W || h->height != FB_H) return splash_fail ("the clip is not 960 x 544", (int) h->width);
 	r = k8avc_open (&g_avc, h->width, h->height, 3, SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW);
 	if (r < 0) return splash_fail (g_avc.why ? g_avc.why : "the decoder did not open", g_avc.rc);
+	g_avc.tag_clip = g_l.k9_delay && g_k10_flush == K10_FLUSH_REFEED && g_k10_tag;   /* kit #10 integration review: the clip's own access units time-stamped too */
 	g_l.cdram_kib += g_avc.mem_bytes / 1024u;
 	for (int i = 0; i < 2; i++) {
 		if ((g_fb_mem [i] = cdram ("shepherd-splash-fb", FB_BYTES, &g_fb [i])) < 0) return splash_fail ("no CDRAM for the frame buffers", g_fb_mem [i]);
@@ -335,6 +478,17 @@ static int release (void)
 			 * decoder; their memory too: the partition then has less, and the engine's real video finds the decoder library taken: black
 			 * clips); the sound ends and its port is given back (review fix: the engine's shepaudio opens one later) */
 			audio_end ();
+			g_abandon = 1;   /* round 2 (finding 1): a decoder call that returns late touches nothing more */
+			if (g_in_drain) {   /* round 2 (finding 1): the end-of-stream call hangs -- off from now on, for the engine's real video too */
+				k9_avc_drain_off ("the decoder's end-of-stream call (sceAvcdecDecodeStop) did not return within the launcher's splash wait (15 s): a hang. "
+						  "Kit #9 skips the call (launcher and engine) while this file is here: delete it to try the call again.\n");
+				llog ("release: the splash's video thread is inside the decoder's end-of-stream call (sceAvcdecDecodeStop): runtime/k9-avc-drain.off written -- the call is skipped from now on (the engine's real video too) until that file is deleted");
+			}
+			if (g_in_refeed) {   /* kit #10 review fix (finding 7): a flush access unit that does not come back -- the refeed is off from now on */
+				k9_avc_file_write (K10_AVC_REFEED_OFF, "the decoder did not come back from a flush access unit (kit #10's refeed) within the launcher's splash wait (15 s): a hang. "
+						   "Kit #10 skips the refeed (launcher and engine) while this file is here: delete it to try it again.\n");
+				llog ("release: the splash's video thread is inside a flush access unit (the refeed): runtime/k10-avc-refeed.off written -- the refeed is skipped from now on (the engine's real video too) until that file is deleted");
+			}
 			llog ("release: the splash did not end within %u ms: the video thread, the decoder and the clip are left running; the sound stopped and its port given back; the host goes on",
 			      g_l.wait_ms_max ? g_l.wait_ms_max : 15000u);
 			g_l.t_released = now_us ();
@@ -424,6 +578,26 @@ void _start (unsigned args, void *argp)
 	g_l.wait_ms_max = 15000;
 	g_l.module_uid = -1;
 	env_read ();
+	g_l.k9_delay = !env_is ("SHEPHERD_K9_AVC_DELAY", "0");   /* kit #9 (read before env_free) */
+	g_k10_flush = k10avc_flush_mode (env_get ("SHEPHERD_K10_AVC_FLUSH"));   /* kit #10: the drain (k8_avc.h) */
+	g_l.k10_flush = g_k10_flush;
+	g_k10_tag = !env_is ("SHEPHERD_K10_AVC_TAG", "0");   /* kit #10 review fix (finding 5) */
+	g_l.k10_tag = g_k10_tag;
+	if (g_l.k9_delay && g_k10_flush == K10_FLUSH_REFEED) {   /* kit #10 review fix (finding 7): the refeed's persistent guard (k8_avc.h) */
+		const char *why = 0;
+		if (k10_avc_refeed_blocked (&why)) {
+			g_k10_refeed_off = 1; g_l.k10_fallback = 2;
+			llog ("launcher: the refeed is OFF (%s): the end-of-stream call with one picture per call (stop1) instead", why);
+		}
+	}
+	if (g_l.k9_delay) {   /* kit #9 review fix (finding 3; round 2, finding 1: the shared, persistent guard of k8_avc.h) */
+		if (env_is ("SHEPHERD_K9_AVC_DRAIN", "0"))
+			g_no_drain = 2, g_no_drain_why = "SHEPHERD_K9_AVC_DRAIN=0";
+		else if (k9_avc_drain_blocked (&g_no_drain_why))
+			g_no_drain = 1;
+		if (g_no_drain)
+			llog ("launcher: the decoder's end-of-stream call is OFF (%s): the splash ends at the last picture before the held ones", g_no_drain_why);
+	}
 	int off = env_is ("SHEPHERD_K8_SPLASH", "0") || env_is ("SHEPHERD_K8_BOOT", "0");
 	const char *clip = env_get ("SHEPHERD_K8_SPLASH_FILE");
 	static char clip_path [160];
@@ -432,8 +606,9 @@ void _start (unsigned args, void *argp)
 		sceClibSnprintf (g_l.splash_why, sizeof g_l.splash_why, "SHEPHERD_K8_%s=0 (the module loads at once; no splash)", env_is ("SHEPHERD_K8_BOOT", "0") ? "BOOT" : "SPLASH");
 		llog ("launcher at %u ms: splash OFF (%s)", ms (g_l.t_start), g_l.splash_why);
 	} else if (splash_start (clip_path) == 0)
-		llog ("launcher at %u ms: splash '%s' started (%u frames, %u KiB CDRAM: the clip %u KiB + the decoder %u KiB + 2 frame buffers; sound %s)", ms (g_l.t_start), g_l.clip,
-		      g_l.frames_total, g_l.cdram_kib, ((g_clip_len + 0x3FFFFu) & ~0x3FFFFu) / 1024u, g_avc.mem_bytes / 1024u, g_l.audio_state > 0 ? "on" : g_l.audio_why);
+		llog ("launcher at %u ms: splash '%s' started (%u frames, %u KiB CDRAM: the clip %u KiB + the decoder %u KiB + 2 frame buffers; sound %s; %s)", ms (g_l.t_start), g_l.clip,
+		      g_l.frames_total, g_l.cdram_kib, ((g_clip_len + 0x3FFFFu) & ~0x3FFFFu) / 1024u, g_avc.mem_bytes / 1024u, g_l.audio_state > 0 ? "on" : g_l.audio_why,
+		      g_l.k9_delay ? "kit #9: the decoder's output delay tolerated" : "SHEPHERD_K9_AVC_DELAY=0: kit #8's loop");
 	else
 		llog ("launcher at %u ms: NO splash: %s (%s): the module loads with a black screen", ms (g_l.t_start), g_l.splash_why, clip_path);
 	env_free ();   /* (every env lookup is done: the file's memory goes back before the module and the host) */

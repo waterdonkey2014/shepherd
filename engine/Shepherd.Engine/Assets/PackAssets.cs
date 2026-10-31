@@ -35,7 +35,8 @@ public static class PackAssets
         // to the 4th core when the core-unlock plugin allows it, else USER_2 (Diag/VitaHost.cs)
         PackReader.ReadAhead = Environment.GetEnvironmentVariable("SHEPHERD_PACK_READAHEAD") is { Length: > 0 } ra && ra.Trim() == "1";
         PackReader.OnReadAheadThread = Diag.VitaHost.PinWorker;
-        Reader = PackReader.Open(Dir);
+        Runtime.K10Io.ConfigurePack();   // kit #10 io: the chunked pack, decode-ahead, lanes, write discipline (SHEPHERD_K10_IO=0 = kit #9)
+        Reader = Runtime.K10Io.OpenPack(Dir);
         db.Pack = Reader;
         db.PackFallback = !Strict && Directory.Exists(db.BundleDir);
         db.PackMiss = Miss; Reader.Miss = Miss;
@@ -46,6 +47,7 @@ public static class PackAssets
         };
         Log.Info($"[pack] {Reader.Path}: {Reader.ObjectCount} objects in {Reader.FileCount} files, TOC {Reader.TocBytes / 1048576.0:F2} MiB, opened in {sw.Elapsed.TotalMilliseconds:F1} ms; " +
                  $"fallback to the game data on a miss: {(db.PackFallback ? "yes (Mac)" : "NO (strict / Vita)")}; bake properties: {(Reader.Properties.Count == 0 ? "none" : string.Join(", ", Reader.Properties.Select(kv => kv.Key + "=" + kv.Value)))}");
+        Log.Info(Runtime.K10Io.Describe(Reader));
     }
 
     /// <summary>A pack TextAsset's bytes, left in the pack: TextAsset.bytes / .text read them on each call (a fresh array, as
@@ -227,6 +229,7 @@ public static class PackAssets
     public static void Report()
     {
         if (!On) return;
+        Runtime.K10Io.End();   // kit #10 io: pending cache writes, the read log, the lines
         Log.Info($"[pack] {Reader.Stats()}");
         Log.Info($"[pack] texture uploads from the pack: {GpuUploads} DXT + {GpuRgbaUploads} RGBA8 + {GpuAlphaUploads} SDF alpha8, {GpuUploadBytes / 1048576.0:F1} MiB; SDF draws of transcoded textures: {SdfOfTranscoded}; MISSING lines: {Misses}; TextAsset reads from the pack: {PackBytes.Reads} ({PackBytes.ReadBytes / 1048576.0:F1} MiB)");
     }

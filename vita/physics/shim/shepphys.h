@@ -54,7 +54,10 @@ extern "C" {
                                            6: Stage 6 -- the 3D scene: sp_mesh3d_def, sp_col3d_def, sp_ray3d_query, sp_ray3d_hit;
                                            7: E1 -- sp_world_set_clamps (patch P2), SP_USTEP_MOVEGRAV_ON, the TOI casts;
                                            8: Stage 4 step 4a -- SP_USF_CHAIN_WELD, Unity's chain vertex filter;
-                                           9: Stage 4 step 4b -- SP_SHAPE_UNITY_WELD (patch P5), SP_USF_UNITY_POLY) */
+                                           9: Stage 4 step 4b -- SP_SHAPE_UNITY_WELD (patch P5), SP_USF_UNITY_POLY.
+                                           Stage 7 item 2 (kit #9, the Law of the Vita part 2) added entry points only -- sp_jobs_start /
+                                           stop / set / get, sp_host_jobs (native only) -- and lets sp_init_def.workers be 1..3: no struct
+                                           or signature changed, so still 9 (the self-tests' ABI records, and so their hashes, stay)) */
 #define SHEPPHYS_ABI_PROBE   51.75f     /* sp_abi()'s float probe: 1.5 + 0.25 * 3 + 2 * 24.75 computed from memory */
 
 /* ---- results (negative int32) ---- */
@@ -216,7 +219,7 @@ typedef struct sp_aabb_query {
  * the pool is one base (sp_pool_base) and every block is a uint32 offset into it (plan section 1.3). */
 typedef struct sp_init_def {
     int32_t pool_bytes;     /* SHEPHERD_PHYS_POOL_MB x 1 MiB; 0 = the default, 4 MiB */
-    int32_t workers;        /* worker threads (Stage 7, P3); must be 0 until then */
+    int32_t workers;        /* Stage 7 item 2 (kit #9): worker threads for patch P3's forked phases, 0..3 (sp_jobs_start); 0 = none */
     int32_t flags;          /* SP_INIT_* */
     int32_t b2_bytes;       /* Stage 1, B2: the Box2D arena (b2Alloc / b2Free); 0 = the default, 4 MiB (was `reserved`, always 0) */
 } sp_init_def;
@@ -322,7 +325,9 @@ SP_API int32_t sp_overlap_shape(int32_t world, const sp_shape_def *def, const fl
                                 uint32_t mask_bits, int32_t flags, int32_t *shapes, int32_t max);
 
 /* ---- Stage 0: runtime, pool, settings check, trace (shim/sp_core.cpp, shim/sp_trace.cpp) ---- */
-SP_API int32_t sp_init(const sp_init_def *def);      /* SP_OK; SP_ERR_PARAM (workers != 0); SP_ERR_FULL (no memory); again = SP_OK */
+SP_API int32_t sp_init(const sp_init_def *def);      /* SP_OK; SP_ERR_PARAM (workers outside 0..3); SP_ERR_FULL (no memory); again = SP_OK.
+                                                        workers > 0 also starts the worker pool (sp_jobs_start; a build without threads
+                                                        -- the QEMU harness -- runs serial: sp_jobs_get(SP_JOBS_WORKERS) says how many) */
 SP_API int32_t sp_shutdown(void);                    /* frees the pool; worlds are the caller's to destroy first */
 SP_API void *sp_pool_base(void);                     /* the pool's base (NULL before sp_init); moves only on a Mac grow (base_gen) */
 SP_API int32_t sp_pool_alloc(int32_t bytes);         /* offset of a 16-byte-aligned block of >= bytes, or SP_ERR_FULL / SP_ERR_PARAM */
@@ -339,6 +344,63 @@ SP_API int32_t sp_pool_get_stats(sp_pool_stats *out);
 SP_API int32_t sp_host_memory(void *base, uint32_t bytes);
 /* the registered block (or NULL / 0): the host's END line */
 SP_API int32_t sp_host_memory_info(void **base, uint32_t *bytes, uint32_t *pool_bytes, uint32_t *b2_bytes);
+/* ---- Stage 7 item 2 (kit #9, the Law of the Vita part 2; physics-plan-v2 section 1.9): patch P3's worker pool (shim/sp_jobs.cpp,
+ * shim/sp_p3.cpp). Native worker threads, never attached to Mono; while the pool runs, every b2World::Step may fork Collide's
+ * narrowphase, P1's final trigger pass and the island solve (worlds without joints) when the phase has at least its threshold of work,
+ * and applies the results in Box2D's own serial order: poses, contacts and events are bit-identical to the serial step (T1, the
+ * self-tests, the engine drives' goldens, traces replayed serially on the Mac and QEMU). Not traced (it changes no result). The pool is
+ * process-wide and outlives sp_init / sp_shutdown. */
+enum {
+    SP_JOBS_WORKERS = 0,      /* get: the live workers */
+    SP_JOBS_ENABLE = 1,       /* 1 (default) = steps fork; 0 = the workers stay, every step serial (the battery-saver row) */
+    SP_JOBS_MIN_COLLIDE = 2,  /* fork Collide at >= this many contacts to evaluate (default 16; <= 0 never) */
+    SP_JOBS_MIN_TRIGGERS = 3, /* fork the trigger pass at >= this many active sensor contacts (default 16; <= 0 never) */
+    SP_JOBS_MIN_ISLANDS = 4,  /* fork the island solve at >= this many islands (default 4; <= 0 never) */
+    SP_JOBS_SPIN_US = 5,      /* a worker spins this long after a fork / wake before it sleeps (default 200) */
+    SP_JOBS_CHECK = 6,        /* 1 = every forked phase also computed serially and compared (SHEPHERD_CHECK_PHYS=workers) */
+    SP_JOBS_PREWAKE = 7,      /* wake the workers at a step start at >= this many contacts (0 = the smaller fork threshold) */
+    SP_JOBS_HOST = 8,         /* get: 1 = the host's threads (sp_host_jobs), 0 = pthreads / none */
+    SP_JOBS_STATS_RESET = 9,  /* set: zero the counters below (not the SP_JOBS_ST_FP_* ones: whole-run totals) */
+    /* kit #10 fidelity review fix (vita/notes/kit10-fidelity.md "Review fixes"): what the fork's FPSCR hand-over gave the workers. 1 = every part
+     * a worker runs is counted with the FPSCR control bits it ran under (AHP DN FZ RMode Stride Len, OR / AND over all parts) and the sticky
+     * IDC / UFC flags it left (read and cleared after the part: flags only, no result changes) -- SP_JOBS_ST_FP_*; 2 (TEST: the negative test)
+     * = the same with the hand-over SKIPPED, so the workers keep their own FPSCR and the check must see it. 0 (default) = nothing (kit #9).
+     * The host sets it with SHEPHERD_K10_FPSCR on (vita/shepherd/k10_fp.inc.c); set before the workers start */
+    SP_JOBS_FP_STAT = 10,
+    SP_JOBS_ST_FP_PARTS = 39, SP_JOBS_ST_FP_CTRL_OR = 40, SP_JOBS_ST_FP_CTRL_AND = 41, SP_JOBS_ST_FP_IDC = 42, SP_JOBS_ST_FP_UFC = 43,
+    SP_JOBS_ST_STEPS = 16, SP_JOBS_ST_FORKS = 17, SP_JOBS_ST_WAKES = 18, SP_JOBS_ST_SLEEPS = 19,
+    SP_JOBS_ST_COLLIDE_FORKS = 20, SP_JOBS_ST_COLLIDE_ITEMS = 21, SP_JOBS_ST_COLLIDE_SMALL = 22,
+    SP_JOBS_ST_TRIGGER_FORKS = 23, SP_JOBS_ST_TRIGGER_ITEMS = 24, SP_JOBS_ST_TRIGGER_SMALL = 25,
+    SP_JOBS_ST_ISLAND_FORKS = 26, SP_JOBS_ST_ISLANDS = 27, SP_JOBS_ST_ISLANDS_BIG = 28, SP_JOBS_ST_ISLAND_SMALL = 29,
+    SP_JOBS_ST_ISLAND_JOINTS = 30, SP_JOBS_ST_ISLAND_STATICS = 31, SP_JOBS_ST_ANOMALIES = 32,
+    SP_JOBS_ST_CHECK_RUNS = 33, SP_JOBS_ST_CHECK_MISMATCHES = 34, SP_JOBS_ST_WORKER_FP0 = 35,
+    /* kit #9 review fixes: sleeping bodies an island search reached on steps handed back to the stock Solve (left asleep); the pool's scratch
+     * in bytes (the contact scratch, the check copies, the workers' island allocators: malloc'd, freed by sp_jobs_stop); how often the calling
+     * thread slept in a join / start wait instead of spinning (its spin is bounded by SP_JOBS_SPIN_US) */
+    SP_JOBS_ST_HANDBACK_SLEEPERS = 36, SP_JOBS_ST_SCRATCH_BYTES = 37, SP_JOBS_ST_JOIN_SLEEPS = 38
+};
+SP_API int32_t sp_jobs_start(int32_t workers);       /* 0..3 workers: SP_OK; SP_ERR_PARAM out of range; SP_ERR_FULL no threads in this build;
+                                                        SP_ERR_LOCKED a pool of another size runs (sp_jobs_stop first) */
+SP_API int32_t sp_jobs_stop(void);                   /* joins the workers, frees their scratch; only between steps, on the stepping thread.
+                                                        A host without thread_join: the workers are told to end but not joined -- the pool stays
+                                                        down for good (sp_jobs_start then says SP_ERR_LOCKED; kit #9 review fix) */
+SP_API int32_t sp_jobs_set(int32_t key, int32_t value);   /* SP_JOBS_ENABLE .. SP_JOBS_FP_STAT */
+SP_API int32_t sp_jobs_get(int32_t key);             /* any SP_JOBS_* key; SP_ERR_PARAM for an unknown one */
+/* Native only (like sp_host_memory): the host's threads, before sp_jobs_start (the Vita eboot: SceKernel threads on the cores and at the
+ * priority it picks, vita/shepherd/phys_host.inc.c). thread_start(index 1..3, entry, arg) = 0 when the thread runs entry(arg); thread_join(index)
+ * returns when that thread has ended (NULL: sp_jobs_stop cannot restart the pool); now_us a monotonic clock. Without it: pthreads on the Mac /
+ * Linux, none elsewhere. NULL = forget it. The calling thread spins at most SP_JOBS_SPIN_US in a join (or for the workers to start) and then
+ * sleeps on a pool semaphore the last worker posts (kit #9 review fix: a worker on the calling thread's core, at its priority, can run). */
+typedef struct sp_jobs_host {
+    int32_t (*thread_start)(int32_t index, void (*entry)(void *), void *arg);
+    void (*thread_join)(int32_t index);
+    void *(*sem_create)(void);
+    void (*sem_post)(void *sem);
+    void (*sem_wait)(void *sem);
+    void (*sem_destroy)(void *sem);
+    uint64_t (*now_us)(void);
+} sp_jobs_host;
+SP_API int32_t sp_host_jobs(const sp_jobs_host *ops);
 SP_API int32_t sp_nop(void);                         /* returns 0: the managed->native transition cost (physbench) */
 /* compares the run-time-decoded settings with Box2D's compiled constants; writes up to max rows (SP_SET_COUNT); returns the number of
  * DIFFERS rows (CotL today: 1, SP_SET_MAX_ROTATION -- H-MAXROT) */

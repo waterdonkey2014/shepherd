@@ -123,9 +123,13 @@ public static class IcallRegistry
         Shepherd.Engine.Impl.InertStubs.Register(rows);
         double tInert = Ms(t4);
         Icalls.OnMissing = i => { lock (MissingHits) MissingHits[Names[i]] = 1; Log.Write("MIS", Names[i]); };
+        Runtime.K9Typed.Bind();   // kit #9 track runtime: the typed twins (lever 10, D6) and the E5 mirrors, over the hooks bound above
         Log.Info($"icalls: {Implemented} implemented of {Names.Length}");
         Log.Info($"icalls: rows from {Source}; registry up in {Ms(t0):F0} ms (rows {tRows:F0}, names {tNames:F0}, [Icall] scan + bind {tBind:F0}, auto-props {tAuto:F0}, inert stubs {tInert:F0})");
         if (Environment.GetEnvironmentVariable("SHEPHERD_ICALL_DUMP") is { Length: > 0 } dump) Dump(dump);
+#if !SHEPHERD_EBOOT
+        Diag.K9IcallAlloc.Wrap();   // kit #9 engine: SHEPHERD_K9_ICALL_ALLOC=<from>:<to> (Mac measurement; unset: nothing wrapped)
+#endif
     }
 
     /// <summary>SHEPHERD_ICALL_DUMP=&lt;file&gt; (kit #4 check): one line per id after Init -- what fills the slot: nothing, an [Icall] method,

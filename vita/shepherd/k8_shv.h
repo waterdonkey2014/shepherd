@@ -37,6 +37,7 @@ typedef struct K8ShvHeader {
 #define K8SHV_F_NO_BFRAMES 1u            /* decode order = display order: one access unit in, one picture out */
 #define K8SHV_F_BT601 2u                 /* the transcode converted the colours to BT.601 limited range (the decoder's default conversion) */
 #define K8SHV_F_AUDIO_BAKE 4u            /* the audio is the owner's FMOD bake of the clip's event (not the clip's own track) */
+#define K8SHV_F_DPB1 8u                  /* kit #9: one reference picture -- the SPS's max_dec_frame_buffering 1 (splash_pack.py --ref 1) */
 
 typedef char k8shv_header_size_check [(sizeof (K8ShvHeader) == K8SHV_HEADER_SIZE) ? 1 : -1];
 

@@ -9,6 +9,7 @@
  */
 #include "shepphys.h"
 #include "sp_trace.h"
+#include "sp_p3.h"   /* Stage 7 item 2 (kit #9): patch P3's job system around each step */
 
 #include <Box2D/Box2D.h>
 #include <Box2D/Dynamics/b2Island.h>   /* E1, patch P2: b2_unityMaxTranslation / b2_unityMaxRotation */
@@ -34,7 +35,7 @@ static_assert(sizeof(sp_event2) == 32, "sp_event2");             /* Stage 2 */
 static_assert(sizeof(sp_uquery) == 56, "sp_uquery");
 static_assert(sizeof(sp_uhit) == 40, "sp_uhit");
 
-#define SP_SHIM_VERSION 0x00000900   /* 0.9.0: Stage 4 step 4b (patch P5: SP_SHAPE_UNITY_WELD; SP_USF_UNITY_POLY: Unity's polygon build of a decomposed piece); 0.8.0: Stage 4 step 4a (SP_USF_CHAIN_WELD: Unity's chain vertex filter); 0.7.0: E1 (patch P2 + sp_world_set_clamps, SP_USTEP_MOVEGRAV_ON, H-SYNC tolerance, the TOI casts); 0.6.0: Stage 6 (the 3D island-ground ray: shim/sp_mesh3d.cpp); 0.5.0: Stage 3 (forces in the mirror, frozen axes, H-DAMP / H-CHAIN, contact snapshots); 0.4.0: Stage 2
+#define SP_SHIM_VERSION 0x00000A00   /* 0.10.0: Stage 7 item 2 (kit #9, the Law of the Vita part 2: patch P3, the worker pool -- shim/sp_jobs.cpp, sp_p3.cpp); 0.9.0: Stage 4 step 4b (patch P5: SP_SHAPE_UNITY_WELD; SP_USF_UNITY_POLY: Unity's polygon build of a decomposed piece); 0.8.0: Stage 4 step 4a (SP_USF_CHAIN_WELD: Unity's chain vertex filter); 0.7.0: E1 (patch P2 + sp_world_set_clamps, SP_USTEP_MOVEGRAV_ON, H-SYNC tolerance, the TOI casts); 0.6.0: Stage 6 (the 3D island-ground ray: shim/sp_mesh3d.cpp); 0.5.0: Stage 3 (forces in the mirror, frozen axes, H-DAMP / H-CHAIN, contact snapshots); 0.4.0: Stage 2
                                         (P1 world flags, contact serials, Unity queries); 0.3.0: Stage 1 (the Unity layer) */
 
 #ifndef SHEPPHYS_FLAGS
@@ -567,7 +568,7 @@ SP_API int32_t sp_version(void) { return SP_SHIM_VERSION; }
 
 SP_API const char *sp_build_info(void)
 {
-    return "shepphys " "0.9.0" " box2d 2.3.1+P1+P2+P5 trig=" SP_TRIG_MODE B2_MODE " cc=" SP_CC " flags=" SHEPPHYS_FLAGS;
+    return "shepphys " "0.10.0" " box2d 2.3.1+P1+P2+P3+P5 trig=" SP_TRIG_MODE B2_MODE " cc=" SP_CC " flags=" SHEPPHYS_FLAGS;
 }
 
 static int32_t impl_world_create(const sp_world_def *def)
@@ -626,7 +627,10 @@ static int32_t impl_world_step(int32_t world, const sp_step_def *step, sp_step_s
     /* E1, patch P2: Box2D's speed clamps hold this world's values for this step only (0 = stock) */
     b2_unityMaxTranslation = W->max_translation;
     b2_unityMaxRotation = W->max_rotation;
+    /* Stage 7 item 2 (kit #9), patch P3: the worker pool for this step only, while it runs (NULL = stock; shim/sp_jobs.cpp) */
+    b2_unityJobs = sp_jobs_for_step(W->w->GetContactCount());
     W->w->Step(step->dt, step->velocity_iterations, step->position_iterations);
+    b2_unityJobs = nullptr;
     b2_unityTriggerPhase = 0;
     b2_unityKinematicTriggers = 0;
     b2_unityMaxTranslation = 0.0f;
@@ -1386,6 +1390,8 @@ static const struct { const char *name; void *fn; } k_procs[] = {
     /* Stage 6 */
     SP_FN(sp_scene3d_create), SP_FN(sp_scene3d_destroy), SP_FN(sp_mesh3d_create), SP_FN(sp_mesh3d_destroy), SP_FN(sp_col3d_create),
     SP_FN(sp_col3d_set), SP_FN(sp_col3d_destroy), SP_FN(sp_ray3d), SP_FN(sp_scene3d_stats),
+    /* Stage 7 item 2 (kit #9): the worker pool (patch P3) */
+    SP_FN(sp_jobs_start), SP_FN(sp_jobs_stop), SP_FN(sp_jobs_set), SP_FN(sp_jobs_get), SP_FN(sp_host_jobs),
 };
 
 SP_API void *shepphys_proc(const char *name)

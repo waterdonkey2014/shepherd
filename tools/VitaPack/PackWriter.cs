@@ -124,7 +124,7 @@ sealed class PackWriter
         SharedStrings = _shared.Count;
         // 2) records
         foreach (var e in entries) if (e.Tree != null) e.TreeBytes = EncodeTree(e.Tree);
-        using var fs = new FileStream(path + ".tmp", FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
+        using var fs = new FileStream(path + ".tmp", FileMode.Create, FileAccess.Write, FileShare.Read, 1 << 20);   // (Read: the payload hash reads it back)
         fs.Write(new byte[VitaPackFormat.HeaderSize]);
         long payload = fs.Position;
         // image offsets are known once the records are laid out
@@ -165,6 +165,14 @@ sealed class PackWriter
         if (fs.Position - payload != recEnd) throw new InvalidDataException("record layout mismatch");
         foreach (var e in entries) if (e.Tex?.Out != null) { fs.Write(e.Tex.Out); ImageBytes += e.Tex.Out.Length; }
         long payloadSize = fs.Position - payload;
+        // kit #10 io review: the payload's hash as a TOC property (Shepherd.Assets VitaPack2Format.PayloadHashProperty) -- the TOC's checksum,
+        // which the engine compares when it picks a shepherd.pk2 made from this file, then covers the payload's bytes too (a re-bake that keeps
+        // the TOC's layout is another pack). --no-payload-hash = the bake as before kit #10.
+        if (!Program.NoPayloadHash)
+        {
+            fs.Flush();
+            _b.Properties[VitaPack2Format.PayloadHashProperty] = Repack.PayloadHashOfFile(path + ".tmp", payload, payloadSize);
+        }
         // 3) TOC
         var toc = Toc();
         long tocOff = fs.Position; fs.Write(toc); TocBytes = toc.Length;

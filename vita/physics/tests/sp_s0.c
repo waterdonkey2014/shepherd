@@ -116,8 +116,8 @@ static void pool_test(S0 *s)
     sp_shutdown();
     if (sp_init(0) != SP_OK || sp_pool_get_stats(&st) != SP_OK || st.bytes != 4u << 20) fail(s, 14);   /* the default: 4 MiB */
     sp_shutdown();
-    sp_init_def bad = {0, 2, 0, 0};
-    if (sp_init(&bad) != SP_ERR_PARAM) fail(s, 15);   /* workers come with Stage 7 */
+    sp_init_def bad = {0, 9, 0, 0};
+    if (sp_init(&bad) != SP_ERR_PARAM) fail(s, 15);   /* workers: 0..3 (Stage 7 item 2, kit #9) */
 }
 
 static void settings_test(S0 *s)

@@ -149,6 +149,9 @@ public static unsafe partial class MemReport
 
         var all = Objects.All.Where(n => !n.Destroyed).ToList();
         W($"live NObj records: {all.Count} (Objects.LiveCount={Objects.LiveCount})");
+#if !SHEPHERD_NO_PHYS
+        W(Shepherd.Engine.Physics.PhysWorld.MemLine());   // kit #9 (physics-plan-v2 Stage 7 item 7): the physics core's memory and step times
+#endif
 
         // ---- textures ----
         var texs = all.OfType<NTexture>().ToList();

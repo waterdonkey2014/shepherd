@@ -80,7 +80,8 @@ public static partial class PhysCheck
         var core = ShepPhys.Core;
         Check($"libshepphys binds and the ABI handshake passes (version {ShepPhys.AbiVersion}, {ShepPhys.AbiSizes} struct sizes, float probe 51.75)", core != null, ShepPhys.Status);
         if (core == null) return;
-        int r = core.Init(PhysConfig.PoolMb << 20, Environment.OSVersion.Platform == PlatformID.Unix ? ShepPhys.InitPoolGrow : 0);
+        int initFlags = Environment.OSVersion.Platform == PlatformID.Unix ? ShepPhys.InitPoolGrow : 0;
+        int r = PhysConfig.Workers > 0 ? core.InitWorkers(PhysConfig.PoolMb << 20, initFlags, PhysConfig.Workers) : core.Init(PhysConfig.PoolMb << 20, initFlags);   // kit #9: the worker pool too
         Check($"sp_init: a {PhysConfig.PoolMb} MiB pool", r == 0, $"rc {r}");
         var h = ((ShepPhys)core).ReadHeader();
         Check("the pool's header read through its one base pointer (magic, ABI version)", h.Magic == ShepPhys.HeaderMagic && h.AbiVersion == ShepPhys.AbiVersion,
@@ -149,6 +150,40 @@ public static partial class PhysCheck
         long d3 = PhysWorld.DirtyCalls;
         Check("dirty hook: a write to B dirties B and its collider child C (2); while B is the written transform only C (1); a write to the " +
               "uninterested parent A dirties B and C (2)", d1 - d0 == 2 && d2 - d1 == 1 && d3 - d2 == 2, $"{d1 - d0} / {d2 - d1} / {d3 - d2}");
+        // U3b (kit #9, physics-plan-v2 Stage 7 item 4): the lazy hasChanged against an eager model -- position writes (MarkChanged: the transform
+        // and its subtree), hasChanged = true / false (one transform), and parent changes WITHOUT a mark (the loader's way: Native/Objects.cs
+        // rebases) -- 3,000 seeded steps over a 12-transform tree; every transform compared after every step (with SHEPHERD_LAZY_HASCHANGED=0
+        // the same test checks the eager flags)
+        {
+            var hg = new GameObject[12];
+            for (int i = 0; i < hg.Length; i++) { hg[i] = new GameObject("HC" + i); if (i > 0) hg[i].transform.SetParent(hg[(i - 1) / 2].transform, false); }
+            var model = new Dictionary<NTransform, bool>();
+            foreach (var g in hg) model[T(g)] = true;   // (new transforms start changed; SetParent marked the subtrees anyway)
+            uint rng = 12345u;
+            int Next(int n) { rng = rng * 1664525u + 1013904223u; return (int)((rng >> 8) % (uint)n); }
+            void MarkModel(NTransform t) { model[t] = true; foreach (var ch in t.Children) MarkModel(ch); }
+            int bad = 0, reparents = 0, writes = 0;
+            for (int step = 0; step < 3000; step++)
+            {
+                int k = Next(hg.Length); var g = hg[k]; var t = T(g);
+                switch (Next(4))
+                {
+                    case 0: g.transform.position = new Vector3(Next(100), 0f, 0f); MarkModel(t); break;
+                    case 1: g.transform.hasChanged = true; model[t] = true; writes++; break;
+                    case 2: g.transform.hasChanged = false; model[t] = false; writes++; break;
+                    default:   // a parent change without a mark, inside the tree (the root stays the root)
+                        if (k == 0) break;
+                        var p = T(hg[Next(hg.Length)]);
+                        if (p == t || p.IsChildOf(t) || t.Parent == p) break;
+                        t.Parent.Children.Remove(t); t.Parent = p; p.Children.Add(t); reparents++;
+                        break;
+                }
+                foreach (var h in hg) if (h.transform.hasChanged != model[T(h)]) bad++;
+            }
+            Check($"lazy hasChanged (kit #9) = the eager model: 3,000 seeded steps (position writes, hasChanged writes {writes}, parent changes without a mark {reparents}) over 12 transforms, every transform compared after each step",
+                  bad == 0, $"{bad} mismatches ({(NTransform.HcLazy ? "lazy" : "eager")})");
+            UObject.DestroyImmediate(hg[0]);
+        }
         // U4: Instantiate copies the typed state and sets the clone's interest
         ((NRigidbody2D)C(b.GetComponent<Rigidbody2D>())).Mass = 3f;
         ((NCollider2D)C(c.GetComponent<CircleCollider2D>())).Radius = 0.25f;

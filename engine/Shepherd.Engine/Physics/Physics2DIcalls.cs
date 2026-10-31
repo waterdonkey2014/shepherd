@@ -54,7 +54,7 @@ static class Physics2DIcalls
         return null;
     }
     [Icall("UnityEngine.Collider2D::get_offset_Injected", Phys = 1)]
-    static object GetOffset(object[] a) { var c = C(a[0]); a[1] = c != null ? new Vector2(c.OffsetX, c.OffsetY) : default; return null; }
+    static object GetOffset(object[] a) { var c = C(a[0]); a[1] = c != null ? PG.V2(c.OffsetX, c.OffsetY) : default; return null; }   // kit #9 glue math rule: Um
     [Icall("UnityEngine.Collider2D::set_offset_Injected", Phys = 1)]
     static object SetOffset(object[] a)
     {
@@ -86,7 +86,7 @@ static class Physics2DIcalls
         return null;
     }
     [Icall("UnityEngine.BoxCollider2D::get_size_Injected", Phys = 1)]
-    static object GetSize(object[] a) { var c = C(a[0]); a[1] = c != null ? new Vector2(c.SizeX, c.SizeY) : Vector2.one; return null; }
+    static object GetSize(object[] a) { var c = C(a[0]); a[1] = c != null ? PG.V2(c.SizeX, c.SizeY) : PG.One2; return null; }   // kit #9 glue math rule (Vector2.one = (1, 1))
     [Icall("UnityEngine.BoxCollider2D::set_size_Injected", Phys = 1)]
     static object SetSize(object[] a)
     {

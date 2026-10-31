@@ -1,3 +1,6 @@
+#if !SHEPHERD_EBOOT
+#define SHEPHERD_LOADPROF   // (kit #10: the loader profile's zone calls -- Assets/LoadProf.cs -- are compiled into Mac / engine-tools builds only)
+#endif
 using System.Reflection;
 using Shepherd.Engine.Impl;
 using Shepherd.Engine.Native;
@@ -34,6 +37,12 @@ public sealed class AnimatorRuntime
 
     public void Init()
     {
+        if (_init) return;
+        if (!Assets.LoadProf.On) { InitCore(); return; }
+        Assets.LoadProf.Enter(Assets.LoadProf.AnimInit); try { InitCore(); } finally { Assets.LoadProf.Exit(Assets.LoadProf.AnimInit); }
+    }
+    void InitCore()
+    {
         if (_init) return; _init = true;
         CtrlObj = Conv.To(Owner.Get("runtimeAnimatorController"), typeof(RuntimeAnimatorController)) as UObject;
         Ctrl = CtrlObj != null ? ControllerData.Of(CtrlObj) : null;
@@ -54,6 +63,11 @@ public sealed class AnimatorRuntime
 
     // ---------------- binding ----------------
     void Bind(UObject clip)
+    {
+        if (!Assets.LoadProf.On) { BindCore(clip); return; }
+        Assets.LoadProf.Enter(Assets.LoadProf.AnimBind); try { BindCore(clip); } finally { Assets.LoadProf.Exit(Assets.LoadProf.AnimBind); }
+    }
+    void BindCore(UObject clip)
     {
         var cd = ClipData.Of(clip); if (cd == null) return; var list = new List<(ClipData.Binding, int, Target)>();
         var paths = PathMap();
@@ -131,12 +145,37 @@ public sealed class AnimatorRuntime
             {
                 var cname = Shepherd.Assets.ClassIds.Name(b.TypeId);
                 var comp = go.Components.FirstOrDefault(c => c.Managed.GetType().Name == cname); if (comp == null) return null;
-                var name = CandidateBuiltin(comp).FirstOrDefault(n => Crc.Of(n) == b.Attribute); if (name == null) return null;
+                var name = BuiltinName(comp, b.Attribute); if (name == null) return null;
                 return comp is Physics.NRigidbody2D or Physics.NCollider2D or Physics.NCollider3D ? PhysTarget(PropTarget(comp, name, b.IsPPtr), comp, name) : PropTarget(comp, name, b.IsPPtr);
             }
         }
     }
 
+    /// <summary>The first candidate property name of a built-in component whose CRC is the binding's attribute. Kit #10 (SHEPHERD_K10_ANIMBIND):
+    /// for a component whose candidates come from its source object (the diet: Diet.SourceFieldPaths -- a pack tree decoded for every binding of
+    /// every Animator) the answer is a function of (source file, path id, attribute): kept; clones of one prefab share it.</summary>
+    static string BuiltinName(NComponent comp, uint attr)
+    {
+        if (!K10LoadTrack.AnimBind || comp.Data is Shepherd.Assets.TypeTreeObject || !comp.HasSource || comp.SourceFile == null)
+            return CandidateBuiltin(comp).FirstOrDefault(n => Crc.Of(n) == attr);
+        var key = new BKey(comp.SourceFile, comp.PathId, attr);
+        if (_builtinNames.TryGetValue(key, out var name)) { _builtinHits++; return name; }
+        name = CandidateBuiltin(comp).FirstOrDefault(n => Crc.Of(n) == attr);
+        _builtinNames[key] = name;
+        return name;
+    }
+    /// <summary>(source file, path id, attribute) as a reference-type key: no value-tuple dictionary in the AOT image.</summary>
+    sealed class BKey : IEquatable<BKey>
+    {
+        readonly object _f; readonly long _p; readonly uint _a;
+        public BKey(object f, long p, uint a) { _f = f; _p = p; _a = a; }
+        public bool Equals(BKey o) => o != null && ReferenceEquals(_f, o._f) && _p == o._p && _a == o._a;
+        public override bool Equals(object o) => Equals(o as BKey);
+        public override int GetHashCode() => (System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(_f) * 31 + _p.GetHashCode()) * 31 + (int)_a;
+    }
+    static readonly Dictionary<BKey, string> _builtinNames = new();
+    static long _builtinHits, _fieldHits;
+    public static string BindSummary() => !K10LoadTrack.AnimBind ? null : $"[k10] animator binding: {_builtinNames.Count} built-in property names kept ({_builtinHits} reused), {_fields.Values.Sum(x => x.Count)} script fields kept ({_fieldHits} reused)";
     static IEnumerable<string> CandidateBuiltin(NComponent c)
     {
         yield return "m_Enabled";
@@ -191,12 +230,27 @@ public sealed class AnimatorRuntime
 
     static readonly BindingFlags AnyI = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
     static FieldInfo FindField(Type t, string n) { for (var c = t; c != null; c = c.BaseType) { var f = c.GetField(n, AnyI | BindingFlags.DeclaredOnly); if (f != null) return f; } return null; }
+    /// <summary>Kit #10 (SHEPHERD_K10_ANIMBIND): FindField / the OnDidApplyAnimationProperties lookup are functions of the type (and name): kept.</summary>
+    static readonly Dictionary<Type, Dictionary<string, FieldInfo>> _fields = new(); static readonly Dictionary<Type, MethodInfo> _commitMs = new();
+    static FieldInfo FieldOf(Type t, string n)
+    {
+        if (!K10LoadTrack.AnimBind) return FindField(t, n);
+        if (!_fields.TryGetValue(t, out var byName)) _fields[t] = byName = new Dictionary<string, FieldInfo>(StringComparer.Ordinal);
+        if (byName.TryGetValue(n, out var f)) { _fieldHits++; return f; }
+        return byName[n] = FindField(t, n);
+    }
+    static MethodInfo CommitOf(Type t)
+    {
+        if (!K10LoadTrack.AnimBind) return t.GetMethod("OnDidApplyAnimationProperties", AnyI);
+        if (_commitMs.TryGetValue(t, out var m)) return m;
+        return _commitMs[t] = t.GetMethod("OnDidApplyAnimationProperties", AnyI);
+    }
     static Target MbTarget(NMono mb, string path, bool pptr)
     {
         var obj = mb.Managed;
         if (path == "m_Enabled") return new Target { Owner = mb, Get = () => mb.Enabled ? 1 : 0, Set = v => Lifecycle.SetEnabled(mb, v > 0.5f) };
-        var parts = path.Split('.'); var f = FindField(obj.GetType(), parts[0]); if (f == null) return null;
-        var commit = obj.GetType().GetMethod("OnDidApplyAnimationProperties", AnyI);
+        var parts = path.Split('.'); var f = FieldOf(obj.GetType(), parts[0]); if (f == null) return null;
+        var commit = CommitOf(obj.GetType());
         Action doCommit = commit == null ? null : () =>
         {
             try { commit.Invoke(obj, null); } catch (Exception e) { Log.Exception(e, "OnDidApplyAnimationProperties"); }

@@ -1,3 +1,5 @@
+// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): shared static bodies in islands solved at the
+// same time (m_p3Shared; 0 = stock, every stock path). Listed in vita/physics/box2d/PATCHES.md (row P3).
 // ALTERED for Shepherd: physics-plan-v2 patch P2 (the speed clamps as runtime values, physics E1), behind the runtime values
 // b2_unityMaxTranslation / b2_unityMaxRotation (b2Island.h); with both 0 this file behaves exactly as stock Box2D 2.3.1.
 // Listed in vita/physics/box2d/PATCHES.md (row P2). The original notice follows unchanged.
@@ -168,6 +170,11 @@ b2Island::b2Island(
 	m_allocator = allocator;
 	m_listener = listener;
 
+	m_p3Shared = 0;   // Shepherd P3: stock unless the shim's parallel island solve sets it
+	m_p3Slept = 0;
+	m_p3Statics = NULL;
+	m_p3StaticCount = 0;
+
 	m_bodies = (b2Body**)m_allocator->Allocate(bodyCapacity * sizeof(b2Body*));
 	m_contacts = (b2Contact**)m_allocator->Allocate(contactCapacity	 * sizeof(b2Contact*));
 	m_joints = (b2Joint**)m_allocator->Allocate(jointCapacity * sizeof(b2Joint*));
@@ -203,8 +210,11 @@ void b2Island::Solve(b2Profile* profile, const b2TimeStep& step, const b2Vec2& g
 		float32 w = b->m_angularVelocity;
 
 		// Store positions for continuous collision.
-		b->m_sweep.c0 = b->m_sweep.c;
-		b->m_sweep.a0 = b->m_sweep.a;
+		if (m_p3Shared == 0 || b->m_type != b2_staticBody)   // Shepherd P3: a shared static body is written by the shim, in island order
+		{
+			b->m_sweep.c0 = b->m_sweep.c;
+			b->m_sweep.a0 = b->m_sweep.a;
+		}
 
 		if (b->m_type == b2_dynamicBody)
 		{
@@ -245,6 +255,7 @@ void b2Island::Solve(b2Profile* profile, const b2TimeStep& step, const b2Vec2& g
 	contactSolverDef.positions = m_positions;
 	contactSolverDef.velocities = m_velocities;
 	contactSolverDef.allocator = m_allocator;
+	contactSolverDef.island = m_p3Shared ? this : NULL;   // Shepherd P3: static bodies' slots from P3IndexOf
 
 	b2ContactSolver contactSolver(&contactSolverDef);
 	contactSolver.InitializeVelocityConstraints();
@@ -342,6 +353,10 @@ void b2Island::Solve(b2Profile* profile, const b2TimeStep& step, const b2Vec2& g
 	for (int32 i = 0; i < m_bodyCount; ++i)
 	{
 		b2Body* body = m_bodies[i];
+		if (m_p3Shared && body->m_type == b2_staticBody)   // Shepherd P3: the shim copies a shared static body's result back, in island order
+		{
+			continue;
+		}
 		body->m_sweep.c = m_positions[i].c;
 		body->m_sweep.a = m_positions[i].a;
 		body->m_linearVelocity = m_velocities[i].v;
@@ -384,9 +399,14 @@ void b2Island::Solve(b2Profile* profile, const b2TimeStep& step, const b2Vec2& g
 
 		if (minSleepTime >= b2_timeToSleep && positionSolved)
 		{
+			m_p3Slept = 1;   // Shepherd P3
 			for (int32 i = 0; i < m_bodyCount; ++i)
 			{
 				b2Body* b = m_bodies[i];
+				if (m_p3Shared && b->m_type == b2_staticBody)   // Shepherd P3: the shim puts a shared static body to sleep, in island order
+				{
+					continue;
+				}
 				b->SetAwake(false);
 			}
 		}
@@ -413,6 +433,7 @@ void b2Island::SolveTOI(const b2TimeStep& subStep, int32 toiIndexA, int32 toiInd
 	contactSolverDef.count = m_contactCount;
 	contactSolverDef.allocator = m_allocator;
 	contactSolverDef.step = subStep;
+	contactSolverDef.island = NULL;   // Shepherd P3: TOI islands are never shared
 	contactSolverDef.positions = m_positions;
 	contactSolverDef.velocities = m_velocities;
 	b2ContactSolver contactSolver(&contactSolverDef);

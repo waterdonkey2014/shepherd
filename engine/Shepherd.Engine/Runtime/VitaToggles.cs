@@ -61,8 +61,33 @@ public static class VitaToggles
     const BindingFlags I = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
     // host state bits (host.c shepherd_vita_k6): 1 core pinning on, 2 CPU3 open, 4 workers on CPU3 now, 8 the host sets the clocks; 16-27 launch MHz
     const int StPin = 1, StOpen = 2, StOnCpu3 = 4, StClocks = 8;
+    /// <summary>Device kit #9, track device (vita/notes/kit9-device.md), owner decision 2026-10-22 ("I'm okay with 500 MHz being the default,
+    /// just like the cap unlocker for the 4th core is"): host state bit 28 = this app's CPU Speed defaults to 500 MHz -- the play apps
+    /// (host.c SHP_PLAY_APP: 00097 / 00098 / 00095 / 00193 / 00194); the measurement app 00099 stays 444 for the kit-to-kit history. The app
+    /// cannot raise the clock above 444 itself: the stock kernel refuses scePowerSetArmClockFrequency(500) (rc 0x802b0000, every kit #6-#8
+    /// start), and the owner's plugins export no API an app could call (PSVshell / PSVshellPlus and NoPowerLimits define no exported library:
+    /// their module .yml files have only module_start / module_stop; PSVshell hooks the kernel's clock setters and applies a per-title
+    /// PROFILE). So the choice stays 500 (saved / shown) and the start asks for it once as before; when it is refused the clock falls back to
+    /// 444 silently, and the greyed row says so plainly: "444 MHz (500: PSVshellPlus)" -- or "500 MHz (PSVshellPlus)" when a profile for this
+    /// app already runs the cores at ~500 (kit #8's measured clock). A saved cpu_mhz= line still wins. <c>SHEPHERD_K9_ARM500_DEFAULT=0</c>
+    /// (host side: the bit is not set) = kit #8 (444 by default).</summary>
+    const int St500Default = 1 << 28;
     static bool _core3 = true;     // the owner's choices (vita-settings.txt), defaults = kit #5
     static int _mhz = 444;
+    static bool _mhzSaved;         // kit #9: the CPU Speed choice is the owner's (a cpu_mhz= line that counts, or the row changed): it wins over the default
+    /// <summary>Kit #9 review fix (finding 5, vita/notes/kit9-device.md "Review fixes"): kit #6-#8 wrote <c>cpu_mhz=</c> with EVERY row change
+    /// (444 unless 500 was chosen), and kit #9's first version did the same -- so the 500 default became a "saved" 500 after any toggle (and
+    /// <c>SHEPHERD_K9_ARM500_DEFAULT=0</c> no longer gave kit #8's 444), the early restore-backup save froze 444, and the owner's own card (a
+    /// vita-settings.txt from kit #6-#8 on every start of the kit #8 logs) would have kept 444 for good. Now, with the kit #9 rule on
+    /// (<c>SHEPHERD_K9_ARM500_DEFAULT</c> not 0, every app): the line is written only for a choice made in the CPU Speed row, followed by
+    /// <see cref="K9Chosen"/> (a comment: every older build skips it); a <c>cpu_mhz=444</c> without it is kit #6-#8's automatic line, not a
+    /// choice (a 500 always is one: 444 was their default). With the switch at 0 the file is read and written exactly as kit #8 did.</summary>
+    static readonly bool K9Rules = Environment.GetEnvironmentVariable("SHEPHERD_K9_ARM500_DEFAULT") != "0";
+    const string K9Chosen = "# cpu_mhz above: chosen in the CPU Speed row (kit #9)";
+    static bool _mhzLegacy;        // kit #9 review: the file's cpu_mhz=444 was kit #6-#8's automatic line (logged once)
+    static bool K9Default500 => (_state & St500Default) != 0;
+    static int DefaultMhz => K9Default500 ? 500 : 444;
+    static int _noteHi = -1;       // kit #9: the plain note shown for the measured clock's class (1 = ~500, 0 = ~444; -1 none)
     /// <summary>Kit #7 (track measure): the "Performance Overlay" row (Render/K7Overlay.cs) -- a clone of the VSync toggle row after the CPU
     /// Clock readout, Off by default, saved as overlay=on|off; the game's Reset All turns it Off. GL apps only (the headless ones draw
     /// nothing). <c>SHEPHERD_K7_OVERLAY_ROW=0</c> (or <c>SHEPHERD_K7=0</c>) = kit #6's four rows; an overlay= line in the file is then left alone.</summary>
@@ -86,6 +111,21 @@ public static class VitaToggles
     static string _k8Kept = "";                                   // rear= / pacing= / restore= lines of a row that is not built: written back as read
     static Component _rearTog, _paceTog, _bakSel; static Selectable _rearRow, _paceRow, _bakRow;
     static string[] _bakItems = Array.Empty<string>();            // the backup selector's files (index 0 = "No")
+    /// <summary>Kit #10 (track cache, vita/notes/kit10-cache.md; owner decisions 2026-10-16 / 2026-10-17): four more rows after Restore Save
+    /// Backup -- "Cache Size" (a clone of the Target Frame Rate selector: 256 MB / 512 MB / 1 GB / 2 GB, 1 GB by default; saved as
+    /// cache_mb=256|512|1024|2048; the learning cache's cap, applied live: least recently used entries out), "Cache In Use" (a readout like
+    /// CPU Clock: the cache folder's size, refreshed about once a second), "Clear Cache" (a clone of the selector with no value, confirmed with
+    /// the X button like the game's own buttons -- MMSelectable.OnConfirm -- through the game's own confirmation window, as its Reset All:
+    /// confirm = everything under ux0:data/shepherd/cache deleted, never saves or settings) and "Verify Files" (the same; it starts the io track's
+    /// verify core and shows its progress / result; greyed "not in this build" without it). The game's Reset All puts Cache Size back to 1 GB.
+    /// GL apps only. <c>SHEPHERD_K10_CACHE=0</c> (the track's master) or <c>SHEPHERD_K10_ROWS=0</c>: not built, a cache_mb= line kept as read.</summary>
+    static readonly bool K10Rows = K10Cache.On && Environment.GetEnvironmentVariable("SHEPHERD_K10_ROWS") != "0" && Render.Backends.Kind == "gl";
+    static int _cacheMb = K10Cache.DefaultMb;                           // the owner's Cache Size (default 1 GB)
+    static string _k10Kept = "";                                         // a cache_mb= line while the rows are not built: written back as read
+    static Component _cacheSel, _useSel, _clearSel, _verifySel; static Selectable _cacheRow, _clearRow, _verifyRow;
+    static object _useText, _useHelper, _clearText, _clearHelper, _verifyText, _verifyHelper;
+    static string _useShown, _clearShown, _verifyShown;
+    static int _clearSeen, _verifyState;   // the Clear Cache state last shown; Verify Files: 1 = started from these rows (its result window is due)
     static int _arm500 = -1;       // 500 MHz this session: -1 not tried yet, 0 not available, 1 available
     static int _state;             // the host's state bits, last answer
 
@@ -97,7 +137,7 @@ public static class VitaToggles
     static Assembly _gameAsm;                 // the game's assembly (SettingsManager), from the watched types
     static PropertyInfo _tmpText, _settingsProp;
     static FieldInfo _graphicsField;
-    static readonly Transform[] _made = new Transform[8];
+    static readonly Transform[] _made = new Transform[12];
     static double _next, _t0;
     static int _f0, _shownMhz = -1, _shownFps = -1;
     static bool _fpsLogged;
@@ -122,14 +162,18 @@ public static class VitaToggles
         if (RearRow || (K8Play.Rear && !_rear)) Impl.VitaPad.RearOn = _rear;   // kit #8: the saved rear touch / frame pacing choices from the first frame
         if (K8Play.Pacing) K8Play.PacingChoice = _pacing;   // (review fix: also without their rows -- SHEPHERD_K8_ROWS=0 -- while the feature is on; VitaPad
                                                             // touched here only as before or for a saved Off)
+        _state = Host(0, 0);   // (kit #9 review: read before the restore's Save below -- op 0 only answers, so the order changes nothing else)
+        if (!_mhzSaved && K9Default500) _mhz = 500;   // kit #9: 500 MHz by default in the play apps (the bit: host.c; the owner's saved choice wins)
         if (BakRow && _restore != null) { K8Play.RestoreBackup(_restore); _restore = null; Save(); }   // kit #8: a restore chosen last session, before the game reads its saves
-        _state = Host(0, 0);
+        if (K10Cache.On) K10Cache.Configure(_cacheMb);   // kit #10: the learning cache's cap (the saved Cache Size; also without its row)
         Log.Info("[k6] Settings > Graphics > PS Vita Settings rows ON (SHEPHERD_K6_TOGGLES=0: off): " + (text == null ? "no " + FileName + " yet, the defaults" : FileName) +
-                 ": " + Choices() + " | host: " + StateNote(_state));
+                 ": " + Choices() + (K9Default500 ? (_mhzSaved ? " (kit #9: 500 MHz is this app's default; the saved choice wins)" : " (kit #9: 500 MHz by default in the play apps; SHEPHERD_K9_ARM500_DEFAULT=0 = 444)") : "") +
+                 (_mhzLegacy ? " (kit #9: the file's cpu_mhz=444 was written by kit #6-#8 with every row change, not chosen -- the default applies; a choice in the CPU Speed row is kept)" : "") +
+                 " | host: " + StateNote(_state));
         if (!_core3 && (_state & StOnCpu3) != 0) _state = Host(1, 0);   // the workers on USER_2 from the start (the power thread moved now)
         if (ProbeAtStart && (_state & StClocks) != 0)
         {   // (kit #6 integration, owner decision: the launch's one check whether 500 MHz is there -- a saved 500 is that check)
-            if (_mhz == 500) TrySpeed(500, "the saved choice; also this launch's one check whether 500 MHz is there");
+            if (_mhz == 500) TrySpeed(500, _mhzSaved || !K9Default500 ? "the saved choice; also this launch's one check whether 500 MHz is there" : "the default (kit #9); also this launch's one check whether 500 MHz is there");
             else { TrySpeed(500, "is it available? asked once, at start"); if (_arm500 == 1) Host(2, 444); }
         }
         else if (_mhz == 500) TrySpeed(500, "the saved choice");
@@ -137,24 +181,30 @@ public static class VitaToggles
 
     static string FilePath => Path.Combine(Program.Root, FileName);
     static string Choices() => "4th CPU Core " + OnOff(_core3) + ", CPU Speed " + _mhz + " MHz" + (OvlRow ? ", Performance Overlay " + OnOff(_overlay) : "") +
-        (RearRow ? ", Rear Touch " + OnOff(_rear) : "") + (PaceRow ? ", Frame Pacing " + OnOff(_pacing) : "") + (BakRow ? ", Restore Save Backup " + (_restore ?? "No") : "");
+        (RearRow ? ", Rear Touch " + OnOff(_rear) : "") + (PaceRow ? ", Frame Pacing " + OnOff(_pacing) : "") + (BakRow ? ", Restore Save Backup " + (_restore ?? "No") : "") + (K10Rows ? ", Cache Size " + MbText(_cacheMb) : "");
 
     static void Parse(string text)
     {
+        bool chosen = false; int mhzLine = 0;
         foreach (var raw in text.Split('\n'))
         {
             var line = raw.Trim();
+            if (line == K9Chosen) chosen = true;   // kit #9 review (a comment line: skipped below as before)
             int eq = line.IndexOf('=');
             if (line.Length == 0 || line[0] == '#' || eq < 0) continue;
             var key = line.Substring(0, eq).Trim(); var val = line.Substring(eq + 1).Trim();
             if (key == "core3" && (val == "on" || val == "off")) _core3 = val == "on";
-            else if (key == "cpu_mhz" && (val == "444" || val == "500")) _mhz = val == "500" ? 500 : 444;
+            else if (key == "cpu_mhz" && (val == "444" || val == "500")) { _mhz = val == "500" ? 500 : 444; mhzLine = _mhz; }
             else if (key == "overlay" && (val == "on" || val == "off")) { if (OvlRow) _overlay = val == "on"; else _ovlKept = val; }   // kit #7 (the row off: left alone, kept for Save)
             else if (key == "rear" && (val == "on" || val == "off")) { _rear = val == "on"; if (!RearRow) _k8Kept += line + "\n"; }   // kit #8 (applied with or without the row)
             else if (key == "pacing" && (val == "on" || val == "off")) { _pacing = val == "on"; if (!PaceRow) _k8Kept += line + "\n"; }
             else if (key == "restore") { if (BakRow) _restore = val == "no" || val.Length == 0 ? null : val; else _k8Kept += line + "\n"; }
+            else if (key == "cache_mb" && int.TryParse(val, out var cmb) && Array.IndexOf(K10Cache.SizesMb, cmb) >= 0) { _cacheMb = cmb; if (!K10Rows) _k10Kept += line + "\n"; }   // kit #10
             else Log.Warn("[k6] " + FileName + ": '" + line + "' ignored (core3=on|off, cpu_mhz=444|500)");
         }
+        // kit #9 review (finding 5): a 500 is always a choice; a 444 only with the kit #9 mark (else kit #6-#8 wrote it with any row change)
+        _mhzSaved = mhzLine == 500 || (mhzLine == 444 && (chosen || !K9Rules));
+        _mhzLegacy = mhzLine == 444 && !_mhzSaved;
     }
 
     static void Save()
@@ -164,9 +214,9 @@ public static class VitaToggles
             // file or the new one, never a torn one)
             var err = Render.GxpCache.WriteAtomic(FilePath, System.Text.Encoding.ASCII.GetBytes(
                 "# Shepherd (PS Vita): Settings > Graphics > PS Vita Settings -- written by the app when a row changes; delete it for the defaults\ncore3=" +
-                (_core3 ? "on" : "off") + "\ncpu_mhz=" + _mhz + "\n" + (OvlRow ? "overlay=" + (_overlay ? "on" : "off") + "\n" : _ovlKept != null ? "overlay=" + _ovlKept + "\n" : "") +
+                (_core3 ? "on" : "off") + "\n" + (!K9Rules ? "cpu_mhz=" + _mhz + "\n" : _mhzSaved ? "cpu_mhz=" + _mhz + "\n" + K9Chosen + "\n" : "") + (OvlRow ? "overlay=" + (_overlay ? "on" : "off") + "\n" : _ovlKept != null ? "overlay=" + _ovlKept + "\n" : "") +
                 (RearRow ? "rear=" + (_rear ? "on" : "off") + "\n" : "") + (PaceRow ? "pacing=" + (_pacing ? "on" : "off") + "\n" : "") +
-                (BakRow ? "restore=" + (_restore ?? "no") + "\n" : "") + _k8Kept));
+                (BakRow ? "restore=" + (_restore ?? "no") + "\n" : "") + _k8Kept + (K10Rows ? "cache_mb=" + _cacheMb.ToString() + "\n" : _k10Kept)));
             if (err != null) { Log.Warn("[k6] " + FileName + ": not written (" + err + ")"); return; }
             Log.Info("[k6] saved " + FileName + ": " + Choices());
         }
@@ -176,7 +226,7 @@ public static class VitaToggles
     static string StateNote(int st) =>
         (st & StPin) == 0 ? "core pinning off in this app (the 4th core is never used)" :
         "4th core " + ((st & StOpen) != 0 ? "open (core-unlock plugin)" : "not open") + ", workers on " + ((st & StOnCpu3) != 0 ? "CPU3" : "USER_2") +
-        ((st & StClocks) != 0 ? "" : "; clocks not set by the app (SHEPHERD_CLOCKS=0: launch " + (st >> 16) + " MHz)");
+        ((st & StClocks) != 0 ? "" : "; clocks not set by the app (SHEPHERD_CLOCKS=0: launch " + ((st >> 16) & 0xfff) + " MHz)");
 
     /// <summary>Ask the host for <paramref name="mhz"/> and keep it only when the clock reads back as asked; a 500 that does not take
     /// effect marks 500 MHz not available this session and asks for 444 again. Returns the clock read back at the end.</summary>
@@ -187,6 +237,8 @@ public static class VitaToggles
         Log.Info("[k6] CPU Speed " + mhz + " MHz (" + why + "): the clock reads back " + back + " MHz" + (back == mhz ? "" : mhz == 500 ?
                  ": 500 MHz is not available on this device (the clock did not take it: no plugin lets the app above 444, or one sets the clocks itself): back to 444" : ""));
         if (back != mhz && mhz == 500) back = Host(2, 444);
+        if (back != mhz && mhz == 500 && K9Default500 && _mhz == 500)
+            Log.Info("[k9] CPU Speed: 500 MHz is the choice, the clock stays at 444 (the app cannot raise it: no plugin offers an app a way; 500 needs a PSVshellPlus profile for this app) -- the row says so");
         return back;
     }
 
@@ -210,6 +262,7 @@ public static class VitaToggles
             Log.Warn("[k6] Settings > Graphics: the PS Vita rows were not added (" + e.GetBaseException().Message + ")");
             _tog = _speed = _clock = _ovl = null; _togRow = _speedRow = _ovlRow = null;   // (Live stays: the Reset-All watch goes on while the menu is open)
             _rearTog = _paceTog = _bakSel = null; _rearRow = _paceRow = _bakRow = null;   // kit #8
+            K10Forget();                                                                   // kit #10
             foreach (var r in _made) if (r != null) UObject.Destroy(r.gameObject);   // (rows already in the list: gone again)
         }
         Array.Clear(_made);
@@ -239,14 +292,15 @@ public static class VitaToggles
         if (g == null || ReferenceEquals(g, _gfxData)) return false;
         bool seen = _gfxData != null; _gfxData = g;
         if (!seen) return false;
-        Log.Info("[k6] the game's Reset All: 4th CPU Core and CPU Speed back to their defaults (On, 444 MHz)" + (OvlRow ? ", Performance Overlay Off" : "") + (_tog == null ? " (the rows not built yet)" : ""));
+        Log.Info("[k6] the game's Reset All: 4th CPU Core and CPU Speed back to their defaults (On, " + DefaultMhz + " MHz)" + (OvlRow ? ", Performance Overlay Off" : "") + (_tog == null ? " (the rows not built yet)" : ""));
         if (!_core3 && (_state & StOpen) != 0) _state = Host(1, 1);
-        if (_mhz != 444) TrySpeed(444, "Reset All");
-        _core3 = true; _mhz = 444;
+        if (_mhz != DefaultMhz) TrySpeed(DefaultMhz, "Reset All");   // (kit #9: the play apps' default is 500 -- kept as the choice even when refused)
+        _core3 = true; _mhz = DefaultMhz; _mhzSaved = false;   // (kit #9 review: back to the default -- not a choice)
         if (OvlRow) { _overlay = false; Render.K7Overlay.SetChoice(false); }
         if (RearRow) { _rear = true; Impl.VitaPad.RearOn = true; }   // kit #8
         if (PaceRow) { _pacing = false; K8Play.PacingChoice = false; }
         if (BakRow) { if (_restore != null) K8Play.Unpin(); _restore = null; }   // (integration review: and the chosen backup's pin)
+        if (K10Rows && _cacheMb != K10Cache.DefaultMb) { _cacheMb = K10Cache.DefaultMb; K10Cache.SetCap(_cacheMb); }   // kit #10: Cache Size back to 1 GB
         Save();
         return true;
     }
@@ -278,6 +332,14 @@ public static class VitaToggles
             if (RearRow) _made[5] = Clone(togRow, holder, "Rear Touch", "Rear Touch (L2 R2 L3 R3)");                   // kit #8
             if (PaceRow) _made[6] = Clone(togRow, holder, "Frame Pacing", "Frame Pacing (30 / 20 / 15)");
             if (BakRow) _made[7] = Clone(selRow, holder, "Restore Save Backup", "Restore Save Backup");
+            if (K10Rows)
+            {   // kit #10 (track cache)
+                _made[8] = Clone(selRow, holder, "Cache Size", "Cache Size");
+                _made[9] = Clone(selRow, holder, "Cache In Use", "Cache In Use");
+                _made[9].GetComponent<Selectable>().enabled = false;   // a readout, like CPU Clock
+                _made[10] = Clone(selRow, holder, "Clear Cache", "Clear Cache");
+                _made[11] = Clone(selRow, holder, "Verify Files", "Verify Files");
+            }
             foreach (var r in _made) r?.SetParent(content, false);
         }
         finally { UObject.Destroy(holder); }
@@ -289,6 +351,7 @@ public static class VitaToggles
         if (RearRow) { _rearTog = _made[5].GetComponentInChildren(vsync.GetType(), true); _rearRow = _made[5].GetComponent<Selectable>(); }   // kit #8
         if (PaceRow) { _paceTog = _made[6].GetComponentInChildren(vsync.GetType(), true); _paceRow = _made[6].GetComponent<Selectable>(); }
         if (BakRow) { _bakSel = _made[7].GetComponentInChildren(fps.GetType(), true); _bakRow = _made[7].GetComponent<Selectable>(); }
+        if (K10Rows) K10Build(fps.GetType());   // kit #10
         _clockText = Get(_clock, "_text"); _clockHelper = Get(_clock, "_textHelper");
         var cs = _made[3].GetComponent<Selectable>();
         Call(cs, "SetNormalTransitionState", null, null);   // the label in the rows' normal colour
@@ -312,6 +375,7 @@ public static class VitaToggles
         if (_rearTog != null) _rearTog.GetType().GetField("OnValueChanged").SetValue(_rearTog, new Action<bool>(OnRear));   // kit #8
         if (_paceTog != null) _paceTog.GetType().GetField("OnValueChanged").SetValue(_paceTog, new Action<bool>(OnPacing));
         if (_bakSel != null) _bakSel.GetType().GetField("OnSelectionChanged").SetValue(_bakSel, new Action<int>(OnRestore));
+        if (_cacheSel != null) _cacheSel.GetType().GetField("OnSelectionChanged").SetValue(_cacheSel, new Action<int>(OnCacheSize));   // kit #10
         var onShow = gs.GetType().GetField("OnShow", BindingFlags.Instance | BindingFlags.Public);   // UIMenuBase.OnShow: after the tab's OnShowStarted
         onShow?.SetValue(gs, Delegate.Combine((Delegate)onShow.GetValue(gs), new Action(OnTabShow)));
         _t0 = Time.Realtime; _f0 = Time.FrameCount; _next = _t0 + 1.0; _shownMhz = _shownFps = -1;
@@ -319,7 +383,7 @@ public static class VitaToggles
         Readout(Host(3, 0), -1);
         Log.Info("[k6] Settings > Graphics: PS Vita Settings rows added after '" + after + "' (clones of '" + head.name + "', '" + togRow.name + "', '" + selRow.name +
                  "'; navigation " + _togRow.navigation.mode + "): 4th CPU Core " + OnOff((bool)Get(_tog, "_value")) + ((_state & StOpen) == 0 ? " (not available)" : "") +
-                 ", CPU Speed " + (_arm500 == 1 && _mhz == 500 ? "500" : "444") + " MHz" + (_arm500 == 1 ? "" : (_state & StClocks) == 0 ? " (clocks not the app's)" : " (500 not available)") +
+                 ", CPU Speed " + (_k9Shown ?? ((_arm500 == 1 && _mhz == 500 ? "500" : "444") + " MHz" + (_arm500 == 1 ? "" : (_state & StClocks) == 0 ? " (clocks not the app's)" : " (500 not available)"))) +
                  (_ovl != null ? ", Performance Overlay " + OnOff(_overlay) : "") +
                  " | host: " + StateNote(_state));
     }
@@ -333,13 +397,27 @@ public static class VitaToggles
         if (_rearTog != null) SetToggleOf(_rearTog, _rear, show);   // kit #8
         if (_paceTog != null) SetToggleOf(_paceTog, _pacing, show);
         if (_bakSel != null) BakItems();
+        if (_cacheSel != null) K10Configure();   // kit #10
         bool clocks = (_state & StClocks) != 0, can500 = clocks && _arm500 == 1;
         SetProp(_speed, "LocalizeContent", false);
         SetProp(_speed, "ContentIndex", 0);   // (first: the selector shows _content[index], and a shorter list must not be read past its end)
-        Call(_speed, "PrefillContent", typeof(string[]), can500 ? new[] { "444 MHz", "500 MHz" } : new[] { (clocks ? 444 : _state >> 16) + " MHz" });
+        Call(_speed, "PrefillContent", typeof(string[]), can500 ? new[] { "444 MHz", "500 MHz" } : new[] { K9Note(clocks) ?? (clocks ? 444 : (_state >> 16) & 0xfff) + " MHz" });
         SetProp(_speed, "ContentIndex", can500 && _mhz == 500 ? 1 : 0);
         Grey(show);
     }
+
+    /// <summary>Kit #9: the greyed CPU Speed row's plain note when 500 MHz is the choice but the app cannot ask for it (null = kit #8's text):
+    /// the clock shown (Host op 3: the measured clock once it settled, else the report) says whether a PSVshellPlus profile runs the cores at
+    /// ~500 already.</summary>
+    static string K9Note(bool clocks)
+    {
+        if (!K9Default500 || !clocks || _arm500 == 1 || _mhz != 500) { _noteHi = -1; _k9Shown = null; return null; }
+        _noteHi = Host(3, 0) >= 490 ? 1 : 0;
+        var note = _noteHi == 1 ? "500 MHz (PSVshellPlus)" : "444 MHz (500: PSVshellPlus)";
+        if (note != _k9Shown) Log.Info("[k9] CPU Speed row (greyed): '" + note + "'" + (_noteHi == 1 ? " -- a PSVshellPlus profile runs the cores at ~500 (the measured clock)" : " -- 500 MHz needs a PSVshellPlus profile for this app"));
+        return _k9Shown = note;
+    }
+    static string _k9Shown;   // kit #9: the note the row shows now (null = kit #8's text)
 
     static Transform RowOf(Component c, Transform content)
     {
@@ -389,6 +467,8 @@ public static class VitaToggles
         if (show || !speed) SetInteractable(_speedRow, speed);
         if (show && _ovlRow != null) SetInteractable(_ovlRow, true);   // kit #7: always available (a GL app)
         if (show) { SetInteractable(_rearRow, true); SetInteractable(_paceRow, true); SetInteractable(_bakRow, true); }   // kit #8: always available
+        if (show) { SetInteractable(_cacheRow, true); SetInteractable(_clearRow, true); }   // kit #10: always available
+        if (_verifyRow != null && (show || !K10Cache.Verify.Available)) SetInteractable(_verifyRow, K10Cache.Verify.Available);   // (greyed without the io core)
     }
     static void OnTabShow() { if (Live) Grey(true); }
 
@@ -505,6 +585,136 @@ public static class VitaToggles
         Save();
     }
 
+    // ---------------------------------------------------------------- kit #10 rows (track cache)
+
+    static string MbText(int mb) => mb >= 1024 ? (mb / 1024).ToString() + " GB" : mb.ToString() + " MB";
+
+    /// <summary>The four kit #10 rows' components and handlers (Build): the selectors' texts (as the CPU Clock readout), the two action rows'
+    /// confirm (MMSelectable.OnConfirm + Confirmable: the X button, with the game's confirm sound).</summary>
+    static void K10Build(Type selType)
+    {
+        _cacheSel = _made[8].GetComponentInChildren(selType, true); _cacheRow = _made[8].GetComponent<Selectable>();
+        _useSel = _made[9].GetComponentInChildren(selType, true);
+        _clearSel = _made[10].GetComponentInChildren(selType, true); _clearRow = _made[10].GetComponent<Selectable>();
+        _verifySel = _made[11].GetComponentInChildren(selType, true); _verifyRow = _made[11].GetComponent<Selectable>();
+        _useText = Get(_useSel, "_text"); _useHelper = Get(_useSel, "_textHelper");
+        _clearText = Get(_clearSel, "_text"); _clearHelper = Get(_clearSel, "_textHelper");
+        _verifyText = Get(_verifySel, "_text"); _verifyHelper = Get(_verifySel, "_textHelper");
+        Call(_made[9].GetComponent<Selectable>(), "SetNormalTransitionState", null, null);   // (the readout's label in the rows' normal colour)
+        foreach (var c in new[] { _useSel, _clearSel, _verifySel }) { SetProp(c, "LocalizeContent", false); Call(c, "PrefillContent", typeof(string[]), new[] { "" }); }   // one item: no arrows
+        SetConfirm(_clearRow, new Action(OnClear));
+        SetConfirm(_verifyRow, new Action(OnVerify));
+        _useShown = _clearShown = _verifyShown = null; _clearSeen = K10Cache.ClearState;
+        K10Cache.EnsureScanned();
+        K10Refresh();
+    }
+    static void SetConfirm(Selectable row, Action a)
+    {
+        row.GetType().GetField("OnConfirm")?.SetValue(row, a);
+        row.GetType().GetProperty("Confirmable")?.SetValue(row, true);
+    }
+    static void K10Configure()
+    {
+        SetProp(_cacheSel, "LocalizeContent", false);
+        SetProp(_cacheSel, "ContentIndex", 0);
+        var items = new string[K10Cache.SizesMb.Length];
+        for (int i = 0; i < items.Length; i++) items[i] = MbText(K10Cache.SizesMb[i]);
+        Call(_cacheSel, "PrefillContent", typeof(string[]), items);
+        SetProp(_cacheSel, "ContentIndex", Math.Max(0, Array.IndexOf(K10Cache.SizesMb, _cacheMb)));
+    }
+    static void K10Forget()
+    {
+        _cacheSel = _useSel = _clearSel = _verifySel = null; _cacheRow = _clearRow = _verifyRow = null;
+        _useText = _useHelper = _clearText = _clearHelper = _verifyText = _verifyHelper = null;
+    }
+    static void SetText(object a, object b, string s) { _tmpText.SetValue(a, s); _tmpText.SetValue(b, s); }
+    /// <summary>About once a second while the rows exist (and right after a change): the readout, Clear Cache's and Verify Files' value texts --
+    /// set only when they change.</summary>
+    static void K10Refresh()
+    {
+        var use = K10Cache.InUseText();
+        if (use != _useShown) { if (_useShown == null || _useShown == "...") Log.Info("[k10] Cache In Use readout '" + use + "' (Cache Size " + MbText(_cacheMb) + "; refreshed about once a second, logged once per show)"); _useShown = use; SetText(_useText, _useHelper, use); }
+        int cs = K10Cache.ClearState;
+        string clear = cs == 1 ? "Clearing..." : cs != _clearSeen && cs == 2 ? "Done" : cs != _clearSeen && cs == 3 ? "Done (" + K10Cache.ClearFailed.ToString() + " kept)" : "";
+        if (clear != _clearShown) { _clearShown = clear; SetText(_clearText, _clearHelper, clear); }
+        string ver;
+        if (!K10Cache.Verify.Available) ver = "Not in this build";
+        else if (K10Cache.Verify.State == 1) ver = "Checking...";
+        else if (K10Cache.Verify.State == 2) { ver = K10Cache.Verify.Ok ? "OK" : K10Cache.Verify.Stopped ? "Stopped" : "Problem found"; if (_verifyState == 1) { _verifyState = 2; VerifyDone(K10Cache.Verify.Result ?? ""); } }
+        else ver = "";
+        if (ver != _verifyShown) { _verifyShown = ver; SetText(_verifyText, _verifyHelper, ver); }
+    }
+
+    static void OnCacheSize(int index)
+    {
+        if (index < 0 || index >= K10Cache.SizesMb.Length) return;
+        _cacheMb = K10Cache.SizesMb[index];
+        K10Cache.SetCap(_cacheMb);
+        Log.Info("[k10] Cache Size " + MbText(_cacheMb) + " (the learning cache's cap: least recently used entries go first; the card always keeps its free-space margin)");
+        Save();
+    }
+
+    /// <summary>Clear Cache (X): the game's own confirmation window (its Reset All's: UIManager.ConfirmationWindowTemplate pushed by the Settings
+    /// menu); confirmed = the cache folder deleted on the cache worker.</summary>
+    static void OnClear()
+    {
+        if (K10Cache.ClearState == 1) return;
+        // (review fix 2026-10-28: the catalog bake the kit staged in cache/json/ is kept -- K10Cache.ClearKeep -- and the amount is what goes)
+        var w = PushConfirm("Clear Cache", "Delete Shepherd's cache (" + K10Cache.ClearableText() + " in ux0:data/shepherd/cache)? Saves, settings and the game catalog's bake are kept. The next start rebuilds what it needs, so it may load more slowly once.", false);
+        if (w == null) return;
+        AddAction(w, "OnConfirm", new Action(ClearConfirmed));
+        Log.Info("[k10] Clear Cache: the confirmation shown");
+    }
+    static void ClearConfirmed() { Log.Info("[k10] Clear Cache: confirmed"); K10Cache.RequestClear(); _clearSeen = -1; if (_useSel != null) K10Refresh(); }
+
+    /// <summary>Verify Files (X): the io track's verify core (K10Cache.Verify), after the game's confirmation window; its progress in the row,
+    /// its result in an accept-only window when it ends while the rows are shown.</summary>
+    static void OnVerify()
+    {
+        if (!K10Cache.Verify.Available || K10Cache.Verify.State == 1) return;
+        var w = PushConfirm("Verify Files", "Check every game file on the memory card against its stored hash? This reads the whole game once and can take a few minutes; the game keeps running.", false);
+        if (w == null) return;
+        AddAction(w, "OnConfirm", new Action(VerifyConfirmed));
+    }
+    static void VerifyConfirmed()
+    {
+        if (K10Cache.Verify.Begin()) { _verifyState = 1; Log.Info("[k10] Verify Files: started (the io track's core, on the cache worker)"); }
+        else Log.Info("[k10] Verify Files: the core did not start");
+        if (_useSel != null) K10Refresh();
+    }
+    static void VerifyDone(string result)
+    {
+        Log.Info("[k10] Verify Files: " + result);
+        PushConfirm("Verify Files", result, true);
+    }
+
+    /// <summary>The game's confirmation window, pushed by the open Settings menu (UIMenuBase.Push&lt;T&gt;(UIManager.Instance.ConfirmationWindowTemplate)
+    /// then Configure(header, body, acceptOnly) -- what its Reset All does). English only, as every PS Vita row. null = not shown (logged).</summary>
+    static object PushConfirm(string header, string body, bool acceptOnly)
+    {
+        try
+        {
+            var menu = _menu;
+            var ui = _gameAsm?.GetType("Lamb.UI.UIManager");
+            var inst = ui?.GetProperty("Instance", BindingFlags.Static | BindingFlags.Public | BindingFlags.FlattenHierarchy)?.GetValue(null);
+            var tmpl = inst?.GetType().GetProperty("ConfirmationWindowTemplate", I)?.GetValue(inst);
+            if (menu == null || tmpl == null) throw new InvalidOperationException("the Settings menu or the game's confirmation window not found");
+            MethodInfo push = null;
+            foreach (var mi in menu.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public))
+                if (mi.Name == "Push" && mi.IsGenericMethodDefinition && mi.GetParameters().Length == 1) { push = mi; break; }
+            if (push == null) throw new InvalidOperationException("UIMenuBase.Push not found");
+            var w = push.MakeGenericMethod(tmpl.GetType()).Invoke(menu, new[] { tmpl });
+            w.GetType().GetMethod("Configure", I, null, new[] { typeof(string), typeof(string), typeof(bool) }, null).Invoke(w, new object[] { header, body, acceptOnly });
+            return w;
+        }
+        catch (Exception e) { Log.Warn("[k10] " + header + ": the confirmation window was not shown (" + e.GetBaseException().Message + ")"); return null; }
+    }
+    static void AddAction(object w, string field, Action a)
+    {
+        var f = w.GetType().GetField(field, I);
+        f.SetValue(w, Delegate.Combine((Delegate)f.GetValue(w), a));
+    }
+
     // ---------------------------------------------------------------- the owner's changes
 
     static void OnCore3(bool on)
@@ -522,6 +732,7 @@ public static class VitaToggles
         int back = TrySpeed(want, "the owner's choice");
         if (want == 500 && back != 500) { _mhz = 444; Configure(false); }   // went away since the probe: shown as not available
         else _mhz = want;
+        _mhzSaved = true;   // kit #9 review: the owner's choice (written with the kit #9 mark)
         Readout(back, -1);
         Save();
     }
@@ -546,15 +757,21 @@ public static class VitaToggles
         {   // the Settings menu closed (its last Reset All, if any, taken above)
             Live = false; _menu = null; _tog = _speed = _clock = _ovl = null; _togRow = _speedRow = _ovlRow = null; _clockText = _clockHelper = _gfxData = null;
             _rearTog = _paceTog = _bakSel = null; _rearRow = _paceRow = _bakRow = null;   // kit #8
+            K10Forget();                                                                   // kit #10
             _fsSel = null; _fsRow = null;
+            if (K10Cache.On) K10Cache.SetWindow(false, false);   // kit #10: the Settings menu's idle window closes
             return;
         }
+        if (K10Cache.On) { K10Cache.SetWindow(true, false); K10Cache.FlushSoon(); }   // kit #10: the open Settings menu is an idle window (cache writes)
         if (_clock == null || _tog == null) return;   // the rows: not built yet (the Graphics tab not shown in this menu) or not added
+        if (_useSel != null) K10Refresh();   // kit #10: the readout, Clear Cache's / Verify Files' state
         if (reset) Configure(false);
         Grey(false);
         int fps = (int)Math.Round((Time.FrameCount - _f0) / Math.Max(1e-6, now - _t0));
         _t0 = now; _f0 = Time.FrameCount;
-        Readout(Host(3, 0), Time.Wall ? fps : -1);
+        int mhzNow = Host(3, 0);
+        Readout(mhzNow, Time.Wall ? fps : -1);
+        if (_noteHi >= 0 && (mhzNow >= 490 ? 1 : 0) != _noteHi) Configure(false);   // kit #9: the measured clock settled on the other side: the row's note follows
     }
 
     static void Readout(int mhz, int fps)

@@ -99,6 +99,7 @@ public sealed class AssetDatabase : IDisposable
                     foreach (var pf in pl) _files.TryAdd(pf.Name, pf);
                     _bundleFiles[bundlePath] = list;
                     AssetTrace.BundleLoaded?.Invoke(bundlePath, list);
+                    Pack.Prefetch(list);   // kit #10 io: its records' chunks queued for the decode-ahead worker (no-op unless chunked + on)
                     return list;
                 }
                 PackMiss?.Invoke($"bundle {Path.GetFileName(bundlePath)}");

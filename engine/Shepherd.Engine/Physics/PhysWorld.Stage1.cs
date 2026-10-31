@@ -93,8 +93,10 @@ public static partial class PhysWorld
         if (_core == null) { _failed = true; Log.Error("[phys] FAIL phys: no core (" + ShepPhys.Status + "): stage 0 behaviour"); return false; }
         bool b2malloc = Environment.GetEnvironmentVariable("SHEPHERD_PHYS_B2") is "malloc" or "0" or "off";
         int flags = (OperatingSystem.IsMacOS() || OperatingSystem.IsLinux() ? ShepPhys.InitPoolGrow : 0) | (b2malloc ? ShepPhys.InitB2Malloc : 0);
-        int r = _core.Init(PhysConfig.PoolMb << 20, flags);
+        // kit #9 (Stage 7 item 2, patch P3): SHEPHERD_PHYS_WORKERS > 0 starts the worker pool with the runtime; 0 = kit #8's call exactly
+        int r = PhysConfig.Workers > 0 ? _core.InitWorkers(PhysConfig.PoolMb << 20, flags, PhysConfig.Workers) : _core.Init(PhysConfig.PoolMb << 20, flags);
         if (r != 0) { _failed = true; Log.Error($"[phys] FAIL phys capacity pool: sp_init {r}"); return false; }
+        if (PhysConfig.Workers > 0) JobsUp();
         Physics2DSettings.EnsureLoaded();
         Physics2DSettings.CopyMatrix(_matrix); _matrixVer = Physics2DSettings.MatrixVersion;
         var v = Physics2DSettings.Values;
@@ -500,23 +502,66 @@ public static partial class PhysWorld
     }
 
     // ---------------- slot B ----------------
+    /// <summary>Kit #9 (physics-plan-v2 Stage 7 item 7, the heartbeat / exit lines): each step's phases timed (Stopwatch ticks) -- the flush, the
+    /// native step (sp_u_step: Box2D + the Unity layer, the worker forks inside), the write-back, the dispatch -- summed since boot and since the
+    /// last heartbeat (<see cref="Note"/>). SHEPHERD_PHYS_NOTE=0: no timing, no heartbeat part (kit #8). Timing only: no result depends on it.</summary>
+    internal static readonly bool NoteOn = Environment.GetEnvironmentVariable("SHEPHERD_PHYS_NOTE") != "0";
+    static readonly long[] _phaseTicks = new long[4], _notePhase = new long[4];
+    static long _noteSteps;
     static void FixedStep1()
     {
         if (!EnsureWorld()) { Triggers2D.Step(); return; }
+        long t0 = NoteOn ? System.Diagnostics.Stopwatch.GetTimestamp() : 0, t1 = 0, t2 = 0, t3 = 0;
         Flush();
+        if (NoteOn) t1 = System.Diagnostics.Stopwatch.GetTimestamp();
         var def = new ShepPhys.UStepDef { Dt = Runtime.Time.FixedDeltaTime, VelocityIterations = Physics2DSettings.Values.VelocityIterations,
             PositionIterations = Physics2DSettings.Values.PositionIterations, StepIndex = _stepIndex, Flags = StepFlags };
         if (PhysConfig.TracePath != null) _core.TraceNote(1, stackalloc int[] { Runtime.Time.FrameCount, _stepIndex });
         _tPrev = _tCur; _tCur = Runtime.Time.FixedNow;   // the fixed times of P[k-1], P[k] (render poses: exactly the clock's values)
         int r = _core.UStep(_world, def, out var o);
+        if (NoteOn) t2 = System.Diagnostics.Stopwatch.GetTimestamp();
         if (r != 0) Log.Error($"[phys] FAIL phys: sp_u_step {r}");
         Steps1++; _stepIndex++; Moves += o.Moved; Teleports += o.Teleported; LastContacts = o.Contacts; LastTouching = o.Touching;
         if (o.Bodies > PeakBodies) PeakBodies = o.Bodies;
         WriteBack();
+        if (NoteOn) t3 = System.Diagnostics.Stopwatch.GetTimestamp();
         if (_poseLog != null) PoseLog(o);
         if (_hashOut != null && _stepIndex % 50 == 0) PoseHash();
         if (Sim2) PhysDispatch.Phase(_core, _world, _stepIndex - 1);   // Stage 2: the core's trigger events -> the one dispatcher (Triggers2D's pair search is not run)
         else Triggers2D.Step();    // H-TRIGPHASE=final (E1): after the step and write-back (plan 1.7, Stage 1)
+        if (NoteOn)
+        {
+            long t4 = System.Diagnostics.Stopwatch.GetTimestamp();
+            _phaseTicks[0] += t1 - t0; _phaseTicks[1] += t2 - t1; _phaseTicks[2] += t3 - t2; _phaseTicks[3] += t4 - t3;
+        }
+    }
+    /// <summary>Kit #9: the heartbeat's physics part (Diag/VitaHost.cs, every 50 frames): the steps since the last one and each phase's mean, the
+    /// bodies and contacts now. Empty without a core or with SHEPHERD_PHYS_NOTE=0.</summary>
+    public static string Note()
+    {
+        if (!NoteOn || !_up) return "";
+        long n = Steps1 - _noteSteps;
+        double f = 1000.0 / System.Diagnostics.Stopwatch.Frequency / Math.Max(n, 1);
+        var s = $" | phys {n} steps: flush {(_phaseTicks[0] - _notePhase[0]) * f:F3} step {(_phaseTicks[1] - _notePhase[1]) * f:F3} write-back {(_phaseTicks[2] - _notePhase[2]) * f:F3} " +
+                $"dispatch {(_phaseTicks[3] - _notePhase[3]) * f:F3} ms/step, bodies {_bodies.Count}, contacts {LastContacts} (touching {LastTouching})";
+        _noteSteps = Steps1; Array.Copy(_phaseTicks, _notePhase, 4);
+        return s;
+    }
+    /// <summary>Kit #9: MemReport's physics line (Mac planning tool): the core, its memory (pool, B2 arena), the bodies, the step times, the workers.</summary>
+    public static string MemLine()
+    {
+        if (!_up) return $"--- physics: level {PhysConfig.Level}, no core ({(_failed ? "failed" : "never made")})";
+        string pool = _core.PoolStats(out var ps) == 0 ? $"pool {ps.Used / 1024} KiB used of {ps.Bytes / 1024} (high water {ps.HighWater / 1024})" : "pool ?";
+        string b2 = _core.B2Stats(out var bs) == 0 ? $"B2 arena {bs.Used / 1024} KiB used of {bs.Bytes / 1024} (high water {bs.HighWater / 1024}, {bs.Failures} malloc fallbacks)" : "B2 ?";
+        return $"--- physics: level {PhysConfig.Level}; bodies {_bodies.Count} (peak {PeakBodies}), contacts {LastContacts} (touching {LastTouching}); {pool}; {b2}; steps {Steps1}{StepTimes()}" +
+               (PhysConfig.Workers > 0 ? $"; workers {_core.JobsGet(ShepPhys.JobsWorkers)} live, forks {_core.JobsGet(ShepPhys.JobsStForks)}" : "");
+    }
+    static string StepTimes()
+    {
+        if (!NoteOn || Steps1 == 0) return "";
+        double f = 1000.0 / System.Diagnostics.Stopwatch.Frequency / Steps1;
+        return $"; step time (mean of {Steps1}): flush {_phaseTicks[0] * f:F3} + native step {_phaseTicks[1] * f:F3} + write-back {_phaseTicks[2] * f:F3} + dispatch {_phaseTicks[3] * f:F3} " +
+               $"= {(_phaseTicks[0] + _phaseTicks[1] + _phaseTicks[2] + _phaseTicks[3]) * f:F3} ms";
     }
 
     static void SortBodies()
@@ -549,11 +594,11 @@ public static partial class PhysWorld
         try
         {
             var p = t.Position;
-            t.SetPosition(new Vector3(x, y, p.z));
+            t.SetPosition(PG.V3(x, y, p.z));   // kit #9 glue math rule (physics-plan-v2 Stage 7 item 5): PG (Physics/PhysGlue.cs)
             if (angleChanged && Bits(angle) != Bits(pb.LastAngle))
             {
                 float h = (angle - pb.LastAngle) * 0.5f;
-                var dq = new Quaternion(0f, 0f, _core.Sin(h), _core.Cos(h));
+                var dq = PG.Q(0f, 0f, _core.Sin(h), _core.Cos(h));   // kit #9 glue math rule
                 t.SetRotation(M.QNorm(M.QMul(dq, t.Rotation)));
             }
             pb.LastAngle = angle;
@@ -644,19 +689,19 @@ public static partial class PhysWorld
     internal static unsafe Vector2 Position(NRigidbody2D b)
     {
         if (Physics2DSettings.AutoSyncTransforms || b.PB == null) FlushIfNeeded();
-        if (b.PB == null || !_up) { var p = b.Go?.Transform?.Position ?? default; return new Vector2(p.x, p.y); }
-        var m = _core.MirrorAt(b.PB.Mirror); return new Vector2(m->X, m->Y);
+        if (b.PB == null || !_up) { var p = b.Go?.Transform?.Position ?? default; return PG.V2(p.x, p.y); }
+        var m = _core.MirrorAt(b.PB.Mirror); return PG.V2(m->X, m->Y);   // kit #9 glue math rule
     }
     internal static unsafe float RotationDeg(NRigidbody2D b)
     {
         if (Physics2DSettings.AutoSyncTransforms || b.PB == null) FlushIfNeeded();
-        if (b.PB == null || !_up) { var r = b.Go?.Transform?.Rotation ?? Quaternion.identity; return M.ToEuler(r).z * 57.29578f; }
+        if (b.PB == null || !_up) { var r = b.Go?.Transform?.Rotation ?? PG.QIdentity; return M.ToEuler(r).z * 57.29578f; }
         return _core.MirrorAt(b.PB.Mirror)->Angle * 57.29578f;
     }
     internal static unsafe Vector2 Velocity(NRigidbody2D b)
     {
         if (b.PB == null || !_up) return default;
-        var m = _core.MirrorAt(b.PB.Mirror); return new Vector2(m->Vx, m->Vy);
+        var m = _core.MirrorAt(b.PB.Mirror); return PG.V2(m->Vx, m->Vy);   // kit #9 glue math rule
     }
     /// <summary>rb.MovePosition: the target in the mirror (0 native calls); the next step moves the body there (the last call wins).</summary>
     internal static unsafe void MovePosition(NRigidbody2D b, Vector2 p)
@@ -702,6 +747,32 @@ public static partial class PhysWorld
         }
     }
 
+    /// <summary>Kit #9: the worker pool's settings after sp_init (thresholds, spin, the check mode) and one line saying what runs.</summary>
+    static void JobsUp()
+    {
+        if (PhysConfig.ForkCollide >= 0) _core.JobsSet(ShepPhys.JobsMinCollide, PhysConfig.ForkCollide);
+        if (PhysConfig.ForkTriggers >= 0) _core.JobsSet(ShepPhys.JobsMinTriggers, PhysConfig.ForkTriggers);
+        if (PhysConfig.ForkIslands >= 0) _core.JobsSet(ShepPhys.JobsMinIslands, PhysConfig.ForkIslands);
+        if (PhysConfig.SpinUs >= 0) _core.JobsSet(ShepPhys.JobsSpinUs, PhysConfig.SpinUs);
+        if (PhysConfig.CheckWorkers) _core.JobsSet(ShepPhys.JobsCheck, 1);
+        int live = _core.JobsGet(ShepPhys.JobsWorkers);
+        string line = $"[phys] workers (patch P3, Stage 7 item 2): {live} of {PhysConfig.Workers} live ({(_core.JobsGet(ShepPhys.JobsHost) == 1 ? "the host's threads" : "pthreads")}); " +
+                      $"forks from collide {_core.JobsGet(ShepPhys.JobsMinCollide)} / triggers {_core.JobsGet(ShepPhys.JobsMinTriggers)} / islands {_core.JobsGet(ShepPhys.JobsMinIslands)}, " +
+                      $"spin {_core.JobsGet(ShepPhys.JobsSpinUs)} us{(PhysConfig.CheckWorkers ? "; check on (every forked phase against its serial run)" : "")}; results bit-identical to the serial step";
+        if (live == PhysConfig.Workers) Log.Info(line); else Log.Warn(line + $" -- {PhysConfig.Workers - live} worker(s) not started: those steps run serial");
+    }
+    static string JobsSummary()
+    {
+        if (!_up || PhysConfig.Workers <= 0) return "";
+        int G(int k) => _core.JobsGet(k);
+        return $"\n[phys] workers (patch P3): {G(ShepPhys.JobsWorkers)} live; steps {G(ShepPhys.JobsStSteps)}, forks {G(ShepPhys.JobsStForks)} (wakes {G(ShepPhys.JobsStWakes)}, sleeps {G(ShepPhys.JobsStSleeps)}); " +
+               $"collide {G(ShepPhys.JobsStCollideForks)} forks / {G(ShepPhys.JobsStCollideItems)} contacts ({G(ShepPhys.JobsStCollideSmall)} steps below the threshold); " +
+               $"triggers {G(ShepPhys.JobsStTriggerForks)} / {G(ShepPhys.JobsStTriggerItems)} ({G(ShepPhys.JobsStTriggerSmall)} below); islands {G(ShepPhys.JobsStIslandForks)} forks / " +
+               $"{G(ShepPhys.JobsStIslands)} islands ({G(ShepPhys.JobsStIslandsBig)} too big for a worker; {G(ShepPhys.JobsStIslandSmall)} below, {G(ShepPhys.JobsStIslandJoints)} with joints, " +
+               $"{G(ShepPhys.JobsStIslandStatics)} with a static body that is not a fixed point: serial); anomalies {G(ShepPhys.JobsStAnomalies)}" +
+               (PhysConfig.CheckWorkers ? $"; check: {G(ShepPhys.JobsStCheckRuns)} phases compared, {G(ShepPhys.JobsStCheckMismatches)} mismatches" : "");
+    }
+
     static string Summary1()
     {
         string b2 = "";
@@ -711,6 +782,7 @@ public static partial class PhysWorld
         return $"[phys] stage 1 world: {(_up ? "up" : _failed ? "FAILED (stage 0 behaviour)" : "never made")}; steps {Steps1}, flushes {Flushes}; bodies made {BodiesMade} / gone {BodiesGone} " +
                $"(peak {PeakBodies}), shape records made {ShapesMade} / gone {ShapesGone}, rebuilds {ShapeRebuilds} (peak fixtures {PeakShapes}); MovePosition steps {Moves}, " +
                $"teleports {Teleports}, write-backs {WrittenBack}, slot A writes {SlotAWrites}, slot C writes {SlotCWrites}; render-pose requests {RenderRequests} " +
-               $"(clamped {RenderClamped}){pool}{b2}; hypotheses used: {string.Join(" ", new[] { "SYNC", "EARLY", "INTERP", "MOVEVEL", "MOVEDRAG", "WAKETP", "CHILDSYNC", "TRIGPHASE", "COMPORIENT", "CLEAN", "CHAIN", "AUTOFIT" }.Select(n => $"H-{n}={Hypotheses.Get(n)}"))}";
+               $"(clamped {RenderClamped}){pool}{b2}{StepTimes()}; hypotheses used: {string.Join(" ", new[] { "SYNC", "EARLY", "INTERP", "MOVEVEL", "MOVEDRAG", "WAKETP", "CHILDSYNC", "TRIGPHASE", "COMPORIENT", "CLEAN", "CHAIN", "AUTOFIT" }.Select(n => $"H-{n}={Hypotheses.Get(n)}"))}" +
+               JobsSummary();
     }
 }

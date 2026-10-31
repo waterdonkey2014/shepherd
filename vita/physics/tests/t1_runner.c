@@ -12,10 +12,16 @@
  *   t1_runner s2                           Stage 2 self-test (tests/sp_s2.cpp: P1, contact serials, the Unity queries): records + hash
  *   t1_runner s3                           Stage 3 self-test (tests/sp_s3.cpp: forces, damping, restitution, clamp, frozen axes, one-sided chains,
  *                                          contact snapshots): records + hash
+ *   t1_runner s7                           Stage 7 item 2 self-test (tests/sp_s7.cpp, kit #9: worlds for patch P3's forked phases; with
+ *                                          --workers N the same hash)
  *   t1_runner s6                           Stage 6 self-test (tests/sp_s6.cpp: the 3D island-ground ray, the +z fast path = the general path)
  *   t1_runner replay <file.sptr>           re-issue one trace (an engine run's SHEPHERD_PHYS_TRACE too: every core call the Unity layer
  *                                          made, the pose hash after every step, the event drains) -- the Mac = Vita check of a game run
  * Options (any position): --fz  set flush-to-zero first (arm64 FPCR.FZ / x86-64 MXCSR FTZ|DAZ), the Vita-FZ what-if.
+ *   --workers N  (kit #9, Stage 7 item 2: patch P3) every step with the worker pool (N = 1..3), each phase forked from --jmin items
+ *                (default 1: every phase forks whenever it can); --jcheck  every forked phase also run serially and compared. The
+ *                results must be the serial ones bit for bit: the same records, hashes and goldens. A JOBS line at the end counts the
+ *                forks (and the check's mismatches, which must be 0).
  * Record lines: "TAG a b | hex words | decimals"; only the first two fields are compared, the decimals are for reading.
  */
 #include <errno.h>
@@ -328,13 +334,41 @@ static void quiet_rec(void *user, uint32_t tag, int32_t a, int32_t b, const uint
     (void)user; (void)tag; (void)a; (void)b; (void)w; (void)n; (void)fmask;
 }
 
+/* kit #9: what the worker pool did (stdout, last line) */
+static void jobs_report(void)
+{
+    printf("JOBS workers %d (fp0 %08x): steps %d, forks %d (wakes %d, sleeps %d); collide %d forks / %d contacts (%d below); triggers %d / %d (%d below); "
+           "islands %d forks / %d islands (%d big; %d below, %d joints, %d statics; %d sleepers left asleep on hand-backs); anomalies %d; "
+           "scratch %d B; join sleeps %d; check runs %d, mismatches %d\n",
+           (int)sp_jobs_get(SP_JOBS_WORKERS), (unsigned)sp_jobs_get(SP_JOBS_ST_WORKER_FP0), (int)sp_jobs_get(SP_JOBS_ST_STEPS), (int)sp_jobs_get(SP_JOBS_ST_FORKS),
+           (int)sp_jobs_get(SP_JOBS_ST_WAKES), (int)sp_jobs_get(SP_JOBS_ST_SLEEPS), (int)sp_jobs_get(SP_JOBS_ST_COLLIDE_FORKS),
+           (int)sp_jobs_get(SP_JOBS_ST_COLLIDE_ITEMS), (int)sp_jobs_get(SP_JOBS_ST_COLLIDE_SMALL), (int)sp_jobs_get(SP_JOBS_ST_TRIGGER_FORKS),
+           (int)sp_jobs_get(SP_JOBS_ST_TRIGGER_ITEMS), (int)sp_jobs_get(SP_JOBS_ST_TRIGGER_SMALL), (int)sp_jobs_get(SP_JOBS_ST_ISLAND_FORKS),
+           (int)sp_jobs_get(SP_JOBS_ST_ISLANDS), (int)sp_jobs_get(SP_JOBS_ST_ISLANDS_BIG), (int)sp_jobs_get(SP_JOBS_ST_ISLAND_SMALL),
+           (int)sp_jobs_get(SP_JOBS_ST_ISLAND_JOINTS), (int)sp_jobs_get(SP_JOBS_ST_ISLAND_STATICS), (int)sp_jobs_get(SP_JOBS_ST_HANDBACK_SLEEPERS),
+           (int)sp_jobs_get(SP_JOBS_ST_ANOMALIES), (int)sp_jobs_get(SP_JOBS_ST_SCRATCH_BYTES), (int)sp_jobs_get(SP_JOBS_ST_JOIN_SLEEPS),
+           (int)sp_jobs_get(SP_JOBS_ST_CHECK_RUNS), (int)sp_jobs_get(SP_JOBS_ST_CHECK_MISMATCHES));
+    fflush(stdout);
+    sp_jobs_stop();
+}
+
 int main(int argc, char **argv)
 {
     const char *pos[6] = {0};   /* (kit #8: 6 -- `host` takes four hashes) */
-    int np = 0, fz = 0;
+    int np = 0, fz = 0, workers = 0, jmin = 1, jcheck = 0;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--fz")) fz = 1;
+        else if (!strcmp(argv[i], "--workers") && i + 1 < argc) workers = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--jmin") && i + 1 < argc) jmin = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--jcheck")) jcheck = 1;
         else if (np < 6) pos[np++] = argv[i];
+    }
+    if (workers > 0) {   /* kit #9: patch P3's worker pool for every step (results must not change) */
+        int32_t r = sp_jobs_start(workers);
+        sp_jobs_set(SP_JOBS_MIN_COLLIDE, jmin); sp_jobs_set(SP_JOBS_MIN_TRIGGERS, jmin); sp_jobs_set(SP_JOBS_MIN_ISLANDS, jmin);
+        sp_jobs_set(SP_JOBS_CHECK, jcheck);
+        if (r != SP_OK || sp_jobs_get(SP_JOBS_WORKERS) != workers) { fprintf(stderr, "JOBS FAILED to start %d workers (rc %d)\n", workers, (int)r); return 1; }
+        atexit(jobs_report);
     }
     if (np < 1) { fprintf(stderr, "usage: t1_runner info | record <dir> | check <golden> <out> | time [reps] | s0 | s1 | s2 | s3 | s6 | trace <dir> | replay <file> [--fz]\n"); return 2; }
     if (fz) set_fz();
@@ -459,6 +493,13 @@ int main(int argc, char **argv)
         sp_t1_result r;
         int32_t st = sp_s6_run(s0_rec, stdout, &r);
         printf("S6 RESULT %s hash %016llx records %d words %d steps %d status %d (%s)\n", st == 0 ? "PASS" : "FAIL", (unsigned long long)hash64(&r),
+               r.records, r.words, r.steps, st, arch());
+        return st == 0 ? 0 : 1;
+    }
+    if (!strcmp(cmd, "s7")) {   /* kit #9: patch P3's self-test (run it with --workers N too: the same hash) */
+        sp_t1_result r;
+        int32_t st = sp_s7_run(s0_rec, stdout, &r);
+        printf("S7 RESULT %s hash %016llx records %d words %d steps %d status %d (%s)\n", st == 0 ? "PASS" : "FAIL", (unsigned long long)hash64(&r),
                r.records, r.words, r.steps, st, arch());
         return st == 0 ? 0 : 1;
     }

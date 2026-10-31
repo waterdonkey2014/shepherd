@@ -55,17 +55,17 @@ static class Physics3DIcalls
     [Icall("UnityEngine.Collider::ClosestPoint_Injected", Phys = 6)] static object ClosestPoint(object[] a) { var p = (Vector3)a[1]; a[2] = K(a[0]) is { } k ? Closest(k, p) : p; return null; }
 
     // ---- Box / Sphere / Capsule ----
-    [Icall("UnityEngine.BoxCollider::get_center_Injected", Phys = 6)] static object BoxGetCenter(object[] a) { var k = K(a[0]); a[1] = k != null ? new Vector3(k.CenterX, k.CenterY, k.CenterZ) : default; return null; }
+    [Icall("UnityEngine.BoxCollider::get_center_Injected", Phys = 6)] static object BoxGetCenter(object[] a) { var k = K(a[0]); a[1] = k != null ? PG.V3(k.CenterX, k.CenterY, k.CenterZ) : default; return null; }
     [Icall("UnityEngine.BoxCollider::set_center_Injected", Phys = 6)] static object BoxSetCenter(object[] a) { SetCenter(K(a[0]), (Vector3)a[1]); return null; }
-    [Icall("UnityEngine.BoxCollider::get_size_Injected", Phys = 6)] static object BoxGetSize(object[] a) { var k = K(a[0]); a[1] = k != null ? new Vector3(k.SizeX, k.SizeY, k.SizeZ) : default; return null; }
+    [Icall("UnityEngine.BoxCollider::get_size_Injected", Phys = 6)] static object BoxGetSize(object[] a) { var k = K(a[0]); a[1] = k != null ? PG.V3(k.SizeX, k.SizeY, k.SizeZ) : default; return null; }
     [Icall("UnityEngine.BoxCollider::set_size_Injected", Phys = 6)]
     static object BoxSetSize(object[] a) { if (K(a[0]) is { } k) { var v = (Vector3)a[1]; k.SizeX = v.x; k.SizeY = v.y; k.SizeZ = v.z; Phys3D.Queue(k); } return null; }
-    [Icall("UnityEngine.SphereCollider::get_center_Injected", Phys = 6)] static object SphereGetCenter(object[] a) { var k = K(a[0]); a[1] = k != null ? new Vector3(k.CenterX, k.CenterY, k.CenterZ) : default; return null; }
+    [Icall("UnityEngine.SphereCollider::get_center_Injected", Phys = 6)] static object SphereGetCenter(object[] a) { var k = K(a[0]); a[1] = k != null ? PG.V3(k.CenterX, k.CenterY, k.CenterZ) : default; return null; }
     [Icall("UnityEngine.SphereCollider::set_center_Injected", Phys = 6)] static object SphereSetCenter(object[] a) { SetCenter(K(a[0]), (Vector3)a[1]); return null; }
     [Icall("UnityEngine.SphereCollider::get_radius", Phys = 6)] static object SphereGetRadius(object[] a) => K(a[0])?.Radius ?? 0.5f;
     [Icall("UnityEngine.SphereCollider::set_radius", Phys = 6)]
     static object SphereSetRadius(object[] a) { if (K(a[0]) is { } k) { k.Radius = Convert.ToSingle(a[1]); Phys3D.Queue(k); } return null; }
-    [Icall("UnityEngine.CapsuleCollider::get_center_Injected", Phys = 6)] static object CapsuleGetCenter(object[] a) { var k = K(a[0]); a[1] = k != null ? new Vector3(k.CenterX, k.CenterY, k.CenterZ) : default; return null; }
+    [Icall("UnityEngine.CapsuleCollider::get_center_Injected", Phys = 6)] static object CapsuleGetCenter(object[] a) { var k = K(a[0]); a[1] = k != null ? PG.V3(k.CenterX, k.CenterY, k.CenterZ) : default; return null; }
     [Icall("UnityEngine.CapsuleCollider::get_radius", Phys = 6)] static object CapsuleGetRadius(object[] a) => K(a[0])?.Radius ?? 0.5f;
     [Icall("UnityEngine.CapsuleCollider::get_height", Phys = 6)] static object CapsuleGetHeight(object[] a) => K(a[0])?.Height ?? 2f;
     [Icall("UnityEngine.CapsuleCollider::get_direction", Phys = 6)] static object CapsuleGetDirection(object[] a) => K(a[0])?.Direction ?? 1;
@@ -119,14 +119,14 @@ static class Physics3DIcalls
                             Mathf.Abs(R.m20) * le.x + Mathf.Abs(R.m21) * le.y + Mathf.Abs(R.m22) * le.z);
         return new Bounds(c, e * 2f);
     }
-    static Vector3 Abs(Vector3 v) => new(Mathf.Abs(v.x), Mathf.Abs(v.y), Mathf.Abs(v.z));
+    static Vector3 Abs(Vector3 v) => PG.V3(PG.Abs(v.x), PG.Abs(v.y), PG.Abs(v.z));   // kit #9 glue math rule (Mathf.Abs(f) = Math.Abs(f))
     /// <summary>A capsule's radius, the half length of its segment and its axis, as the native scene scales them.</summary>
     static (float r, float hh, int axis) Capsule(in ShepPhys.Col3Def d)
     {
         int a = d.Direction is >= 0 and <= 2 ? d.Direction : 1;
-        float ax = Mathf.Abs(d.Sx), ay = Mathf.Abs(d.Sy), az = Mathf.Abs(d.Sz);
+        float ax = PG.Abs(d.Sx), ay = PG.Abs(d.Sy), az = PG.Abs(d.Sz);   // kit #9 glue math rule (Mathf.Abs / Max -> MathF.Abs / Um.Max: the same operations)
         float sa = a == 0 ? ax : a == 1 ? ay : az, s1 = a == 0 ? ay : ax, s2 = a == 2 ? ay : az;
-        float r = Mathf.Abs(d.Ex) * Mathf.Max(s1, s2), hh = Mathf.Max(Mathf.Abs(d.Ey) * sa * 0.5f - r, 0f);
+        float r = PG.Abs(d.Ex) * PG.Max(s1, s2), hh = PG.Max(PG.Abs(d.Ey) * sa * 0.5f - r, 0f);
         return (r, hh, a);
     }
     /// <summary>Collider.ClosestPoint (Physics.ClosestPoint): the point itself when inside; Box / Sphere / Capsule only -- a non-convex mesh returns

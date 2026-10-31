@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable><InvariantGlobalization>true</InvariantGlobalization></PropertyGroup>
+  <!-- device kit #10, track cache: the learning cache's store, tested with the engine's own source (as IcallBake links IcallManifest.cs) -->
+  <ItemGroup>
+    <Compile Include="../../engine/Shepherd.Engine/IcallManifest.cs" Link="IcallManifest.cs" />
+    <Compile Include="../../engine/Shepherd.Engine/Runtime/K10Store.cs" Link="K10Store.cs" />
+  </ItemGroup>
+</Project>

@@ -45,7 +45,7 @@ public static partial class PhysWorld
         Triggers2D.Step();   // stage 0: the live trigger pass, exactly as Lifecycle called it before
     }
     /// <summary>Slot C: Lifecycle.Frame, after the fixed loop, before the Update phase (Stage 1: interpolation and the render-pose snapshot).</summary>
-    public static void Update() { SlotC++; if (Sim) Update1(); if (PhysConfig.CheckTree) TreeCheck(); }
+    public static void Update() { SlotC++; if (Sim) Update1(); if (PhysConfig.CheckTree) TreeCheck(); if (PhysConfig.CheckLazy) { NTransform.HcCompareAll(Registry.Transforms.Items()); NTransform.HcCheckWrite(Registry.Transforms.Items()); } }
 
     // ---------------- membership hooks (facades) ----------------
     public static long[] HookCalls = new long[8];
@@ -212,6 +212,10 @@ public static partial class PhysWorld
                                        (SyncMisses > 0 ? $" (by GameObject: {string.Join(", ", _missNames.OrderByDescending(k => k.Value).Take(8).Select(k => $"'{k.Key}' {k.Value}"))})" : "") +
                                        $", {SyncDirtyOnly} dirty without a change";
         if (PhysConfig.CheckTree) s += $"; tree check: {TreeFrames} frames, {TreeChecked} transform visits, PhysInterest mismatches {TreeBadInterest}, PhysDesc mismatches {TreeBadDesc}";
+        s += $"\n[hc] hasChanged (kit #9): {(NTransform.HcLazy ? "lazy" : "eager (SHEPHERD_LAZY_HASCHANGED=0: kit #8)")}; MarkChanged calls {NTransform.HcMarks}, walk visits {NTransform.HcVisits} (into physics interest only), " +
+             $"parent-change rebases {NTransform.HcRebases} ({NTransform.HcRebaseVisits} visits), hasChanged reads {NTransform.HcReads}, writes {NTransform.HcWrites}" +
+             (PhysConfig.CheckLazy ? $"; check lazy: {NTransform.HcCheckFrames} frames, {NTransform.HcChecked} transforms compared, {NTransform.HcMismatches} mismatches" +
+                                     (NTransform.HcCheckW ? $" (lazyw: {NTransform.HcCheckWrites} seeded writes)" : "") : "");
         if (Sim) s += "\n" + Summary1();
         if (Sim2) s += "\n" + PhysDispatch.Summary() + "\n" + Summary2();
         if (Sim3) s += "\n" + Summary3();

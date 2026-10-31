@@ -8,21 +8,21 @@ vitaGL, a Unity-exact 2D physics layer on Box2D, an audio engine that stands in 
 harness that runs the Vita build on a Mac under QEMU. The rule over everything: **fidelity first** -- the game should behave and look
 exactly like the original; anything that deviates is opt-in.
 
-> **Status: early release (v0.4.0).** This is the engine as it is, released before it is polished so that people porting other games
+> **Status: early release (v0.4.0; the code here is newer -- see CHANGELOG).** This is the engine as it is, released before it is polished so that people porting other games
 > -- with Claude or by hand -- can fill its gaps and send findings back. Expect rough edges, hard-wired assumptions from the first game,
 > and build scripts that grew on one machine.
 
 ## Where it stands
 The first game is **Cult of the Lamb** (Unity, macOS build as the source). On one PS Vita (PCH-2000, firmware 3.65 + Enso):
 
-| | Kit 1 (Oct 8) | Now (kit 7-8) |
+| | Kit 1 (Oct 8) | Now (kit 10, Oct 29) |
 |---|---|---|
-| Idle Main Menu | 2.3 fps | ~22 fps at 444 MHz, ~25 fps at ~500 MHz |
-| Boot to Main Menu | ~6 minutes | ~2.3 minutes |
+| Idle Main Menu | 2.3 fps | ~25 fps at 444 MHz, ~27 fps at ~500 MHz |
+| Boot to Main Menu | ~6 minutes | ~1.7-2.3 minutes (fastest app 104.5 s) |
 | Picture | -- | the Vita build hands the GPU the same draw stream as the Mac engine, frame by frame (checked off-device) |
 
 Working: boot, title, Main Menu, Settings, Credits, New Game to the opening, touch and pad input, audio, saves (sandboxed), 2D physics
-(matching Unity on the tested scenes). Video playback on the device is being fixed (kit 9). Not yet: real gameplay frame rates, the whole game, the DLCs. The full plan, with every
+(matching Unity on the tested scenes). Video playback works on the device (both logos to their last frame, kit 10). Not yet: real gameplay frame rates, the whole game, the DLCs. The full plan, with every
 idea labelled, lives in the companion Claude plugin's idea catalog.
 
 ## You need

@@ -48,7 +48,8 @@ static class AppIcalls
     [Icall("UnityEngine.Time::get_deltaTime")] static object Dt(object[] a) => DtBox.Of(UTime.InFixedStep ? UTime.FixedDeltaTime : UTime.DeltaTime);
     [Icall("UnityEngine.Time::get_unscaledDeltaTime")] static object UDt(object[] a) => UdtBox.Of(WallFixed ? UTime.FixedUnscaledDeltaTime : UTime.UnscaledDeltaTime);   // (menu-speed: a box per changed value)
     static readonly Runtime.BoxCache UdtBox = new();
-    [Icall("UnityEngine.Time::get_unscaledTime")] static object UT(object[] a) => (float)(WallFixed ? UTime.FixedUnscaledNow : UTime.UnscaledNow);
+    [Icall("UnityEngine.Time::get_unscaledTime")] static object UT(object[] a) { float v = (float)(WallFixed ? UTime.FixedUnscaledNow : UTime.UnscaledNow); return Runtime.K9Memo.Float(UtBox, v); }   // (kit #9 memo: one box per value)
+    static readonly Runtime.BoxCache UtBox = new();
     [Icall("UnityEngine.Time::get_unscaledTimeAsDouble")] static object UTd(object[] a) => WallFixed ? UTime.FixedUnscaledNow : UTime.UnscaledNow;
     [Icall("UnityEngine.Time::get_smoothDeltaTime")] static object SDt(object[] a) => UTime.SmoothDeltaTime;
     [Icall("UnityEngine.Time::get_fixedDeltaTime")] static object FDt(object[] a) => UTime.FixedDeltaTime;
@@ -75,12 +76,12 @@ static class AppIcalls
     [Icall("UnityEngine.Time::set_captureDeltaTime")] static object SetCapDt(object[] a) { UTime.CaptureDeltaTime = (float)a[0]; return null; }
 
     // ---- Application ----
-    [Icall("UnityEngine.Application::get_isPlaying")] static object Playing(object[] a) => true;
+    [Icall("UnityEngine.Application::get_isPlaying")] static object Playing(object[] a) => Runtime.K9Memo.Bool(true);
     [Icall("UnityEngine.Application::IsPlaying")] static object Playing2(object[] a) => true;
     [Icall("UnityEngine.Application::get_isFocused")] static object Focused(object[] a) => true;
     [Icall("UnityEngine.Application::get_isBatchMode")] static object Batch(object[] a) => false;
     [Icall("UnityEngine.Application::get_isLoadingLevel")] static object Loading(object[] a) => false;
-    [Icall("UnityEngine.Application::get_runInBackground")] static object RunBg(object[] a) => true;
+    [Icall("UnityEngine.Application::get_runInBackground")] static object RunBg(object[] a) => Runtime.K9Memo.Bool(true);   // kit #9 E5 MIRROR: while Shepherd.Hooks.Mirror.On the stub answers Mirror.RunInBackground (true) itself (tools/Rewriter/TypedPass.cs) -- change this body and you must change that formula (Runtime/K9Typed.cs binds the mirror only while THIS method is the key's hook; SHEPHERD_K9_MIRROR=check compares them)
     [Icall("UnityEngine.Application::set_runInBackground")] static object SetRunBg(object[] a) => null;
     [Icall("UnityEngine.Application::get_platform")] static object Platform(object[] a) => RuntimePlatform.OSXPlayer;
     [Icall("UnityEngine.Application::get_dataPath")] static object DataPath(object[] a) => Program.GameData;
@@ -110,8 +111,10 @@ static class AppIcalls
     // k4-display: QualitySettings.vSyncCount (was the inert stub: 1, setter ignored): capped = the vblanks per frame the engine really uses
     [Icall("UnityEngine.QualitySettings::get_vSyncCount")] static object VSync(object[] a) => NativeDisplay.Capped ? NativeDisplay.VSyncCount : 1;
     [Icall("UnityEngine.QualitySettings::set_vSyncCount")] static object SetVSync(object[] a) { if (NativeDisplay.Capped) NativeDisplay.SetVSyncCount((int)a[0]); return null; }
-    [Icall("UnityEngine.Application::get_backgroundLoadingPriority")] static object BgPrio(object[] a) => UnityEngine.ThreadPriority.Normal;
-    [Icall("UnityEngine.Application::set_backgroundLoadingPriority")] static object SetBgPrio(object[] a) => null;
+    // kit #10 boot track (Runtime/K10Load.cs): the game's priority is kept -- Unity answers what was set and slices the loads by it (kit #9: always
+    // Normal, the setter ignored; SHEPHERD_K10_LOADPRIO=0 = that again)
+    [Icall("UnityEngine.Application::get_backgroundLoadingPriority")] static object BgPrio(object[] a) => Runtime.K10Load.Mode == 0 ? UnityEngine.ThreadPriority.Normal : (UnityEngine.ThreadPriority)Runtime.K10Load.Priority;
+    [Icall("UnityEngine.Application::set_backgroundLoadingPriority")] static object SetBgPrio(object[] a) { if (Runtime.K10Load.Mode != 0) Runtime.K10Load.Priority = Convert.ToInt32(a[0]); return null; }
     [Icall("UnityEngine.Application::get_submitAnalytics")] static object Analytics(object[] a) => false;
     [Icall("UnityEngine.Application::get_isHumanControllingUs")] static object Human(object[] a) => true;
     [Icall("UnityEngine.Application::get_isTestRun")] static object TestRun(object[] a) => false;
@@ -131,7 +134,7 @@ static class AppIcalls
     static readonly Runtime.BoxCache SwBox = new(), ShBox = new();
     [Icall("UnityEngine.Screen::get_dpi")] static object Dpi(object[] a) => 144f;
     // k4-display: the native display cap (Runtime/NativeDisplay.cs; Vita profile): one full-screen 960x544 @ 60 Hz mode, requests logged and kept
-    [Icall("UnityEngine.Screen::get_fullScreen")] static object FS(object[] a) => NativeDisplay.Capped;
+    [Icall("UnityEngine.Screen::get_fullScreen")] static object FS(object[] a) => Runtime.K9Memo.Bool(NativeDisplay.Capped);
     [Icall("UnityEngine.Screen::set_fullScreen")] static object SetFS(object[] a) { if (NativeDisplay.Capped) NativeDisplay.SetFullScreen((bool)a[0]); return null; }
     [Icall("UnityEngine.Screen::get_fullScreenMode")] static object FSM(object[] a) => NativeDisplay.Capped ? NativeDisplay.Mode : FullScreenMode.Windowed;
     [Icall("UnityEngine.Screen::set_fullScreenMode")] static object SetFSM(object[] a) { if (NativeDisplay.Capped) NativeDisplay.SetMode((FullScreenMode)a[0]); return null; }
@@ -152,8 +155,8 @@ static class AppIcalls
     [Icall("UnityEngine.Screen::get_brightness")] static object Bright(object[] a) => 1f;
     [Icall("UnityEngine.Screen::GetMainWindowPosition_Injected")] static object WinPos(object[] a) { a[0] = Vector2Int.zero; return null; }
 
-    // ---- Random ---- (kit #7 tests track: SHEPHERD_UNITY_RANDOM=1 = Unity's own xorshift128 generator, Icalls/UnityRandom.cs -- off by default:
-    // System.Random as before. The Mac build counts the calls for the state hash, Diag/StateHash.cs)
+    // ---- Random ---- (kit #7 tests track: Unity's own xorshift128 generator, Icalls/UnityRandom.cs -- kit #9 fidelity: ON by default under the
+    // Vita profile; SHEPHERD_UNITY_RANDOM=0 = System.Random as kit #8. The Mac build counts the calls for the state hash, Diag/StateHash.cs)
 #if SHEPHERD_EBOOT
     static System.Random R => _rng;
     static void Counted() { }
@@ -164,7 +167,10 @@ static class AppIcalls
 #endif
     static readonly bool UR = UnityRandom.On;
     [Icall("UnityEngine.Random::InitState")] static object Init(object[] a) { _seed = (int)a[0]; if (UR) UnityRandom.InitState(_seed); else _rng = new System.Random(_seed); return null; }
-    [Icall("UnityEngine.Random::get_seed")] static object Seed(object[] a) => _seed;
+    // kit #9 fidelity, second review (section 13; the oracle probe vita/tests/oracle/k9-seed-mpb, both players): Unity's Random.seed getter is
+    // the generator's current first state word (state.s0), which every draw moves -- with Unity's generator on, so is this one (kit #8 and
+    // SHEPHERD_UNITY_RANDOM=0: the last InitState / set_seed argument)
+    [Icall("UnityEngine.Random::get_seed")] static object Seed(object[] a) => UR ? UnityRandom.Seed : _seed;
     [Icall("UnityEngine.Random::set_seed")] static object SetSeed(object[] a) => Init(a);
     [Icall("UnityEngine.Random::get_value")] static object Value(object[] a) { if (UR) { Counted(); return UnityRandom.Value(); } return (float)R.NextDouble(); }
     [Icall("UnityEngine.Random::Range")] static object RangeF(object[] a) { float mn = (float)a[0], mx = (float)a[1]; if (UR) { Counted(); return UnityRandom.Range(mn, mx); } return mn + (float)R.NextDouble() * (mx - mn); }
@@ -178,4 +184,41 @@ static class AppIcalls
     [Icall("UnityEngine.Random::get_rotationUniform_Injected")] static object RRotU(object[] a) { if (UR) { Counted(); a[0] = UnityRandom.RotationUniform(); return null; } return RRot(a); }
     [Icall("UnityEngine.Random::get_state_Injected")] static object State(object[] a) { a[0] = UR ? UnityRandom.GetState() : default(UnityEngine.Random.State); return null; }
     [Icall("UnityEngine.Random::set_state_Injected")] static object SetState(object[] a) { if (UR && a[0] is UnityEngine.Random.State st) UnityRandom.SetState(st); return null; }
+
+    // kit #9 track runtime (lever 10; Icalls/K9Reg.cs, Runtime/K9Typed.cs): the typed twin of realtimeSinceStartup (the same expression, no box).
+    // The Time getters the engine's state answers alone are E5 mirrors instead (tools/Rewriter/TypedPass.cs: the stub reads Shepherd.Hooks.Mirror,
+    // where Runtime/Time.cs keeps that state) -- K9Typed checks that each mirrored key is bound to the hook its formula copies (MirrorHooks).
+    internal static void K9(K9Reg r)
+    {
+        r.Add("UnityEngine.Time::get_realtimeSinceStartup", (Func<float>)(() => (float)UTime.Realtime), RT);
+    }
+    /// <summary>kit #9 E5: the hook each mirrored getter's formula copies (K9Typed.BindMirrors refuses the mirrors unless each key is bound to it).</summary>
+    internal static IEnumerable<(string key, Shepherd.Hooks.IcallImpl hook)> MirrorHooks() => new (string, Shepherd.Hooks.IcallImpl)[]
+    {
+        ("UnityEngine.Time::get_deltaTime", Dt), ("UnityEngine.Time::get_unscaledDeltaTime", UDt), ("UnityEngine.Time::get_time", T_),
+        ("UnityEngine.Time::get_timeScale", TS), ("UnityEngine.Time::get_frameCount", Frames), ("UnityEngine.Time::get_fixedDeltaTime", FDt),
+        ("UnityEngine.Time::get_inFixedTimeStep", InFixed),
+    };
+    /// <summary>kit #9 E5, check mode: each mirrored getter's formula over Shepherd.Hooks.Mirror (= tools/Rewriter/TypedPass.cs's IL) and the
+    /// hook's answer, compared at every call while the stubs ask the engine (SHEPHERD_K9_MIRROR=check).</summary>
+    /// <summary>kit #9 E5 (review fix): the constant mirrors of this class (key, the hook the stub copies, its answer) -- see RenderIcalls.K9MirrorConsts.</summary>
+    internal static IEnumerable<(string key, Shepherd.Hooks.IcallImpl hook, object value)> K9MirrorConsts() => new (string, Shepherd.Hooks.IcallImpl, object)[]
+    {
+        ("UnityEngine.Application::get_runInBackground", RunBg, true),
+    };
+    internal static object MirrorFormula(string key)
+    {
+        var m = typeof(Shepherd.Hooks.Mirror); bool wallFixed = Shepherd.Hooks.Mirror.InFixedStep && (Shepherd.Hooks.Mirror.Wall || Shepherd.Hooks.Mirror.FrameFixed);
+        return key switch
+        {
+            "UnityEngine.Time::get_deltaTime" => Shepherd.Hooks.Mirror.InFixedStep ? Shepherd.Hooks.Mirror.FixedDeltaTime : Shepherd.Hooks.Mirror.DeltaTime,
+            "UnityEngine.Time::get_unscaledDeltaTime" => wallFixed ? Shepherd.Hooks.Mirror.FixedUnscaledDeltaTime : Shepherd.Hooks.Mirror.UnscaledDeltaTime,
+            "UnityEngine.Time::get_time" => (float)(wallFixed ? Shepherd.Hooks.Mirror.FixedNow : Shepherd.Hooks.Mirror.Now),
+            "UnityEngine.Time::get_timeScale" => Shepherd.Hooks.Mirror.TimeScale,
+            "UnityEngine.Time::get_frameCount" => Shepherd.Hooks.Mirror.FrameCount,
+            "UnityEngine.Time::get_fixedDeltaTime" => Shepherd.Hooks.Mirror.FixedDeltaTime,
+            "UnityEngine.Time::get_inFixedTimeStep" => Shepherd.Hooks.Mirror.InFixedStep,
+            _ => null
+        };
+    }
 }

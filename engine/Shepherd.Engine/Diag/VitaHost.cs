@@ -28,7 +28,7 @@ public static class VitaHost
     static readonly int Every = int.TryParse(Environment.GetEnvironmentVariable("SHEPHERD_PROGRESS_EVERY"), out var e) && e > 0 ? e : 50;
 
     /// <summary>Kinds understood by the host.</summary>
-    const int Progress = 0, Checkpoint = 1, End = 2, Interactive = 3, RenderAlive = 4, FailLine = 5, K7Kind = 6;
+    const int Progress = 0, Checkpoint = 1, End = 2, Interactive = 3, RenderAlive = 4, FailLine = 5, K7Kind = 6, K9Kind = 8;
     static readonly bool Watch = On && Environment.GetEnvironmentVariable("SHEPHERD_MENU_WATCH") == "1";
     static string _lastSel, _pendSel;
     static int _seenPress = -1, _seenTouch = -1, _pendFrame = -1, _events;
@@ -44,7 +44,7 @@ public static class VitaHost
         if (!On) return;
         if (Watch)
         {
-            if (LazyNow) { var ev = LazyAfter(frame); if (ev != null) SendNote(frame, Interactive, ev); }   // kit #8: the lazy watch (the same M1 lines)
+            if (LazyNow) { var ev = LazyAfter(frame); if (ev != null) SendNote(frame, _lzEvTitle ? TitleResponse : Interactive, ev); }   // kit #8: the lazy watch (the same M1 lines)
             else
             {
                 _oldEvent = null; WatchMenu(frame);
@@ -52,11 +52,12 @@ public static class VitaHost
             }
         }
         if (frame == GcGovProbe.Frame) GcGovProbe.Run();
+        if (Runtime.K9Gc.UsedProbe) Runtime.K9Gc.ProbeFrame();   // kit #9 gc: the used-size probe (test only)
         if (Checkpoints.Contains(frame)) Send(frame, Checkpoint);
         else if (frame % Every == 0) Send(frame, Progress);
     }
     /// <summary>After the last frame (Boot): the end checkpoint, whose note carries the selected menu button.</summary>
-    public static void Finish(int lastFrame) { if (On) Send(lastFrame, End); }
+    public static void Finish(int lastFrame) { if (On) { if (Runtime.K9Gc.UsedProbe) K7Line(Runtime.K9Gc.ProbeLine()); Send(lastFrame, End); } }
     /// <summary>kit #3 review (Render/MtRender.cs, MtBackend.Dispose): the multicore pipeline's render thread did not stop at the end -- the
     /// host then makes no vitaGL call after Main (kind 4).</summary>
     public static void RenderThreadAlive(string why) { if (On) SendNote(Runtime.Time.FrameCount, RenderAlive, why); }
@@ -66,36 +67,60 @@ public static class VitaHost
     public static void Fail(string what) { if (On) Native(Runtime.Time.FrameCount, FailLine, what, 0, 0, 0, 0, 0); }
     /// <summary>Kit #7 (Diag/K7.cs): one line for the host log, as it is (kind 6: the BOOT numbers); never a frame report.</summary>
     public static void K7Line(string line) { if (On) Native(Runtime.Time.FrameCount, K7Kind, line, 0, 0, 0, 0, 0); }
+    /// <summary>Kit #9 gc (Runtime/K9Gc.cs): a scene load starts -- kind 8, "load &lt;scene&gt;" with the main thread's allocation so far, for the
+    /// host's per-scene nursery sizing (vita/shepherd/k9_gc.inc.c); never a frame report.</summary>
+    public static void K9Scene(string scene) { if (On) Native(Runtime.Time.FrameCount, K9Kind, "load " + scene, 0, GC.GetAllocatedBytesForCurrentThread(), 0, 0, 0); }
+
+    /// <summary>Device kit #9, track device (vita/notes/kit9-device.md) -- the GREEN rule: three of kit #8's device starts ended RED although the
+    /// game ran perfectly, because their only press was the one at "Press Any Button": nothing is selected while the title prompt shows, so
+    /// the watch had no "before" selection and the menu appearing with a selected button was not counted. Now a press (or touch) made while
+    /// NOTHING is selected, followed within 600 frames by a selected button, counts once per start as the menu responding (the title press:
+    /// the game's Main Menu opened because of it; device kit #8: Cross at f972, the menu shown at f1005, 'Resume Game' selected by f1040; vlx:
+    /// 250 frames from the press to the selection). Only the first such answer counts (a later press with nothing selected -- in play, before a
+    /// pause menu -- is not looked at). <c>SHEPHERD_K9_TITLE_PRESS=0</c> = kit #8's watch (only a change of the selected button counts).</summary>
+    static readonly bool TitlePress = Environment.GetEnvironmentVariable("SHEPHERD_K9_TITLE_PRESS") != "0";
+    const int TitleWindow = 600;
+    static bool _pendTitle, _titleDone, _lzPendTitle, _lzTitleDone, _lzEvTitle;
+    /// <summary>Kit #9 review, round 2 (finding 2): the title press's answer goes to the host as its own kind (9, not 3): the host counts it as
+    /// a menu response for the END line / PASS M1 (the GREEN rule) but does NOT arm the play apps' memory guard with it -- kit #8 armed the
+    /// guard at the first menu response, which was always a change of the selected button (a navigation); counted as kind 3 the title press
+    /// armed it ~one idle Main Menu earlier (device play.txt: ~6,500 frames from the menu to the first D-pad press).</summary>
+    /// (Kit #9 integration: kind 9 -- the device track used 8, which the gc track's scene note (K9Kind) had taken; with both on one host the
+    /// scene-note branch ran first and swallowed the title press.)
+    const int TitleResponse = 9;
 
     /// <summary>The selection before a pad press vs after it: a change is the menu responding to the pad. kit #5: a touch (the pointer moving
-    /// to the finger, Impl.VitaTouch) counts like a pad press, so a session played by touch is interactive too.</summary>
+    /// to the finger, Impl.VitaTouch) counts like a pad press, so a session played by touch is interactive too. Kit #9: the title press (above).</summary>
     static void WatchMenu(int frame)
     {
         if (Impl.VitaPad.PressFrame != _seenPress)
         {
             _seenPress = Impl.VitaPad.PressFrame;
-            if (_lastSel != null) { _pendFrame = _seenPress; _pendSel = _lastSel; _pendBtn = Impl.VitaPad.PressButton; _pendTouch = false; }
+            if (_lastSel != null) { _pendFrame = _seenPress; _pendSel = _lastSel; _pendBtn = Impl.VitaPad.PressButton; _pendTouch = false; _pendTitle = false; }
+            else if (TitlePress && !_titleDone && _pendFrame < 0) { _pendFrame = _seenPress; _pendSel = null; _pendBtn = Impl.VitaPad.PressButton; _pendTouch = false; _pendTitle = true; }
         }
         if (Impl.VitaTouch.TouchFrame != _seenTouch)
         {
             _seenTouch = Impl.VitaTouch.TouchFrame;
-            if (_lastSel != null) { _pendFrame = _seenTouch; _pendSel = _lastSel; _pendTouch = true; }
+            if (_lastSel != null) { _pendFrame = _seenTouch; _pendSel = _lastSel; _pendTouch = true; _pendTitle = false; }
+            else if (TitlePress && !_titleDone && _pendFrame < 0) { _pendFrame = _seenTouch; _pendSel = null; _pendTouch = true; _pendTitle = true; }
         }
         var sel = MenuProbe.SelectedName();
         if (_pendFrame >= 0)
         {
             if (sel != null && sel != _pendSel)
             {
-                if (++_events <= 20) SendNote(frame, Interactive, _oldEvent = EventNote(_pendSel, sel, _pendTouch, _pendBtn, _pendFrame, frame, _events));
+                if (_pendTitle) _titleDone = true;
+                if (++_events <= 20) SendNote(frame, _pendTitle ? TitleResponse : Interactive, _oldEvent = EventNote(_pendSel, sel, _pendTouch, _pendBtn, _pendFrame, frame, _events));
                 _pendFrame = -1;
             }
-            else if (frame - _pendFrame > 300) _pendFrame = -1;
+            else if (frame - _pendFrame > (_pendTitle ? TitleWindow : 300)) _pendFrame = -1;
         }
         _lastSel = sel;
     }
 
     static string EventNote(string pendSel, string sel, bool touch, Impl.VitaPad.B btn, int pendFrame, int frame, int events) =>
-        $"'{pendSel}' -> '{sel}' label='{MenuProbe.SelectedLabel() ?? ""}' after {(touch ? $"touch at ({Impl.VitaTouch.TouchAt.x:F0},{Impl.VitaTouch.TouchAt.y:F0})" : $"pad {btn}")} at f{pendFrame} ({frame - pendFrame} frame(s) later), event {events}";
+        $"'{pendSel ?? "(nothing selected: the title press, kit #9)"}' -> '{sel}' label='{MenuProbe.SelectedLabel() ?? ""}' after {(touch ? $"touch at ({Impl.VitaTouch.TouchAt.x:F0},{Impl.VitaTouch.TouchAt.y:F0})" : $"pad {btn}")} at f{pendFrame} ({frame - pendFrame} frame(s) later), event {events}";
     static string _oldEvent;
 
     // ---- kit #8 speed track: the lazy menu watch (SHEPHERD_K8_MENU_WATCH; vita/notes/kit8-speed.md) ----
@@ -138,25 +163,29 @@ public static class VitaHost
     static string LazyAfter(int frame)
     {
         string ev = null;
+        _lzEvTitle = false;
         if (Impl.VitaPad.PressFrame != _lzSeenPress)
         {
             _lzSeenPress = Impl.VitaPad.PressFrame;
-            if (_lzPre != null) { _lzPendFrame = _lzSeenPress; _lzPendSel = _lzPre; _lzPendBtn = Impl.VitaPad.PressButton; _lzPendTouch = false; }
+            if (_lzPre != null) { _lzPendFrame = _lzSeenPress; _lzPendSel = _lzPre; _lzPendBtn = Impl.VitaPad.PressButton; _lzPendTouch = false; _lzPendTitle = false; }
+            else if (TitlePress && !_lzTitleDone && _lzPendFrame < 0) { _lzPendFrame = _lzSeenPress; _lzPendSel = null; _lzPendBtn = Impl.VitaPad.PressButton; _lzPendTouch = false; _lzPendTitle = true; }   // kit #9
         }
         if (Impl.VitaTouch.TouchFrame != _lzSeenTouch)
         {
             _lzSeenTouch = Impl.VitaTouch.TouchFrame;
-            if (_lzPre != null) { _lzPendFrame = _lzSeenTouch; _lzPendSel = _lzPre; _lzPendTouch = true; }
+            if (_lzPre != null) { _lzPendFrame = _lzSeenTouch; _lzPendSel = _lzPre; _lzPendTouch = true; _lzPendTitle = false; }
+            else if (TitlePress && !_lzTitleDone && _lzPendFrame < 0) { _lzPendFrame = _lzSeenTouch; _lzPendSel = null; _lzPendTouch = true; _lzPendTitle = true; }   // kit #9
         }
         if (_lzPendFrame >= 0)
         {
             var sel = MenuProbe.SelectedName();
             if (sel != null && sel != _lzPendSel)
             {
-                if (++_lzEvents <= 20) ev = EventNote(_lzPendSel, sel, _lzPendTouch, _lzPendBtn, _lzPendFrame, frame, _lzEvents);
+                if (_lzPendTitle) _lzTitleDone = true;
+                if (++_lzEvents <= 20) { ev = EventNote(_lzPendSel, sel, _lzPendTouch, _lzPendBtn, _lzPendFrame, frame, _lzEvents); _lzEvTitle = _lzPendTitle; }
                 _lzPendFrame = -1;
             }
-            else if (frame - _lzPendFrame > 300) _lzPendFrame = -1;
+            else if (frame - _lzPendFrame > (_lzPendTitle ? TitleWindow : 300)) _lzPendFrame = -1;
         }
         _lzRan = true;
         return ev;
@@ -186,6 +215,14 @@ public static class VitaHost
     static void SendNote(int frame, int kind, string note) =>
         Native(frame, kind, note, Runtime.K8Speed.CheapHeap ? HeapCheap() : GC.GetTotalMemory(false), GC.GetAllocatedBytesForCurrentThread(), GC.CollectionCount(0), GC.CollectionCount(GC.MaxGeneration), Objects.LiveCount);
 
+    /// <summary>Kit #9: the heartbeat's physics part (Physics/PhysWorld.Stage1.cs Note: steps and phase times since the last heartbeat); none
+    /// in a build without the physics runtime (SHEPHERD_PHYS_CODE=0).</summary>
+#if SHEPHERD_NO_PHYS
+    static string PhysNote() => "";
+#else
+    static string PhysNote() => Shepherd.Engine.Physics.PhysWorld.Note();
+#endif
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static void Send(int frame, int kind)
     {
@@ -193,7 +230,7 @@ public static class VitaHost
         try
         {
             var scenes = string.Join(",", Scenes.All.Values.Select(s => s.Name));
-            if (kind == Progress) note = $"scenes=[{scenes}]" + Runtime.Time.FixedNote() + GlNote() + Shepherd.Audio.ShepAudio.Note();   // Stage C: audio numbers (empty when silent); kit #3 review: the wall clock's fixed steps
+            if (kind == Progress) note = $"scenes=[{scenes}]" + Runtime.Time.FixedNote() + GlNote() + Shepherd.Audio.ShepAudio.Note() + PhysNote();   // Stage C: audio numbers (empty when silent); kit #3 review: the wall clock's fixed steps
             else
             {
                 var (sel, label, buttons) = MenuProbe.Current();

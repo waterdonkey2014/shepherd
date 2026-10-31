@@ -160,11 +160,11 @@ public static class PhysRecords
         foreach (var k in go.Components)
             if (!k.Destroyed && k.Managed is UnityEngine.SpriteRenderer) { ns = Objects.Get<NSprite>(Runtime.Conv.To(k.Get("sprite"), typeof(UnityEngine.Sprite)) as UnityEngine.Sprite); break; }
         if (ns == null || !(ns.PixelsPerUnit > 0f)) return;
-        float w = ns.Rect.width / ns.PixelsPerUnit, h = ns.Rect.height / ns.PixelsPerUnit;   // (Sprite.bounds, RenderIcalls' get_bounds)
+        float w = PG.W(ns.Rect) / ns.PixelsPerUnit, h = PG.H(ns.Rect) / ns.PixelsPerUnit;   // kit #9 glue math rule: Rect.width / height = m_Width / m_Height   // (Sprite.bounds, RenderIcalls' get_bounds)
         c.OffsetX = (0.5f - ns.Pivot.x) * w; c.OffsetY = (0.5f - ns.Pivot.y) * h;
-        c.Set("offset", new UnityEngine.Vector2(c.OffsetX, c.OffsetY));
+        c.Set("offset", PG.V2(c.OffsetX, c.OffsetY));
         if (c.Kind == Kind2D.Circle) { c.Radius = 0.5f * MathF.Max(w, h); c.Set("radius", c.Radius); }
-        else { c.SizeX = w; c.SizeY = h; c.Set("size", new UnityEngine.Vector2(w, h)); }
+        else { c.SizeX = w; c.SizeY = h; c.Set("size", PG.V2(w, h)); }
         AutoFits++;
     }
     public static long AutoFits;

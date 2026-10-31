@@ -8,21 +8,26 @@ static class TransformIcalls
     static NTransform T(object o) => Objects.Get<NTransform>(o);
     const float Deg = 57.29578f, Rad = 0.017453292f;
 
-    [Icall("UnityEngine.Transform::get_localPosition_Injected")] static object GetLP(object[] a) { a[1] = T(a[0])?.EffectiveLocalPosition ?? default; return null; }
-    [Icall("UnityEngine.Transform::set_localPosition_Injected")] static object SetLP(object[] a) { var t = T(a[0]); if (t != null) { t.EffectiveLocalPosition = (Vector3)a[1]; t.MarkChanged(); } return null; }
-    [Icall("UnityEngine.Transform::get_localRotation_Injected")] static object GetLR(object[] a) { a[1] = T(a[0])?.LocalRotation ?? Quaternion.identity; return null; }
+    [Icall("UnityEngine.Transform::get_localPosition_Injected")] static object GetLP(object[] a) { a[1] = K9Memo.Box(T(a[0])?.EffectiveLocalPosition ?? default); return null; }
+    [Icall("UnityEngine.Transform::set_localPosition_Injected")] static object SetLP(object[] a) { SetLPv(a[0], (Vector3)a[1]); return null; }
+    // kit #9 review fix: the three setters with a typed twin keep ONE body, shared by the hook and the twin (K9 below) -- a setter cannot run
+    // twice, so check mode cannot compare them; with one body only the stub's float transport differs
+    static void SetLPv(object s, Vector3 v) { var t = T(s); if (t != null) { t.EffectiveLocalPosition = v; t.MarkChanged(); } }
+    static void SetLSv(object s, Vector3 v) { var t = T(s); if (t != null) { t.LocalScale = v; t.MarkChanged(); } }
+    static void SetPv(object s, Vector3 v) => T(s)?.SetPosition(v);
+    [Icall("UnityEngine.Transform::get_localRotation_Injected")] static object GetLR(object[] a) { a[1] = K9Memo.Box(T(a[0])?.LocalRotation ?? Quaternion.identity); return null; }
     [Icall("UnityEngine.Transform::set_localRotation_Injected")] static object SetLR(object[] a) { var t = T(a[0]); if (t != null) { t.LocalRotation = M.QNorm((Quaternion)a[1]); t.MarkChanged(); } return null; }
-    [Icall("UnityEngine.Transform::get_localScale_Injected")] static object GetLS(object[] a) { a[1] = T(a[0])?.LocalScale ?? Vector3.one; return null; }
-    [Icall("UnityEngine.Transform::set_localScale_Injected")] static object SetLS(object[] a) { var t = T(a[0]); if (t != null) { t.LocalScale = (Vector3)a[1]; t.MarkChanged(); } return null; }
-    [Icall("UnityEngine.Transform::get_position_Injected")] static object GetP(object[] a) { a[1] = T(a[0])?.Position ?? default; return null; }
-    [Icall("UnityEngine.Transform::set_position_Injected")] static object SetP(object[] a) { T(a[0])?.SetPosition((Vector3)a[1]); return null; }
-    [Icall("UnityEngine.Transform::get_rotation_Injected")] static object GetR(object[] a) { a[1] = T(a[0])?.Rotation ?? Quaternion.identity; return null; }
+    [Icall("UnityEngine.Transform::get_localScale_Injected")] static object GetLS(object[] a) { a[1] = K9Memo.Box(T(a[0])?.LocalScale ?? Vector3.one); return null; }
+    [Icall("UnityEngine.Transform::set_localScale_Injected")] static object SetLS(object[] a) { SetLSv(a[0], (Vector3)a[1]); return null; }
+    [Icall("UnityEngine.Transform::get_position_Injected")] static object GetP(object[] a) { a[1] = K9Memo.Box(T(a[0])?.Position ?? default); return null; }
+    [Icall("UnityEngine.Transform::set_position_Injected")] static object SetP(object[] a) { SetPv(a[0], (Vector3)a[1]); return null; }
+    [Icall("UnityEngine.Transform::get_rotation_Injected")] static object GetR(object[] a) { a[1] = K9Memo.Box(T(a[0])?.Rotation ?? Quaternion.identity); return null; }
     [Icall("UnityEngine.Transform::set_rotation_Injected")] static object SetR(object[] a) { T(a[0])?.SetRotation(M.QNorm((Quaternion)a[1])); return null; }
     [Icall("UnityEngine.Transform::get_lossyScale_Injected")] static object GetLossy(object[] a) { var t = T(a[0]); a[1] = t != null ? t.LossyScaleBox() : Vector3.one; return null; }   // (menu-speed: one box per unchanged value)
     [Icall("UnityEngine.Transform::get_localToWorldMatrix_Injected")] static object L2W(object[] a) { a[1] = T(a[0])?.LocalToWorld ?? Matrix4x4.identity; return null; }
     [Icall("UnityEngine.Transform::get_worldToLocalMatrix_Injected")] static object W2L(object[] a) { a[1] = T(a[0])?.WorldToLocal ?? Matrix4x4.identity; return null; }
-    [Icall("UnityEngine.Transform::GetPositionAndRotation")] static object GetPR(object[] a) { var t = T(a[0]); a[1] = t?.Position ?? default; a[2] = t?.Rotation ?? Quaternion.identity; return null; }
-    [Icall("UnityEngine.Transform::GetLocalPositionAndRotation")] static object GetLPR(object[] a) { var t = T(a[0]); a[1] = t?.EffectiveLocalPosition ?? default; a[2] = t?.LocalRotation ?? Quaternion.identity; return null; }
+    [Icall("UnityEngine.Transform::GetPositionAndRotation")] static object GetPR(object[] a) { var t = T(a[0]); a[1] = K9Memo.Box(t?.Position ?? default); a[2] = K9Memo.Box(t?.Rotation ?? Quaternion.identity); return null; }
+    [Icall("UnityEngine.Transform::GetLocalPositionAndRotation")] static object GetLPR(object[] a) { var t = T(a[0]); a[1] = K9Memo.Box(t?.EffectiveLocalPosition ?? default); a[2] = K9Memo.Box(t?.LocalRotation ?? Quaternion.identity); return null; }
     [Icall("UnityEngine.Transform::SetPositionAndRotation_Injected")] static object SetPR(object[] a) { var t = T(a[0]); if (t != null) { t.SetPosition((Vector3)a[1]); t.SetRotation((Quaternion)a[2]); } return null; }
     [Icall("UnityEngine.Transform::SetLocalPositionAndRotation_Injected")] static object SetLPR(object[] a) { var t = T(a[0]); if (t != null) { t.EffectiveLocalPosition = (Vector3)a[1]; t.LocalRotation = (Quaternion)a[2]; t.MarkChanged(); } return null; }
     [Icall("UnityEngine.Transform::GetLocalEulerAngles_Injected")] static object GetEuler(object[] a) { var e = M.ToEuler(T(a[0])?.LocalRotation ?? Quaternion.identity) * Deg; a[2] = new Vector3(Wrap(e.x), Wrap(e.y), Wrap(e.z)); return null; }
@@ -51,7 +56,10 @@ static class TransformIcalls
     static void MoveSibling(NTransform t, int index)
     {
         if (t == null) return;
-        if (t.Parent != null) { var l = t.Parent.Children; l.Remove(t); l.Insert(Math.Clamp(index, 0, l.Count), t); }
+        // kit #9 fidelity (stand-in fix "siblingindex", kit7-tests.md finding 4): Unity moves a child given a NEGATIVE index to the end (the
+        // index is clamped as an unsigned number; the oracle's transform-model case 253: SetSiblingIndex(-2) of the first of two children made
+        // it the last); kit #8 clamped it to 0. Roots keep kit #8's handling (the oracle has no scene-root evidence).
+        if (t.Parent != null) { var l = t.Parent.Children; l.Remove(t); l.Insert(index < 0 && K9Fidelity.FixSiblingIndex ? l.Count : Math.Clamp(index, 0, l.Count), t); }
         else if (Scenes.All.TryGetValue(t.Go.Scene, out var s)) { s.Roots.Remove(t.Go); s.Roots.Insert(Math.Clamp(index, 0, s.Roots.Count), t.Go); }
     }
     [Icall("UnityEngine.Transform::MoveAfterSibling")] static object MoveAfter(object[] a) { var t = T(a[0]); var s = T(a[1]); if (t?.Parent != null) { var l = t.Parent.Children; l.Remove(t); int i = s == null ? 0 : l.IndexOf(s) + 1; l.Insert(Math.Clamp(i, 0, l.Count), t); } return null; }
@@ -92,11 +100,11 @@ static class TransformIcalls
         var r = Core.FindPath(t, ("x/" + path.Trim('/')).Split('/'), 1, (bool)a[2]); return r?.Managed;
     }
 
-    [Icall("UnityEngine.Transform::TransformPoint_Injected")] static object TP(object[] a) { a[2] = M.Point(T(a[0])?.LocalToWorld ?? Matrix4x4.identity, (Vector3)a[1]); return null; }
-    [Icall("UnityEngine.Transform::InverseTransformPoint_Injected")] static object ITP(object[] a) { a[2] = M.Point(T(a[0])?.WorldToLocal ?? Matrix4x4.identity, (Vector3)a[1]); return null; }
+    [Icall("UnityEngine.Transform::TransformPoint_Injected")] static object TP(object[] a) { a[2] = K9Memo.Box(M.Point(T(a[0])?.LocalToWorld ?? Matrix4x4.identity, (Vector3)a[1])); return null; }
+    [Icall("UnityEngine.Transform::InverseTransformPoint_Injected")] static object ITP(object[] a) { a[2] = K9Memo.Box(M.Point(T(a[0])?.WorldToLocal ?? Matrix4x4.identity, (Vector3)a[1])); return null; }
     [Icall("UnityEngine.Transform::TransformVector_Injected")] static object TV(object[] a) { a[2] = M.Vec(T(a[0])?.LocalToWorld ?? Matrix4x4.identity, (Vector3)a[1]); return null; }
     [Icall("UnityEngine.Transform::InverseTransformVector_Injected")] static object ITV(object[] a) { a[2] = M.Vec(T(a[0])?.WorldToLocal ?? Matrix4x4.identity, (Vector3)a[1]); return null; }
-    [Icall("UnityEngine.Transform::TransformDirection_Injected")] static object TD(object[] a) { a[2] = M.Rotate(T(a[0])?.Rotation ?? Quaternion.identity, (Vector3)a[1]); return null; }
+    [Icall("UnityEngine.Transform::TransformDirection_Injected")] static object TD(object[] a) { a[2] = K9Memo.Box(M.Rotate(T(a[0])?.Rotation ?? Quaternion.identity, (Vector3)a[1])); return null; }
     [Icall("UnityEngine.Transform::InverseTransformDirection_Injected")] static object ITD(object[] a) { a[2] = M.Rotate(M.QInv(T(a[0])?.Rotation ?? Quaternion.identity), (Vector3)a[1]); return null; }
     static unsafe void Batch(object[] a, Func<Vector3, Vector3> f)
     {
@@ -130,9 +138,9 @@ static class TransformIcalls
     [Icall("UnityEngine.RectTransform::set_anchorMin_Injected")] static object SetAMin(object[] a) { var t = T(a[0]); if (t != null) { t.AnchorMin = (Vector2)a[1]; t.MarkChanged(); } return null; }
     [Icall("UnityEngine.RectTransform::get_anchorMax_Injected")] static object AMax(object[] a) { a[1] = T(a[0])?.AnchorMax ?? default; return null; }
     [Icall("UnityEngine.RectTransform::set_anchorMax_Injected")] static object SetAMax(object[] a) { var t = T(a[0]); if (t != null) { t.AnchorMax = (Vector2)a[1]; t.MarkChanged(); } return null; }
-    [Icall("UnityEngine.RectTransform::get_anchoredPosition_Injected")] static object APos(object[] a) { a[1] = T(a[0])?.AnchoredPosition ?? default; return null; }
+    [Icall("UnityEngine.RectTransform::get_anchoredPosition_Injected")] static object APos(object[] a) { a[1] = K9Memo.Box(T(a[0])?.AnchoredPosition ?? default); return null; }
     [Icall("UnityEngine.RectTransform::set_anchoredPosition_Injected")] static object SetAPos(object[] a) { var t = T(a[0]); if (t != null) { t.AnchoredPosition = (Vector2)a[1]; t.MarkChanged(); } return null; }
-    [Icall("UnityEngine.RectTransform::get_sizeDelta_Injected")] static object SDelta(object[] a) { a[1] = T(a[0])?.SizeDelta ?? default; return null; }
+    [Icall("UnityEngine.RectTransform::get_sizeDelta_Injected")] static object SDelta(object[] a) { a[1] = K9Memo.Box(T(a[0])?.SizeDelta ?? default); return null; }
     [Icall("UnityEngine.RectTransform::set_sizeDelta_Injected")] static object SetSDelta(object[] a) { var t = T(a[0]); if (t != null) { t.SizeDelta = (Vector2)a[1]; t.MarkChanged(); } return null; }
     [Icall("UnityEngine.RectTransform::get_pivot_Injected")] static object Pivot(object[] a) { a[1] = T(a[0])?.Pivot ?? default; return null; }
     [Icall("UnityEngine.RectTransform::set_pivot_Injected")] static object SetPivot(object[] a) { var t = T(a[0]); if (t != null) { t.Pivot = (Vector2)a[1]; t.MarkChanged(); } return null; }
@@ -142,4 +150,29 @@ static class TransformIcalls
     [Icall("UnityEngine.RectTransform::get_drivenProperties")] static object Driven(object[] a) => (DrivenTransformProperties)(T(a[0])?.DrivenProperties ?? 0);
     [Icall("UnityEngine.RectTransform::set_drivenProperties")] static object SetDriven(object[] a) { var t = T(a[0]); if (t != null) t.DrivenProperties = Convert.ToInt32(a[1]); return null; }
     [Icall("UnityEngine.RectTransform::ForceUpdateRectTransforms")] static object ForceUpd(object[] a) => null;
+
+    // kit #9 track runtime (lever 10; Icalls/K9Reg.cs, Runtime/K9Typed.cs): the typed twins of the hooks above -- the same expressions, no
+    // object[] / boxes; struct results / arguments as their float fields (Vector3 x y z, Quaternion x y z w, Rect x y width height).
+    internal static void K9(K9Reg r)
+    {
+        r.Add("UnityEngine.Transform::GetParent", (Func<object, object>)(s => T(s)?.Parent?.Managed), Parent);
+        r.Add("UnityEngine.Transform::get_childCount", (Func<object, int>)(s => T(s)?.Children.Count ?? 0), ChildCount);
+        r.Add("UnityEngine.Transform::get_lossyScale_Injected", (Shepherd.Hooks.TypedIcalls.DV3)((object s, out float x, out float y, out float z) =>
+            { var t = T(s); var v = t != null ? (Vector3)t.LossyScaleBox() : Vector3.one; x = v.x; y = v.y; z = v.z; }), GetLossy);
+        r.Add("UnityEngine.Transform::get_position_Injected", (Shepherd.Hooks.TypedIcalls.DV3)((object s, out float x, out float y, out float z) =>
+            { var v = T(s)?.Position ?? default; x = v.x; y = v.y; z = v.z; }), GetP);
+        r.Add("UnityEngine.Transform::get_localPosition_Injected", (Shepherd.Hooks.TypedIcalls.DV3)((object s, out float x, out float y, out float z) =>
+            { var v = T(s)?.EffectiveLocalPosition ?? default; x = v.x; y = v.y; z = v.z; }), GetLP);
+        r.Add("UnityEngine.Transform::get_localScale_Injected", (Shepherd.Hooks.TypedIcalls.DV3)((object s, out float x, out float y, out float z) =>
+            { var v = T(s)?.LocalScale ?? Vector3.one; x = v.x; y = v.y; z = v.z; }), GetLS);
+        r.Add("UnityEngine.Transform::get_rotation_Injected", (Shepherd.Hooks.TypedIcalls.DV4)((object s, out float x, out float y, out float z, out float w) =>
+            { var q = T(s)?.Rotation ?? Quaternion.identity; x = q.x; y = q.y; z = q.z; w = q.w; }), GetR);
+        r.Add("UnityEngine.Transform::get_localRotation_Injected", (Shepherd.Hooks.TypedIcalls.DV4)((object s, out float x, out float y, out float z, out float w) =>
+            { var q = T(s)?.LocalRotation ?? Quaternion.identity; x = q.x; y = q.y; z = q.z; w = q.w; }), GetLR);
+        r.Add("UnityEngine.RectTransform::get_rect_Injected", (Shepherd.Hooks.TypedIcalls.DV4)((object s, out float x, out float y, out float w, out float h) =>
+            { var rc = T(s)?.Rect ?? default; x = rc.x; y = rc.y; w = rc.width; h = rc.height; }), GetRect);
+        r.Add("UnityEngine.Transform::set_localScale_Injected", (Shepherd.Hooks.TypedIcalls.DSetV3)((s, x, y, z) => SetLSv(s, new Vector3(x, y, z))), SetLS);
+        r.Add("UnityEngine.Transform::set_localPosition_Injected", (Shepherd.Hooks.TypedIcalls.DSetV3)((s, x, y, z) => SetLPv(s, new Vector3(x, y, z))), SetLP);
+        r.Add("UnityEngine.Transform::set_position_Injected", (Shepherd.Hooks.TypedIcalls.DSetV3)((s, x, y, z) => SetPv(s, new Vector3(x, y, z))), SetP);   // (one body each: SetLSv / SetLPv / SetPv)
+    }
 }

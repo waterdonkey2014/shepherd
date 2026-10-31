@@ -1,0 +1,478 @@
+SHEPHERD-VITA device kit #10, track aot: COMPRESSED IL (vita/notes/kit10-aot.md; the ILZ form written by vita/tools/k10_ilz.py). Applied after
+the kit #9 runtime patches by vita/toolchain/build-runtime-k9.sh (SHEPHERD_K10_PATCHES / the kit #10 default list). metadata/image.c only.
+
+--- a/src/mono/mono/metadata/image.c
++++ b/src/mono/mono/metadata/image.c
+@@ -198,8 +198,461 @@
+ 		tables++;
+ 	}
+ 	return INVALID_ADDRESS;
++}
++
++/*
++ * SHEPHERD-VITA device kit #10, track aot (vita/patches/k10-ilz.patch, vita/notes/kit10-aot.md): COMPRESSED IL for the methods that have
++ * not run yet. vita/tools/k10_ilz.py writes an assembly's "ILZ" form: the IL bodies of the methods no route / device run has seen are cut
++ * out of .text and kept as raw-deflate blocks behind a "SHPILZ1" header that a section ".ilz" WITHOUT raw data points at
++ * (PointerToRawData = the header; VirtualAddress / VirtualSize = the RVA range those bodies' MethodDef rows now point into). Every other
++ * byte of the file is the original's (the metadata streams too: the MVID the AOT images check is unchanged).
++ * mono_image_rva_map: an RVA inside such a section is a compressed body -- k10_ilz_fetch unpacks its block (a small cache of unpacked
++ * blocks), copies the ONE body out (header + code + extra sections, exactly the original bytes) into memory of its own that lives as
++ * long as the process (a method header points into it) and returns that; the next request for the same RVA gets the same copy. Only
++ * the bodies something asks for are ever unpacked (the interpreter's transform, the JIT, reflection's MethodBody, the inliner's look at a
++ * callee's size): an assembly read from the card costs its kept bytes + the compressed blocks, not its full IL.
++ * Exact: the bytes a method header is parsed from are the original bytes (k10_ilz.py verify checks every body on the Mac; a block that
++ * does not unpack to its recorded size, or a header that does not fit its block, makes the method fail loudly -- "Method has zero rva"
++ * -- never a different method). An assembly without a .ilz section never reaches this code (a section with raw data maps as before).
++ * The host reads ILZ files only from ux0:data/shepherd/managed-ilz/ and only with this runtime (SHEPHERD_K10_ILZ=0 in the env file:
++ * the original managed/ DLLs, kit #9 -- vita/shepherd/k10_aot.inc.c).
++ * Counters (the host's END line): mono_shepherd_k10_ilz_images / _bodies / _body_bytes / _inflates / _inflate_bytes / _errors.
++ */
++#include <pthread.h>
++
++typedef struct {
++	MonoImage *image;
++	const guint8 *hdr;        /* the SHPILZ1 header inside image->raw_data */
++	guint32 vbase, vsize, nblocks, bad;
++	const guint8 *table;      /* nblocks x { voff, coff, csize, rsize, crc32 } (little-endian, 4-aligned) */
++	GHashTable *bodies;       /* rva -> the body's own copy */
++} K10Ilz;
++
++volatile int mono_shepherd_k10_ilz_images, mono_shepherd_k10_ilz_bodies, mono_shepherd_k10_ilz_body_bytes, mono_shepherd_k10_ilz_inflates,
++	mono_shepherd_k10_ilz_inflate_bytes, mono_shepherd_k10_ilz_errors;
++static pthread_mutex_t k10_ilz_mutex = PTHREAD_MUTEX_INITIALIZER;
++static GHashTable *k10_ilz_states;   /* image -> K10Ilz */
++#define K10_ILZ_CACHE 4
++#define K10_ILZ_ENT 20   /* bytes per block table entry */
++static struct { K10Ilz *st; guint32 block; guint8 *data; guint32 cap; } k10_ilz_cache [K10_ILZ_CACHE];
++static int k10_ilz_cache_next;
++
++/* ---- raw deflate (RFC 1951), table-driven: a 10-bit first-level lookup, the canonical bit-by-bit walk for longer codes ---- */
++typedef struct {
++	const guint8 *in; guint32 inlen, inpos;
++	guint32 bitbuf; int bitcnt;
++	guint8 *out; guint32 outlen, outpos;
++} K10Inf;
++
++#define K10_FAST 10
++typedef struct {
++	guint16 count [16];       /* codes of each length */
++	guint16 symbol [320];     /* symbols in canonical order */
++	guint16 fast [1 << K10_FAST];   /* (len << 9) | sym for codes of <= K10_FAST bits, indexed by the next K10_FAST input bits; 0 = longer */
++} K10Huff;
++
++static inline void
++k10_fill (K10Inf *s)
++{
++	while (s->bitcnt <= 24 && s->inpos < s->inlen) {
++		s->bitbuf |= (guint32) s->in [s->inpos++] << s->bitcnt;
++		s->bitcnt += 8;
++	}
++}
++
++static inline int
++k10_bits (K10Inf *s, int n)   /* n <= 16; -1 = out of input */
++{
++	if (s->bitcnt < n) {
++		k10_fill (s);
++		if (s->bitcnt < n)
++			return -1;
++	}
++	int v = (int) (s->bitbuf & ((1u << n) - 1));
++	s->bitbuf >>= n;
++	s->bitcnt -= n;
++	return v;
++}
++
++/* lengths [n] -> h; 0 = a complete (or, for one code only, incomplete) code, -1 = over-subscribed / bad */
++static int
++k10_huff_build (K10Huff *h, const guint8 *lengths, int n)
++{
++	guint16 offs [16];
++	memset (h->count, 0, sizeof (h->count));
++	for (int i = 0; i < n; i++)
++		h->count [lengths [i]]++;
++	if (h->count [0] == n) {
++		memset (h->fast, 0, sizeof (h->fast));
++		return 0;   /* no codes: only valid where nothing is decoded with it */
++	}
++	int left = 1;
++	for (int len = 1; len < 16; len++) {
++		left <<= 1;
++		left -= h->count [len];
++		if (left < 0)
++			return -1;
++	}
++	offs [1] = 0;
++	for (int len = 1; len < 15; len++)
++		offs [len + 1] = offs [len] + h->count [len];
++	for (int i = 0; i < n; i++)
++		if (lengths [i])
++			h->symbol [offs [lengths [i]]++] = (guint16) i;
++	/* the fast table: canonical codes (MSB-first) reversed into the LSB-first bit order of the stream */
++	memset (h->fast, 0, sizeof (h->fast));
++	guint32 code = 0;
++	int idx = 0;
++	for (int len = 1; len <= K10_FAST; len++) {
++		for (int k = 0; k < h->count [len]; k++) {
++			guint32 rev = 0;
++			for (int b = 0; b < len; b++)
++				rev |= ((code >> b) & 1) << (len - 1 - b);
++			for (guint32 f = rev; f < (1u << K10_FAST); f += 1u << len)
++				h->fast [f] = (guint16) ((len << 9) | h->symbol [idx]);
++			code++;
++			idx++;
++		}
++		code <<= 1;
++	}
++	return 0;
+ }
+ 
++static int
++k10_decode (K10Inf *s, const K10Huff *h)
++{
++	if (s->bitcnt < K10_FAST)
++		k10_fill (s);
++	if (s->bitcnt >= K10_FAST) {
++		guint16 e = h->fast [s->bitbuf & ((1u << K10_FAST) - 1)];
++		if (e) {
++			int len = e >> 9;
++			s->bitbuf >>= len;
++			s->bitcnt -= len;
++			return e & 0x1ff;
++		}
++	}
++	/* longer code (or the input's last bits): canonical walk, one bit at a time from the code's first bit */
++	int code = 0, first = 0, index = 0;
++	for (int len = 1; len < 16; len++) {
++		int b = k10_bits (s, 1);
++		if (b < 0)
++			return -1;
++		code |= b;
++		int count = h->count [len];
++		if (code - count < first)
++			return h->symbol [index + (code - first)];
++		index += count;
++		first += count;
++		first <<= 1;
++		code <<= 1;
++	}
++	return -1;
++}
++
++static const guint16 k10_lbase [29] = { 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258 };
++static const guint8 k10_lext [29] = { 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0 };
++static const guint16 k10_dbase [30] = { 1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577 };
++static const guint8 k10_dext [30] = { 0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13 };
++
++static int
++k10_codes (K10Inf *s, const K10Huff *lit, const K10Huff *dist)
++{
++	for (;;) {
++		int sym = k10_decode (s, lit);
++		if (sym < 0)
++			return -1;
++		if (sym < 256) {
++			if (s->outpos >= s->outlen)
++				return -1;
++			s->out [s->outpos++] = (guint8) sym;
++		} else if (sym == 256) {
++			return 0;
++		} else {
++			sym -= 257;
++			if (sym >= 29)
++				return -1;
++			int e = k10_lext [sym];
++			int x = e ? k10_bits (s, e) : 0;
++			if (x < 0)
++				return -1;
++			guint32 len = k10_lbase [sym] + (guint32) x;
++			int ds = k10_decode (s, dist);
++			if (ds < 0 || ds >= 30)
++				return -1;
++			e = k10_dext [ds];
++			x = e ? k10_bits (s, e) : 0;
++			if (x < 0)
++				return -1;
++			guint32 d = k10_dbase [ds] + (guint32) x;
++			if (d > s->outpos || len > s->outlen - s->outpos)
++				return -1;
++			guint8 *o = s->out + s->outpos;
++			const guint8 *f = o - d;
++			for (guint32 i = 0; i < len; i++)
++				o [i] = f [i];   /* (byte by byte: overlapping copies repeat, as deflate means) */
++			s->outpos += len;
++		}
++	}
++}
++
++static int
++k10_inflate (guint8 *out, guint32 outlen, const guint8 *in, guint32 inlen)
++{
++	K10Inf s = { in, inlen, 0, 0, 0, out, outlen, 0 };
++	K10Huff *lit = g_new (K10Huff, 2), *dist = lit + 1;
++	int last, r = 0;
++	do {
++		last = k10_bits (&s, 1);
++		int type = k10_bits (&s, 2);
++		if (last < 0 || type < 0) { r = -1; break; }
++		if (type == 0) {   /* stored */
++			/* to the byte boundary: drop the partial byte's bits, give back the whole bytes the fill already took */
++			int drop = s.bitcnt & 7;
++			s.bitbuf >>= drop; s.bitcnt -= drop;
++			s.inpos -= (guint32) (s.bitcnt / 8);
++			s.bitbuf = 0; s.bitcnt = 0;
++			if (s.inpos + 4 > s.inlen) { r = -1; break; }
++			guint32 len = s.in [s.inpos] | (guint32) s.in [s.inpos + 1] << 8, nlen = s.in [s.inpos + 2] | (guint32) s.in [s.inpos + 3] << 8;
++			s.inpos += 4;
++			if ((len ^ 0xffff) != nlen || len > s.inlen - s.inpos || len > s.outlen - s.outpos) { r = -1; break; }
++			memcpy (s.out + s.outpos, s.in + s.inpos, len);
++			s.outpos += len; s.inpos += len;
++		} else if (type == 1 || type == 2) {
++			guint8 lengths [320];
++			int nlen, ndist;
++			if (type == 1) {
++				int i = 0;
++				for (; i < 144; i++) lengths [i] = 8;
++				for (; i < 256; i++) lengths [i] = 9;
++				for (; i < 280; i++) lengths [i] = 7;
++				for (; i < 288; i++) lengths [i] = 8;
++				for (i = 0; i < 30; i++) lengths [288 + i] = 5;
++				nlen = 288; ndist = 30;
++			} else {
++				static const guint8 order [19] = { 16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15 };
++				int hl = k10_bits (&s, 5), hd = k10_bits (&s, 5), hc = k10_bits (&s, 4);
++				if (hl < 0 || hd < 0 || hc < 0) { r = -1; break; }
++				nlen = hl + 257; ndist = hd + 1;
++				if (nlen > 286 || ndist > 30) { r = -1; break; }
++				guint8 cl [19];
++				memset (cl, 0, sizeof (cl));
++				for (int i = 0; i < hc + 4; i++) {
++					int v = k10_bits (&s, 3);
++					if (v < 0) { r = -1; break; }
++					cl [order [i]] = (guint8) v;
++				}
++				if (r || k10_huff_build (lit, cl, 19)) { r = -1; break; }
++				int i = 0;
++				while (i < nlen + ndist) {
++					int sym = k10_decode (&s, lit);
++					if (sym < 0) { r = -1; break; }
++					if (sym < 16) { lengths [i++] = (guint8) sym; continue; }
++					int rep, val = 0;
++					if (sym == 16) {
++						if (!i) { r = -1; break; }
++						val = lengths [i - 1];
++						rep = k10_bits (&s, 2); if (rep < 0) { r = -1; break; } rep += 3;
++					} else if (sym == 17) {
++						rep = k10_bits (&s, 3); if (rep < 0) { r = -1; break; } rep += 3;
++					} else {
++						rep = k10_bits (&s, 7); if (rep < 0) { r = -1; break; } rep += 11;
++					}
++					if (i + rep > nlen + ndist) { r = -1; break; }
++					while (rep--)
++						lengths [i++] = (guint8) val;
++				}
++				if (r || lengths [256] == 0) { r = -1; break; }
++			}
++			if (k10_huff_build (lit, lengths, nlen) || k10_huff_build (dist, lengths + nlen, ndist)) { r = -1; break; }
++			if (k10_codes (&s, lit, dist)) { r = -1; break; }
++		} else {
++			r = -1;
++			break;
++		}
++	} while (!last);
++	g_free (lit);
++	if (!r && s.outpos != s.outlen)
++		r = -1;
++	return r;
++}
++
++static guint32 k10_crc_table [256];
++static guint32
++k10_crc32 (const guint8 *p, guint32 n)   /* CRC-32 (IEEE 802.3, zlib's crc32) */
++{
++	if (!k10_crc_table [1])
++		for (guint32 i = 0; i < 256; i++) {
++			guint32 c = i;
++			for (int k = 0; k < 8; k++)
++				c = c & 1 ? 0xedb88320u ^ (c >> 1) : c >> 1;
++			k10_crc_table [i] = c;
++		}
++	guint32 c = 0xffffffffu;
++	while (n--)
++		c = k10_crc_table [(c ^ *p++) & 0xff] ^ (c >> 8);
++	return c ^ 0xffffffffu;
++}
++
++static inline guint32
++k10_rd32 (const guint8 *p)
++{
++	return p [0] | (guint32) p [1] << 8 | (guint32) p [2] << 16 | (guint32) p [3] << 24;
++}
++
++/* the length of the IL method body at p (II.25.4); 0 = it does not fit in avail bytes */
++static guint32
++k10_body_len (const guint8 *p, guint32 avail)
++{
++	if (!avail)
++		return 0;
++	guint32 n;
++	if ((p [0] & 3) == 2) {
++		n = 1 + (p [0] >> 2);
++	} else if ((p [0] & 3) == 3) {
++		if (avail < 12)
++			return 0;
++		guint32 fl = p [0] | (guint32) p [1] << 8, hs = (fl >> 12) * 4;
++		if (hs < 12)
++			return 0;
++		n = hs + k10_rd32 (p + 4);
++		if (n < hs || n > avail)
++			return 0;
++		if (fl & 0x8) {
++			for (;;) {
++				n = (n + 3) & ~3u;
++				if (n + 4 > avail)
++					return 0;
++				guint8 k = p [n];
++				guint32 ds = (k & 0x40) ? (p [n + 1] | (guint32) p [n + 2] << 8 | (guint32) p [n + 3] << 16) : p [n + 1];
++				if (ds < 4 || ds > avail - n)
++					return 0;
++				n += ds;
++				if (!(k & 0x80))
++					break;
++			}
++		}
++	} else {
++		return 0;
++	}
++	return n <= avail ? n : 0;
++}
++
++static K10Ilz *
++k10_ilz_state (MonoImage *image, MonoSectionTable *sect)
++{
++	if (!k10_ilz_states)
++		k10_ilz_states = g_hash_table_new (NULL, NULL);
++	K10Ilz *st = (K10Ilz *) g_hash_table_lookup (k10_ilz_states, image);
++	if (st)
++		return st;
++	st = g_new0 (K10Ilz, 1);
++	st->image = image;
++	g_hash_table_insert (k10_ilz_states, image, st);
++	guint32 p = sect->st_raw_data_ptr;
++	const guint8 *raw = (const guint8 *) image->raw_data;
++	if (p > image->raw_data_len || image->raw_data_len - p < 64 || memcmp (raw + p, "SHPILZ1", 8) != 0) {
++		st->bad = 1;
++		return st;
++	}
++	const guint8 *h = raw + p;
++	guint32 ver = k10_rd32 (h + 8), table = k10_rd32 (h + 48);
++	st->hdr = h;
++	st->vbase = k10_rd32 (h + 16);
++	st->vsize = k10_rd32 (h + 20);
++	st->nblocks = k10_rd32 (h + 24);
++	if (ver != 2 || st->vbase != sect->st_virtual_address || st->vsize != sect->st_virtual_size || table < 64 ||
++	    (guint64) table + (guint64) K10_ILZ_ENT * st->nblocks > image->raw_data_len - p) {
++		st->bad = 1;
++		return st;
++	}
++	st->table = h + table;
++	if (k10_crc32 (st->table, K10_ILZ_ENT * st->nblocks) != k10_rd32 (h + 52)) {   /* (the block table's CRC-32: a damaged table is refused) */
++		st->bad = 1;
++		return st;
++	}
++	for (guint32 i = 0; i < st->nblocks; i++) {
++		const guint8 *e = st->table + K10_ILZ_ENT * i;
++		guint32 voff = k10_rd32 (e), coff = k10_rd32 (e + 4), cs = k10_rd32 (e + 8), rs = k10_rd32 (e + 12);
++		if ((guint64) coff + cs > image->raw_data_len - p || (guint64) voff + rs > st->vsize || (i && voff < k10_rd32 (e - K10_ILZ_ENT) + k10_rd32 (e - K10_ILZ_ENT + 12))) {
++			st->bad = 1;
++			return st;
++		}
++	}
++	st->bodies = g_hash_table_new (NULL, NULL);
++	mono_atomic_inc_i32 (&mono_shepherd_k10_ilz_images);
++	return st;
++}
++
++/* the unpacked block i of st (from the small cache or unpacked into it); NULL = it does not unpack to its recorded size */
++static guint8 *
++k10_ilz_block (K10Ilz *st, guint32 i, guint32 *rsize)
++{
++	const guint8 *e = st->table + K10_ILZ_ENT * i;
++	guint32 coff = k10_rd32 (e + 4), cs = k10_rd32 (e + 8), rs = k10_rd32 (e + 12);
++	*rsize = rs;
++	for (int c = 0; c < K10_ILZ_CACHE; c++)
++		if (k10_ilz_cache [c].st == st && k10_ilz_cache [c].block == i && k10_ilz_cache [c].data)
++			return k10_ilz_cache [c].data;
++	int c = k10_ilz_cache_next;
++	k10_ilz_cache_next = (c + 1) % K10_ILZ_CACHE;
++	if (k10_ilz_cache [c].cap < rs) {
++		g_free (k10_ilz_cache [c].data);
++		k10_ilz_cache [c].data = (guint8 *) g_malloc (rs);
++		k10_ilz_cache [c].cap = rs;
++	}
++	k10_ilz_cache [c].st = NULL;
++	if (k10_inflate (k10_ilz_cache [c].data, rs, st->hdr + coff, cs) != 0 || k10_crc32 (k10_ilz_cache [c].data, rs) != k10_rd32 (e + 16))
++		return NULL;   /* (a damaged block: the method fails, it never runs different IL) */
++	k10_ilz_cache [c].st = st;
++	k10_ilz_cache [c].block = i;
++	mono_atomic_inc_i32 (&mono_shepherd_k10_ilz_inflates);
++	mono_atomic_fetch_add_i32 (&mono_shepherd_k10_ilz_inflate_bytes, (gint32) rs);
++	return k10_ilz_cache [c].data;
++}
++
++static char *
++k10_ilz_fetch (MonoImage *image, MonoSectionTable *sect, guint32 addr)
++{
++	char *res = NULL;
++	pthread_mutex_lock (&k10_ilz_mutex);
++	K10Ilz *st = k10_ilz_state (image, sect);
++	if (st->bad)
++		goto fail;
++	res = (char *) g_hash_table_lookup (st->bodies, GUINT_TO_POINTER (addr));
++	if (res)
++		goto done;
++	guint32 v = addr - st->vbase, lo = 0, hi = st->nblocks;
++	while (lo < hi) {   /* the last block whose voff <= v */
++		guint32 mid = (lo + hi) / 2;
++		if (k10_rd32 (st->table + K10_ILZ_ENT * mid) <= v)
++			lo = mid + 1;
++		else
++			hi = mid;
++	}
++	if (!lo)
++		goto fail;
++	guint32 b = lo - 1, voff = k10_rd32 (st->table + K10_ILZ_ENT * b), rs;
++	guint8 *data = k10_ilz_block (st, b, &rs);
++	if (!data || v - voff >= rs)
++		goto fail;
++	guint32 off = v - voff, n = k10_body_len (data + off, rs - off);
++	if (!n)
++		goto fail;
++	res = (char *) g_malloc (n);   /* (malloc alignment: a fat header's 4-alignment holds, as in .text) */
++	memcpy (res, data + off, n);
++	g_hash_table_insert (st->bodies, GUINT_TO_POINTER (addr), res);
++	mono_atomic_inc_i32 (&mono_shepherd_k10_ilz_bodies);
++	mono_atomic_fetch_add_i32 (&mono_shepherd_k10_ilz_body_bytes, (gint32) n);
++	goto done;
++fail:
++	mono_atomic_inc_i32 (&mono_shepherd_k10_ilz_errors);
++	res = NULL;
++done:
++	pthread_mutex_unlock (&k10_ilz_mutex);
++	return res;
++}
++
+ /**
+  * mono_image_rva_map:
+  * \param image a \c MonoImage
+@@ -238,6 +691,10 @@
+ 			return (char*)iinfo->cli_sections [i] +
+ 				(addr - tables->st_virtual_address);
+ 		}
++		/* SHEPHERD-VITA kit #10 aot: a ".ilz" section (no raw data) = IL bodies kept compressed (see k10_ilz_fetch above) */
++		if (G_UNLIKELY (tables->st_raw_data_size == 0) && addr >= tables->st_virtual_address &&
++		    addr - tables->st_virtual_address < tables->st_virtual_size && !memcmp (tables->st_name, ".ilz\0\0\0", 8))
++			return k10_ilz_fetch (image, tables, addr);
+ 		tables++;
+ 	}
+ 	return NULL;

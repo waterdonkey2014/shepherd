@@ -55,8 +55,17 @@ public static partial class PhysCheck
         var r21 = AabbCount(cols, c => lmv.Contains(c.Go) ? 21 : c.Go.Layer);
         Log.Info($"[physcheck]      room AABB level (LightingManagerVolume.Start -> layer 21, {lmv.Count} GameObjects): AABB pairs {r21.aabb}; after the matrix {r21.lo} = solid {r21.solid} + trigger {r21.trig}; live {r21.live}; Stay listener {r21.stay}");
         if (name == "Base Biome 1")
-            Check("room Base Biome 1, AABB level: scene-data's counts reproduced exactly (1,122 AABB pairs / 694 after the matrix / 629 trigger / 67 with a Stay listener)",
-                  aabb == 1122 && lo == 694 && trig == 629 && stay == 67, $"{aabb} / {lo} / {trig} / {stay} (solid {solid}, live {live}); with layer 21: {r21.aabb} / {r21.lo} / {r21.trig} / {r21.stay}");
+        {
+            // kit #10 fidelity (vita/notes/kit10-fidelity.md section 5, test only): SHEPHERD_PHYSCHECK_ROOM=<aabb>/<matrix>/<trigger>/<stay> -- scene-data's
+            // counts for another game version (1.5.26.1056, re-made by the same method with that version's own layer matrix: 1165/694/629/67);
+            // unset = the counts of the version the kits were built from (1,122 / 694 / 629 / 67)
+            int ea = 1122, el = 694, et = 629, es = 67;
+            if (Environment.GetEnvironmentVariable("SHEPHERD_PHYSCHECK_ROOM") is { Length: > 0 } rx && rx.Split('/') is { Length: 4 } rp &&
+                int.TryParse(rp[0], out var pa) && int.TryParse(rp[1], out var pl) && int.TryParse(rp[2], out var pt) && int.TryParse(rp[3], out var ps))
+                (ea, el, et, es) = (pa, pl, pt, ps);
+            Check($"room Base Biome 1, AABB level: scene-data's counts reproduced exactly ({ea:N0} AABB pairs / {el} after the matrix / {et} trigger / {es} with a Stay listener)",
+                  aabb == ea && lo == el && trig == et && stay == es, $"{aabb} / {lo} / {trig} / {stay} (solid {solid}, live {live}); with layer 21: {r21.aabb} / {r21.lo} / {r21.trig} / {r21.stay}");
+        }
 
         // ---- 1. the layer table ----
         foreach (var go in lmv) { go.Layer = 21; PhysWorld.LayerChanged(go); }

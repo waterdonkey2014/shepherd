@@ -1,0 +1,379 @@
+--- a/Box2D/Collision/b2Distance.cpp
++++ b/Box2D/Collision/b2Distance.cpp
+@@ -1,3 +1,8 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2 = the Law of the Vita part 2): the GJK statistics
++// counters b2_gjkCalls / b2_gjkIters / b2_gjkMaxIters -- written by every b2Distance (so by every b2TestOverlap, which the parallel
++// narrowphase and trigger pass call from several threads), read by nothing in the library (only the testbed's extern) -- are compiled
++// only with B2_GJK_STATS=1, the default here (stock); the Shepherd build passes B2_GJK_STATS=0. The counters feed no arithmetic
++// (T1 8/8 with 0 and 1). Listed in vita/physics/box2d/PATCHES.md (row P3). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2007-2009 Erin Catto http://www.box2d.org
+ *
+@@ -21,9 +26,16 @@
+ #include <Box2D/Collision/Shapes/b2EdgeShape.h>
+ #include <Box2D/Collision/Shapes/b2ChainShape.h>
+ #include <Box2D/Collision/Shapes/b2PolygonShape.h>
++
++// Shepherd P3: B2_GJK_STATS=0 compiles the statistics counters out (stock = 1)
++#ifndef B2_GJK_STATS
++#define B2_GJK_STATS 1
++#endif
+ 
+ // GJK using Voronoi regions (Christer Ericson) and Barycentric coordinates.
++#if B2_GJK_STATS
+ int32 b2_gjkCalls, b2_gjkIters, b2_gjkMaxIters;
++#endif
+ 
+ void b2DistanceProxy::Set(const b2Shape* shape, int32 index)
+ {
+@@ -445,7 +457,9 @@
+ 				b2SimplexCache* cache,
+ 				const b2DistanceInput* input)
+ {
++#if B2_GJK_STATS
+ 	++b2_gjkCalls;
++#endif
+ 
+ 	const b2DistanceProxy* proxyA = &input->proxyA;
+ 	const b2DistanceProxy* proxyB = &input->proxyB;
+@@ -541,7 +555,9 @@
+ 
+ 		// Iteration count is equated to the number of support point calls.
+ 		++iter;
++#if B2_GJK_STATS
+ 		++b2_gjkIters;
++#endif
+ 
+ 		// Check for duplicate support points. This is the main termination criteria.
+ 		bool duplicate = false;
+@@ -564,7 +580,9 @@
+ 		++simplex.m_count;
+ 	}
+ 
++#if B2_GJK_STATS
+ 	b2_gjkMaxIters = b2Max(b2_gjkMaxIters, iter);
++#endif
+ 
+ 	// Prepare output.
+ 	simplex.GetWitnessPoints(&output->pointA, &output->pointB);
+--- a/Box2D/Dynamics/Contacts/b2ContactSolver.h
++++ b/Box2D/Dynamics/Contacts/b2ContactSolver.h
+@@ -1,3 +1,5 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): b2ContactSolverDef::island (NULL = stock).
++// Listed in vita/physics/box2d/PATCHES.md (row P3). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2009 Erin Catto http://www.box2d.org
+ *
+@@ -26,6 +28,7 @@
+ class b2Contact;
+ class b2Body;
+ class b2StackAllocator;
++class b2Island;   // Shepherd P3
+ struct b2ContactPositionConstraint;
+ 
+ struct b2VelocityConstraintPoint
+@@ -64,6 +67,7 @@
+ 	b2Position* positions;
+ 	b2Velocity* velocities;
+ 	b2StackAllocator* allocator;
++	const b2Island* island;   // Shepherd P3: NULL = stock (bodies' m_islandIndex); else the island's P3IndexOf (shared static bodies)
+ };
+ 
+ class b2ContactSolver
+--- a/Box2D/Dynamics/Contacts/b2ContactSolver.cpp
++++ b/Box2D/Dynamics/Contacts/b2ContactSolver.cpp
+@@ -1,3 +1,7 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): with b2ContactSolverDef::island set (the shim's
++// parallel island solve) a body's slot comes from b2Island::P3IndexOf -- a static body shared by islands solved at the same time has
++// no single m_islandIndex; island NULL (every stock path) = stock. Listed in vita/physics/box2d/PATCHES.md (row P3). The original
++// notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2011 Erin Catto http://www.box2d.org
+ *
+@@ -23,6 +27,7 @@
+ #include <Box2D/Dynamics/b2Fixture.h>
+ #include <Box2D/Dynamics/b2World.h>
+ #include <Box2D/Common/b2StackAllocator.h>
++#include <Box2D/Dynamics/b2Island.h>   // Shepherd P3: P3IndexOf
+ 
+ #define B2_DEBUG_SOLVER 0
+ 
+@@ -53,6 +58,7 @@
+ 	m_positions = def->positions;
+ 	m_velocities = def->velocities;
+ 	m_contacts = def->contacts;
++	const b2Island* p3 = def->island;   // Shepherd P3
+ 
+ 	// Initialize position independent portions of the constraints.
+ 	for (int32 i = 0; i < m_count; ++i)
+@@ -76,8 +82,8 @@
+ 		vc->friction = contact->m_friction;
+ 		vc->restitution = contact->m_restitution;
+ 		vc->tangentSpeed = contact->m_tangentSpeed;
+-		vc->indexA = bodyA->m_islandIndex;
+-		vc->indexB = bodyB->m_islandIndex;
++		vc->indexA = p3 ? p3->P3IndexOf(bodyA) : bodyA->m_islandIndex;   // Shepherd P3
++		vc->indexB = p3 ? p3->P3IndexOf(bodyB) : bodyB->m_islandIndex;
+ 		vc->invMassA = bodyA->m_invMass;
+ 		vc->invMassB = bodyB->m_invMass;
+ 		vc->invIA = bodyA->m_invI;
+@@ -88,8 +94,8 @@
+ 		vc->normalMass.SetZero();
+ 
+ 		b2ContactPositionConstraint* pc = m_positionConstraints + i;
+-		pc->indexA = bodyA->m_islandIndex;
+-		pc->indexB = bodyB->m_islandIndex;
++		pc->indexA = p3 ? p3->P3IndexOf(bodyA) : bodyA->m_islandIndex;   // Shepherd P3
++		pc->indexB = p3 ? p3->P3IndexOf(bodyB) : bodyB->m_islandIndex;
+ 		pc->invMassA = bodyA->m_invMass;
+ 		pc->invMassB = bodyB->m_invMass;
+ 		pc->localCenterA = bodyA->m_sweep.localCenter;
+--- a/Box2D/Dynamics/b2ContactManager.h
++++ b/Box2D/Dynamics/b2ContactManager.h
+@@ -1,3 +1,5 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): CollideP3 / UpdateTriggersP3 / UpdateP3 and the
++// b2_unityJobs pointer declared (NULL = stock); listed in vita/physics/box2d/PATCHES.md (row P3).
+ // ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
+ // runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
+ // stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
+@@ -29,7 +31,15 @@
+ class b2ContactListener;
+ class b2BlockAllocator;
+ class b2Fixture;   // Shepherd P1: UnityShouldCollide
++struct b2Manifold;   // Shepherd P3: UpdateP3
+ 
++// Shepherd P3 (multicore, physics Stage 7): the job system of one world's step, owned by the Shepherd shim (vita/physics/shim/sp_p3.h,
++// sp_jobs.cpp). The shim sets b2_unityJobs around one world's b2World::Step (as P1's flags) and resets it to NULL after; NULL = stock.
++// With it set, Collide's narrowphase, P1's trigger pass and the island solve may run on several threads -- each fork's results are
++// applied in Box2D's own serial order, so poses, contacts and events are bit-identical to the serial step (shim/sp_p3.cpp).
++struct b2UnityJobs;
++extern b2UnityJobs* b2_unityJobs;
++
+ // Delegate of b2World.
+ class b2ContactManager
+ {
+@@ -46,6 +56,9 @@
+ 	void Collide();
+ 	void UpdateTriggers();   // Shepherd P1: the final trigger pass (b2_unityTriggerPhase)
+ 	bool UnityShouldCollide(b2Fixture* fixtureA, b2Fixture* fixtureB);   // Shepherd P1: the pair's body rule (b2_unityKinematicTriggers)
++	bool CollideP3();          // Shepherd P3 (shim/sp_p3.cpp): Collide with the narrowphase forked; false = not taken (the stock loop runs)
++	bool UpdateTriggersP3();   // Shepherd P3 (shim/sp_p3.cpp): UpdateTriggers with the overlap tests forked; false = not taken
++	void UpdateP3(b2Contact* c, const b2Manifold* evaluated, bool overlap);   // Shepherd P3: b2Contact::Update on a precomputed result
+             
+ 	b2BroadPhase m_broadPhase;
+ 	b2Contact* m_contactList;
+--- a/Box2D/Dynamics/b2ContactManager.cpp
++++ b/Box2D/Dynamics/b2ContactManager.cpp
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): Collide and UpdateTriggers hand over to
++// CollideP3 / UpdateTriggersP3 (shim/sp_p3.cpp) while b2_unityJobs is set and they take the step (else the stock loops below run);
++// b2_unityJobs NULL = stock. Listed in vita/physics/box2d/PATCHES.md (row P3).
+ // ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
+ // runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
+ // stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
+@@ -133,6 +136,12 @@
+ // contact list.
+ void b2ContactManager::Collide()
+ {
++	// Shepherd P3: the forked narrowphase, applied in this loop's order (shim/sp_p3.cpp); not taken = the stock loop
++	if (b2_unityJobs && CollideP3())
++	{
++		return;
++	}
++
+ 	// Update awake contacts.
+ 	b2Contact* c = m_contactList;
+ 	while (c)
+@@ -329,6 +338,11 @@
+ // of this step's solve. The same awake rule as Collide (a pair is updated when one body is awake and not static).
+ void b2ContactManager::UpdateTriggers()
+ {
++	// Shepherd P3: the forked overlap tests, applied in this loop's order (shim/sp_p3.cpp); not taken = the loop below
++	if (b2_unityJobs && UpdateTriggersP3())
++	{
++		return;
++	}
+ 	for (b2Contact* c = m_contactList; c; c = c->GetNext())
+ 	{
+ 		b2Fixture* fixtureA = c->GetFixtureA();
+--- a/Box2D/Dynamics/b2World.h
++++ b/Box2D/Dynamics/b2World.h
+@@ -1,3 +1,5 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): SolveP3 declared (shim/sp_p3.cpp), used only
++// while b2_unityJobs is set (NULL = stock). Listed in vita/physics/box2d/PATCHES.md (row P3). The original notice follows unchanged.
+ /*
+ * Copyright (c) 2006-2011 Erin Catto http://www.box2d.org
+ *
+@@ -226,6 +228,7 @@
+ 
+ 	void Solve(const b2TimeStep& step);
+ 	void SolveTOI(const b2TimeStep& step);
++	bool SolveP3(const b2TimeStep& step);   // Shepherd P3 (shim/sp_p3.cpp): Solve with the islands forked; false = not taken (stock Solve)
+ 
+ 	void DrawJoint(b2Joint* joint);
+ 	void DrawShape(b2Fixture* shape, const b2Transform& xf, const b2Color& color);
+--- a/Box2D/Dynamics/b2World.cpp
++++ b/Box2D/Dynamics/b2World.cpp
+@@ -1,3 +1,6 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): b2_unityJobs defined (NULL = stock) and Solve
++// hands over to SolveP3 (shim/sp_p3.cpp) while it is set and SolveP3 takes the step (else the stock Solve below runs). Listed in
++// vita/physics/box2d/PATCHES.md (row P3).
+ // ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
+ // runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
+ // stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
+@@ -36,6 +39,9 @@
+ #include <Box2D/Common/b2Draw.h>
+ #include <Box2D/Common/b2Timer.h>
+ #include <new>
++
++// Shepherd P3: the job system of the world being stepped (set by the shim around one b2World::Step; NULL = stock)
++b2UnityJobs* b2_unityJobs = NULL;
+ 
+ b2World::b2World(const b2Vec2& gravity)
+ {
+@@ -388,6 +394,12 @@
+ // Find islands, integrate and solve constraints, solve position constraints
+ void b2World::Solve(const b2TimeStep& step)
+ {
++	// Shepherd P3: the forked island solve (shim/sp_p3.cpp: the same islands, applied in this function's order); not taken = stock
++	if (b2_unityJobs && SolveP3(step))
++	{
++		return;
++	}
++
+ 	m_profile.solveInit = 0.0f;
+ 	m_profile.solveVelocity = 0.0f;
+ 	m_profile.solvePosition = 0.0f;
+--- a/Box2D/Dynamics/b2Island.h
++++ b/Box2D/Dynamics/b2Island.h
+@@ -1,3 +1,5 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): shared static bodies in islands solved at the
++// same time (m_p3Shared; 0 = stock, every stock path). Listed in vita/physics/box2d/PATCHES.md (row P3).
+ // ALTERED for Shepherd: physics-plan-v2 patch P2 (the speed clamps as runtime values, physics E1), behind the runtime values
+ // b2_unityMaxTranslation / b2_unityMaxRotation (b2Island.h); with both 0 this file behaves exactly as stock Box2D 2.3.1.
+ // Listed in vita/physics/box2d/PATCHES.md (row P2). The original notice follows unchanged.
+@@ -26,6 +28,11 @@
+ #include <Box2D/Dynamics/b2Body.h>
+ #include <Box2D/Dynamics/b2TimeStep.h>
+ 
++// Shepherd P3 (ALTERED): islands solved at the same time on several threads (shim/sp_p3.cpp) may hold the same static body (static
++// bodies stop the island search but join every island that touches them). With m_p3Shared set, Solve reads static bodies but writes
++// none of them (no c0 / copy-back / transform / sleep writes: the shim applies those afterwards in the serial island order), never
++// writes a static body's m_islandIndex (P3IndexOf finds a static body's slot in this island; the contact solver asks it), and records
++// whether the island fell asleep (m_p3Slept). m_p3Shared 0 (every stock path) = stock.
+ // Shepherd P2 (ALTERED): the per-step speed clamps as runtime values; 0 = stock Box2D 2.3.1's compiled b2_maxTranslation /
+ // b2_maxRotation (the default). The Shepherd shim sets them around each b2World::Step from the world's own clamps
+ // (sp_world_set_clamps, shim/shepphys.cpp) and resets them to 0 after: Unity 2022.3 applies Physics2DSettings' maxTranslationSpeed
+@@ -81,6 +88,23 @@
+ 
+ 	void Report(const b2ContactVelocityConstraint* constraints);
+ 
++	// Shepherd P3: a body's slot in this island (non-static: its m_islandIndex; static: searched in m_p3Statics)
++	int32 P3IndexOf(const b2Body* body) const
++	{
++		if (body->m_type != b2_staticBody)
++		{
++			return body->m_islandIndex;
++		}
++		for (int32 i = 0; i < m_p3StaticCount; ++i)
++		{
++			if (m_bodies[m_p3Statics[i]] == body)
++			{
++				return m_p3Statics[i];
++			}
++		}
++		return -1;
++	}
++
+ 	b2StackAllocator* m_allocator;
+ 	b2ContactListener* m_listener;
+ 
+@@ -98,6 +122,12 @@
+ 	int32 m_bodyCapacity;
+ 	int32 m_contactCapacity;
+ 	int32 m_jointCapacity;
++
++	// Shepherd P3 (see above): 0 = stock
++	int32 m_p3Shared;
++	int32 m_p3Slept;
++	const int32* m_p3Statics;   // the static bodies' slots in m_bodies (m_p3StaticCount of them)
++	int32 m_p3StaticCount;
+ };
+ 
+ #endif
+--- a/Box2D/Dynamics/b2Island.cpp
++++ b/Box2D/Dynamics/b2Island.cpp
+@@ -1,3 +1,5 @@
++// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): shared static bodies in islands solved at the
++// same time (m_p3Shared; 0 = stock, every stock path). Listed in vita/physics/box2d/PATCHES.md (row P3).
+ // ALTERED for Shepherd: physics-plan-v2 patch P2 (the speed clamps as runtime values, physics E1), behind the runtime values
+ // b2_unityMaxTranslation / b2_unityMaxRotation (b2Island.h); with both 0 this file behaves exactly as stock Box2D 2.3.1.
+ // Listed in vita/physics/box2d/PATCHES.md (row P2). The original notice follows unchanged.
+@@ -168,6 +170,11 @@
+ 	m_allocator = allocator;
+ 	m_listener = listener;
+ 
++	m_p3Shared = 0;   // Shepherd P3: stock unless the shim's parallel island solve sets it
++	m_p3Slept = 0;
++	m_p3Statics = NULL;
++	m_p3StaticCount = 0;
++
+ 	m_bodies = (b2Body**)m_allocator->Allocate(bodyCapacity * sizeof(b2Body*));
+ 	m_contacts = (b2Contact**)m_allocator->Allocate(contactCapacity	 * sizeof(b2Contact*));
+ 	m_joints = (b2Joint**)m_allocator->Allocate(jointCapacity * sizeof(b2Joint*));
+@@ -203,8 +210,11 @@
+ 		float32 w = b->m_angularVelocity;
+ 
+ 		// Store positions for continuous collision.
+-		b->m_sweep.c0 = b->m_sweep.c;
+-		b->m_sweep.a0 = b->m_sweep.a;
++		if (m_p3Shared == 0 || b->m_type != b2_staticBody)   // Shepherd P3: a shared static body is written by the shim, in island order
++		{
++			b->m_sweep.c0 = b->m_sweep.c;
++			b->m_sweep.a0 = b->m_sweep.a;
++		}
+ 
+ 		if (b->m_type == b2_dynamicBody)
+ 		{
+@@ -245,6 +255,7 @@
+ 	contactSolverDef.positions = m_positions;
+ 	contactSolverDef.velocities = m_velocities;
+ 	contactSolverDef.allocator = m_allocator;
++	contactSolverDef.island = m_p3Shared ? this : NULL;   // Shepherd P3: static bodies' slots from P3IndexOf
+ 
+ 	b2ContactSolver contactSolver(&contactSolverDef);
+ 	contactSolver.InitializeVelocityConstraints();
+@@ -342,6 +353,10 @@
+ 	for (int32 i = 0; i < m_bodyCount; ++i)
+ 	{
+ 		b2Body* body = m_bodies[i];
++		if (m_p3Shared && body->m_type == b2_staticBody)   // Shepherd P3: the shim copies a shared static body's result back, in island order
++		{
++			continue;
++		}
+ 		body->m_sweep.c = m_positions[i].c;
+ 		body->m_sweep.a = m_positions[i].a;
+ 		body->m_linearVelocity = m_velocities[i].v;
+@@ -384,9 +399,14 @@
+ 
+ 		if (minSleepTime >= b2_timeToSleep && positionSolved)
+ 		{
++			m_p3Slept = 1;   // Shepherd P3
+ 			for (int32 i = 0; i < m_bodyCount; ++i)
+ 			{
+ 				b2Body* b = m_bodies[i];
++				if (m_p3Shared && b->m_type == b2_staticBody)   // Shepherd P3: the shim puts a shared static body to sleep, in island order
++				{
++					continue;
++				}
+ 				b->SetAwake(false);
+ 			}
+ 		}
+@@ -413,6 +433,7 @@
+ 	contactSolverDef.count = m_contactCount;
+ 	contactSolverDef.allocator = m_allocator;
+ 	contactSolverDef.step = subStep;
++	contactSolverDef.island = NULL;   // Shepherd P3: TOI islands are never shared
+ 	contactSolverDef.positions = m_positions;
+ 	contactSolverDef.velocities = m_velocities;
+ 	b2ContactSolver contactSolver(&contactSolverDef);

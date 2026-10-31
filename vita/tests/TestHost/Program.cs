@@ -13,6 +13,7 @@ namespace Shepherd.TestHost;
 ///                                  a seeded access pattern, every byte checked against plain reads, every seed's schedule hashed
 ///   mutate &lt;icall&gt;=&lt;op&gt; probe ...   the probe mode with one icall mutated (Mutate.cs: the drafted probes' mutation check)
 ///   powercut ...                   the crash-injected cache tests (PowerCut.cs)
+///   k9wheel                        kit #9 engine review fixes (K9Wheel.cs): the timer wheel's heap compaction and the WHEEL / FIND check modes
 /// Engine init for the probe modes (no game boot): the engine's assembly resolver (runtime/ManagedVita or Managed under SHEPHERD_ROOT),
 /// engine.log, the icall table -- what Boot.Run does before its modes.</summary>
 public static class Program
@@ -29,6 +30,7 @@ public static class Program
             case "pct-pack": return PctPack.Run(args);
             case "powercut": InitEngine("powercut"); return PowerCut.Run(args);
             case "scene": InitEngine("scene"); return SceneMode.Run(args);
+            case "k9wheel": InitEngine("k9wheel"); return K9Wheel.Run(args);   // kit #9 engine review fixes: the wheel compaction + check modes
             default:
                 Console.Error.WriteLine("usage: Shepherd.TestHost boot ... | probe <suites|all> <seed> <n> <out> [first] | list | mutate <icall>=<op> probe ... | pct-pack <pack> <seeds> [first] [depth] | powercut <out>");
                 return 2;

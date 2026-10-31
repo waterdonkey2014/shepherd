@@ -15,6 +15,8 @@ any Derived/ directory:
   - a numeric literal with >= 7 significant digits (e.g. a shader compiler's float printout), from the same code and shader files
   - a shader file name: a file of git's named like a derived shader (a copy of lut.frag anywhere); a mention of the name in text is not
     a leak (the engine names its owner-local programs: GlBackend.Programs)
+  - an owner-local list made from the game's runs (kit #9): a file that starts with the R5 order list's or the CoreLib keep list's header
+    (vita/tools/k9_order.py writes them; the order list names ported game methods by their AOT symbols)
 Markers listed in the owner-local engine/Derived/leak-allow.txt (one per line as printed, '#' comments) are generic text that may also
 sit in tracked files (e.g. the engine's own vertex-shader line); that list lives with the derived files, never in git.
 Every hit is listed (file:line: marker); exit 1 on a hit. With no engine/**/Derived on this machine the check is VACUOUS (exit 0; with
@@ -97,10 +99,18 @@ def git_files(repo):
     out = subprocess.run(["git", "-C", repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], capture_output=True, check=True).stdout
     return sorted({x for x in out.decode().split("\0") if x and "Derived" not in x.split("/")[:-1]})
 
+# owner-local lists made from the game's runs (kit #9 runtime review fix): the R5 order list (ported game methods' AOT symbol names) and the
+# CoreLib keep list, recognised by the first line vita/tools/k9_order.py (or a hand merge) writes
+OWNER_LIST_HEADERS = ("# kit #9 R5: hot-first symbol order", "# kit #9 CoreLib trimming")
+
 def leaks(repo, markers, shnames, files):
     hits = []
     for x in files:
         if os.path.basename(x) in shnames: hits.append(f"{x}: a file named like the derived shader '{os.path.basename(x)}'")
+        try:
+            with open(os.path.join(repo, x), "rb") as f: first = f.readline(200).decode(errors="replace")
+        except OSError: first = ""
+        if first.startswith(OWNER_LIST_HEADERS): hits.append(f"{x}:1: an owner-local list from the game's runs (vita/tools/k9_order.py output: {first.strip()[:60]!r})")
     plain = {k: v for k, v in markers.items() if v != "code line"}   # code lines: whole lines only (below)
     if plain and is_git(repo):
         pf = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"derived-leaks-{os.getpid()}.txt")

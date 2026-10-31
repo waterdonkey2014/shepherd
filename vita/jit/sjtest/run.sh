@@ -2,7 +2,13 @@
 # SHEPHERD-VITA device kit #8 (track jit, vita/notes/kit8-jit.md): builds vita/jit/sjtest/sjtest.c with the JIT runtime's own compile command
 # for shepjit.c (it #includes that very file), links it with the runtime archive and the vlx shim into a static ARM32 ELF, and runs it under
 # vlx (OrbStack's qemu-user, offline, silent).
-#   run.sh <configured runtime obj dir> <runtime source tree (patched)> <work dir> [programs] [seed] [heap|heap-inject]
+#   run.sh <configured runtime obj dir> <runtime source tree (patched)> <work dir> [programs] [seed] [heap|heap-inject|k9|k9heap|calls|callsheap|calls-inject|publish|publishheap|publish-inject|publish-inject-wrap]
+# (kit #9 review fix: publish / publishheap run the runtime's own record -> compile -> publish -> slow exit -> recompile path with windows
+# that fail on purpose; publish-inject is their control -- the first kit #9 build's lost veneer island -- and must PASS by detecting it)
+# (kit #9 second review: the veneer check decodes every call's BL and the block is poisoned at each wrap; publish-inject-wrap = the control
+# put back only after the first failed window after a wrap -- the case the first harness could not see -- and must PASS by detecting it)
+# (kit #9, vita/notes/kit9-jit.md: the k9 / calls modes test kit #9's compiler -- records + traps, calls through a mock of the interpreter's
+# MINT_JIT_CALL body, getter intrinsics; calls-inject is their control and must PASS by detecting its fault)
 # (heap: sjtest's heap mode -- the load / store opcodes against a harness heap, compared byte for byte; heap-inject: its control, a store
 # patched off on purpose, which must FAIL; review fix, kit8-jit.md section 12)
 # The vlx shim must be built (VLX_OBJ, default <work dir>/vlx-obj; vita/vlx/build.sh builds it if missing). Prints sjtest's summary line.

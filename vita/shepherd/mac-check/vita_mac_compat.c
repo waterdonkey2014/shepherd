@@ -257,5 +257,6 @@ void mono_vita_get_yield_stats (uint64_t *c, uint64_t *d, uint64_t *b, uint64_t 
 /* ---- build.sh's generated tables: no static AOT modules, no static symbols on the Mac */
 void shepherd_register_aot_modules (void) { }
 const char *const shepherd_aot_module_names [] = { NULL };
+const char *const shepherd_aot_bound_names [] = { NULL };   /* kit #9 fidelity, second review (host.c SHEPHERD_K9_FLOATPC) */
 const MonoVitaStaticSymbol shepherd_static_symbols [] = { { NULL, NULL } };
 const int shepherd_static_symbols_count = 0;

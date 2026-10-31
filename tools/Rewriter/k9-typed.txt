@@ -1,0 +1,57 @@
+# Kit #9, track runtime (vita/notes/kit9-runtime.md): the icall stubs that get a fast path (tools/Rewriter --typed <this file>).
+# `mirror <key>`: E5, the getter answers from Shepherd.Hooks.Mirror (formula in tools/Rewriter/TypedPass.cs = the engine hook's own expression)
+# `typed <key>`:  lever 10, a typed call into Shepherd.Hooks.TypedIcalls (the engine's typed twin of its object[] hook: the K9(K9Reg) lists in
+#                 Shepherd.Engine Icalls/*.cs). Chosen by the kit #8 New Game route's icall-hits.txt (00098, 3292 frames: 415 icalls a frame;
+#                 these lines take 63 % of them: 41 % typed, 22 % mirrored) + Object.FindObjectFromInstanceID (D6: the physics results' hop).
+# Unity API names only (no game content).
+
+# E5 zero-hop mirrors
+mirror UnityEngine.Time::get_deltaTime
+mirror UnityEngine.Time::get_unscaledDeltaTime
+mirror UnityEngine.Time::get_time
+mirror UnityEngine.Time::get_timeScale
+mirror UnityEngine.Time::get_frameCount
+mirror UnityEngine.Time::get_fixedDeltaTime
+mirror UnityEngine.Time::get_inFixedTimeStep
+mirror UnityEngine.Mesh::get_canAccess
+mirror UnityEngine.Material::HasProperty
+mirror UnityEngine.Input::get_mousePresent
+mirror UnityEngine.Application::get_runInBackground
+mirror UnityEngine.Input::get_touchCount
+mirror UnityEngine.UISystemProfilerApi::BeginSample
+mirror UnityEngine.UISystemProfilerApi::EndSample
+
+# lever 10 typed stubs
+typed UnityEngine.Component::get_gameObject
+typed UnityEngine.Component::get_transform
+typed UnityEngine.GameObject::get_transform
+typed UnityEngine.Transform::GetParent
+typed UnityEngine.GameObject::get_activeInHierarchy
+typed UnityEngine.Behaviour::get_isActiveAndEnabled
+typed UnityEngine.Behaviour::get_enabled
+typed UnityEngine.CanvasRenderer::get_cull
+typed UnityEngine.Canvas::get_isRootCanvas
+typed UnityEngine.Mesh::get_subMeshCount
+typed UnityEngine.Camera::get_pixelHeight
+typed UnityEngine.Camera::get_pixelWidth
+typed UnityEngine.Transform::get_childCount
+typed UnityEngine.Material::GetFloatImpl
+typed UnityEngine.Internal.InputUnsafeUtility::GetAxis
+typed UnityEngine.Internal.InputUnsafeUtility::GetAxisRaw
+typed UnityEngine.Internal.InputUnsafeUtility::GetButton
+typed UnityEngine.Input::GetKeyInt
+typed UnityEngine.Input::GetMouseButton
+typed UnityEngine.Time::get_realtimeSinceStartup
+typed UnityEngine.Transform::get_lossyScale_Injected
+typed UnityEngine.Transform::get_position_Injected
+typed UnityEngine.Transform::get_localPosition_Injected
+typed UnityEngine.Transform::get_localScale_Injected
+typed UnityEngine.Transform::get_rotation_Injected
+typed UnityEngine.Transform::get_localRotation_Injected
+typed UnityEngine.RectTransform::get_rect_Injected
+typed UnityEngine.Sprite::get_rect_Injected
+typed UnityEngine.Transform::set_localScale_Injected
+typed UnityEngine.Transform::set_localPosition_Injected
+typed UnityEngine.Transform::set_position_Injected
+# D6
+typed UnityEngine.Object::FindObjectFromInstanceID

@@ -204,9 +204,17 @@ static void k8_jit_end (void)
 {
 	if (!&mono_shepjit_report)
 		return;
-	char b [1024];
+	/* (kit #9 review fix, vita/notes/kit9-jit.md "Review fixes") kit #9's runtime appends its fields to the report ("; kit #9..."): the
+	 * whole report no longer fits one log line (LOG's buffer is 1024 bytes too: the lockstep start's line was cut inside the transform
+	 * counters), so kit #9's part goes on a J2 line of its own. Kit #8's runtime prints no "; kit #9" part: one line, as kit #8 did. */
+	char b [2048];
 	mono_shepjit_report (b, sizeof b);
+	char *k9 = strstr (b, "; kit #9");
+	if (k9)
+		*k9 = 0;
 	LOG ("J2 baseline JIT at the end: %s", b);
+	if (k9)
+		LOG ("J2 %s", k9 + 2);
 	if (&mono_shepjit_dump)
 		mono_shepjit_dump ();   /* runtime/logs/<app>/shepjit-traces.tsv + shepjit-aborts.tsv */
 }

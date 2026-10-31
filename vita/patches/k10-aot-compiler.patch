@@ -1,0 +1,745 @@
+SHEPHERD-VITA device kit #10, track aot: the kit #10 AOT compiler rows (vita/notes/kit10-aot.md) -- AOT that learns from play
+(SHEPHERD_AOT_LEARNED / SHEPHERD_AOT_LEARNED_IMAGE), cold code for size (SHEPHERD_AOT_COLD / _COLD_MODE / _COLD_HOT / _COLD_INLINE), the hot methods'
+inline limit + census (SHEPHERD_AOT_HOT_INLINE / _HOT_INLINE_LIMIT / SHEPHERD_AOT_INLINE_CENSUS). Applied AFTER vita/patches/k9-aot-compiler.patch,
+k9-divfast-flag.patch and k9-divfast-compiler.patch by vita/toolchain/build-cross-k9.sh (SHEPHERD_K10_COMPILER=1). Every variable unset = the kit
+#9 compiler's output, byte for byte.
+
+--- a/src/mono/mono/mini/aot-compiler.c
++++ b/src/mono/mono/mini/aot-compiler.c
+@@ -9699,9 +9699,621 @@
+ 	fprintf (k9_inst_out, "%s\n", key);
+ 	g_free (key);
+ 	k9_logged++;
++}
++
++/*
++ * SHEPHERD-VITA device kit #10, track aot (vita/patches/k10-aot-compiler.patch, vita/notes/kit10-aot.md). Every addition is off unless
++ * its environment variable is set (the compiler's output is then the kit #9 compiler's, byte for byte -- vita/toolchain/check-cross-k9.sh):
++ *
++ * AOT THAT LEARNS FROM PLAY -- SHEPHERD_AOT_LEARNED=<file>[:<file>...]: the record of AOT misses (the runtime's aot-learn.tsv lines,
++ *   vita/patches/k10-aot-learn.patch, merged by vita/tools/k10_learn.py). A listed method of THIS image that the build would have left to
++ *   the interpreter is compiled: past the CoreLib keep list (SHEPHERD_AOT_KEEP) and into a profile-only image (the game-AOT app's owner
++ *   modules). A listed generic instance is compiled into the image that defines its generic definition, or -- an instance of a BCL
++ *   definition the defining image cannot name (its type arguments live in the game's assemblies) -- into SHEPHERD_AOT_LEARNED_IMAGE
++ *   (the runtime searches every image for an instance its defining image lacks: aot-runtime.c find_aot_method). Each instance is decoded
++ *   from the record's tokens and type arguments; one this compile cannot load is skipped and counted. Same IL, compiled: exact.
++ *
++ * HOT CODE FOR SPEED, COLD CODE FOR SIZE -- SHEPHERD_AOT_COLD=<file>: lines "<image><TAB><method token>" = the methods that RAN (the
++ *   first-call traces, the learning record); an LLVM-compiled method whose definition is not listed is cold and gets LLVM's optsize
++ *   attribute (SHEPHERD_AOT_COLD_MODE=minsize: optsize + minsize): smaller code, the same results (codegen choices only -- strict float,
++ *   no fast-math, as everywhere). Wrappers and methods without a token keep the speed level. SHEPHERD_AOT_COLD_HOT=1 = the other arm
++ *   of the A/B: EVERY method at the size level (hot ones too) -- each hot method built both ways. SHEPHERD_AOT_COLD_INLINE=<bytes of IL>:
++ *   a cold method's callees are inlined by Mono's IR inliner only below that size ([AggressiveInlining] included: CoreLib's Span / Vector
++ *   helpers are most of its text) -- every backend; inlining never changes what the code computes.
++ *
++ * WHOLE-PROGRAM INLINING, the nearest exact form (Mono's LLVM AOT cannot optimise images together -- per-image GOT and lazy per-method
++ *   GOT initialisation, cross-image calls only through the PLT: vita/notes/kit10-aot.md) -- SHEPHERD_AOT_HOT_INLINE=<file>: symbol names
++ *   of the profile's hot methods (the R5 order list); a listed method inlines its direct callees -- in any image, as Mono's IR inliner
++ *   already does across assemblies -- up to SHEPHERD_AOT_HOT_INLINE_LIMIT bytes of IL (default 60; Mono's own limit is 30 under LLVM,
++ *   20 otherwise); every other rule of the inliner stays (no clauses, no cctor to trigger, ...). SHEPHERD_AOT_INLINE_CENSUS=<file>: one
++ *   line per inlining decision made while compiling a hot method (root, callee, the callee's image, its IL size, the verdict) -- no
++ *   codegen change.
++ */
++#include <mono/metadata/class-init.h>
++static GHashTable *k10_learned;         /* desc -> 1 */
++static int k10_learned_read, k10_learned_added, k10_learned_kept, k10_learned_failed, k10_learned_profiled;
++static GHashTable *k10_cold_hot;        /* "image\ttoken" -> 1 (the methods that ran) */
++static int k10_cold_read, k10_cold_mode, k10_cold_all;   /* mode 0 off, 1 optsize, 2 minsize */
++static int k10_cold_n, k10_cold_hot_n, k10_cold_inl_n;
++static GHashTable *k10_hotinl;          /* symbol -> 1 */
++static int k10_hotinl_read, k10_hotinl_limit = 60, k10_hotinl_hits;
++static FILE *k10_census;
++
++/* the runtime's record encoding of a type (vita/patches/k10-aot-learn.patch k10_learn_type) */
++static void
++k10_enc_type (GString *s, MonoType *t, int depth)
++{
++	if (!t || depth > 12 || m_type_is_byref (t)) {
++		g_string_append_c (s, '?');
++		return;
++	}
++	switch (t->type) {
++	case MONO_TYPE_BOOLEAN: case MONO_TYPE_CHAR: case MONO_TYPE_I1: case MONO_TYPE_U1: case MONO_TYPE_I2: case MONO_TYPE_U2:
++	case MONO_TYPE_I4: case MONO_TYPE_U4: case MONO_TYPE_I8: case MONO_TYPE_U8: case MONO_TYPE_R4: case MONO_TYPE_R8:
++	case MONO_TYPE_STRING: case MONO_TYPE_OBJECT: case MONO_TYPE_I: case MONO_TYPE_U: case MONO_TYPE_TYPEDBYREF:
++		g_string_append_printf (s, "P%02x", t->type);
++		return;
++	case MONO_TYPE_CLASS: case MONO_TYPE_VALUETYPE: {
++		MonoClass *k = t->data.klass;
++		MonoImage *im = k ? m_class_get_image (k) : NULL;
++		if (!im || !im->assembly_name || mono_class_is_ginst (k) || mono_class_is_gtd (k)) {
++			g_string_append_c (s, '?');
++			return;
++		}
++		g_string_append_printf (s, "T%s!%08x", im->assembly_name, m_class_get_type_token (k));
++		return;
++	}
++	case MONO_TYPE_GENERICINST: {
++		MonoGenericClass *gc = t->data.generic_class;
++		MonoClass *def = gc ? gc->container_class : NULL;
++		MonoImage *im = def ? m_class_get_image (def) : NULL;
++		MonoGenericInst *gi = gc ? gc->context.class_inst : NULL;
++		if (!im || !im->assembly_name || !gi) {
++			g_string_append_c (s, '?');
++			return;
++		}
++		g_string_append_printf (s, "G%s!%08x<", im->assembly_name, m_class_get_type_token (def));
++		for (guint i = 0; i < gi->type_argc; i++) {
++			if (i)
++				g_string_append_c (s, ',');
++			k10_enc_type (s, gi->type_argv [i], depth + 1);
++		}
++		g_string_append_c (s, '>');
++		return;
++	}
++	case MONO_TYPE_SZARRAY:
++		g_string_append_c (s, 'Z');
++		k10_enc_type (s, m_class_get_byval_arg (t->data.klass), depth + 1);
++		return;
++	case MONO_TYPE_ARRAY:
++		g_string_append_printf (s, "A%d:", (int) t->data.array->rank);
++		k10_enc_type (s, m_class_get_byval_arg (t->data.array->eklass), depth + 1);
++		return;
++	case MONO_TYPE_PTR:
++		g_string_append_c (s, 'R');
++		k10_enc_type (s, t->data.type, depth + 1);
++		return;
++	default:
++		g_string_append_c (s, '?');
++		return;
++	}
++}
++
++static char *
++k10_method_desc (MonoMethod *method)
++{
++	MonoImage *im = m_class_get_image (method->klass);
++	if (!im || !im->assembly_name)
++		return NULL;
++	GString *s = g_string_new (NULL);
++	g_string_append_printf (s, "%s!%08x", im->assembly_name, mono_method_get_token (method));
++	if (method->is_inflated) {
++		MonoGenericContext *ctx = mono_method_get_context (method);
++		for (int k = 0; ctx && k < 2; ++k) {
++			MonoGenericInst *gi = k == 0 ? ctx->class_inst : ctx->method_inst;
++			if (!gi)
++				continue;
++			g_string_append_printf (s, "|%c<", k == 0 ? 'C' : 'M');
++			for (guint i = 0; i < gi->type_argc; i++) {
++				if (i)
++					g_string_append_c (s, ',');
++				k10_enc_type (s, gi->type_argv [i], 0);
++			}
++			g_string_append_c (s, '>');
++		}
++	}
++	return g_string_free (s, FALSE);
++}
++
++static void
++k10_learned_load (void)
++{
++	if (k10_learned_read)
++		return;
++	k10_learned_read = 1;
++	const char *f = g_getenv ("SHEPHERD_AOT_LEARNED");
++	if (!f || !*f)
++		return;
++	k10_learned = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++	char **fs = g_strsplit (f, ":", 0);
++	for (char **p = fs; *p; ++p) {
++		FILE *fp = fopen (*p, "r");
++		if (!fp) {
++			fprintf (stderr, "SHEPHERD kit #10: cannot read %s\n", *p);
++			exit (1);
++		}
++		char line [16384];
++		while (fgets (line, sizeof (line), fp)) {
++			if (line [0] == '#' || line [0] == '\n')
++				continue;
++			char **col = g_strsplit (line, "\t", 6);
++			if (col [0] && col [1] && col [2] && col [3] && !strchr (col [3], '?'))
++				g_hash_table_insert (k10_learned, g_strdup (col [3]), GINT_TO_POINTER (1));
++			g_strfreev (col);
++		}
++		fclose (fp);
++	}
++	g_strfreev (fs);
++}
++
++/* is this method (exactly: its definition token + generic arguments) in the learned list? */
++static gboolean
++k10_learned_method (MonoAotCompile *acfg, MonoMethod *method)
++{
++	k10_learned_load ();
++	if (!k10_learned || method->wrapper_type != MONO_WRAPPER_NONE || !mono_method_get_token (method))
++		return FALSE;
++	char *d = k10_method_desc (method);
++	gboolean r = d && g_hash_table_lookup (k10_learned, d) != NULL;
++	g_free (d);
++	return r;
++}
++
++/* ---- decoding a record back into a method of this compile ---- */
++static MonoImage *
++k10_image (const char *name)
++{
++	static GHashTable *cache;
++	if (!cache)
++		cache = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++	gpointer v;
++	if (g_hash_table_lookup_extended (cache, name, NULL, &v))
++		return (MonoImage *) v;
++	MonoImage *res = NULL;
++	MonoImageOpenStatus st = MONO_IMAGE_OK;
++	MonoAssembly *a = mono_assembly_load_with_partial_name_internal (name, mono_alc_get_default (), &st);   /* (MONO_PATH: the build's folders) */
++	if (a)
++		res = mono_assembly_get_image_internal (a);
++	g_hash_table_insert (cache, g_strdup (name), res);
++	return res;
++}
++
++static MonoType *k10_dec_type (const char **pp, int depth);
++
++static MonoClass *
++k10_dec_class (const char **pp)
++{
++	const char *p = *pp, *bang = strchr (p, '!');
++	if (!bang || strlen (bang + 1) < 8)
++		return NULL;
++	char *asmname = g_strndup (p, bang - p);
++	char tok [9];
++	memcpy (tok, bang + 1, 8);
++	tok [8] = 0;
++	*pp = bang + 9;
++	MonoImage *im = k10_image (asmname);
++	g_free (asmname);
++	if (!im)
++		return NULL;
++	ERROR_DECL (error);
++	MonoClass *k = mono_class_get_checked (im, (guint32) strtoul (tok, NULL, 16), error);
++	mono_error_cleanup (error);
++	return k;
++}
++
++static MonoGenericInst *
++k10_dec_inst (const char **pp, int depth)
++{
++	/* at '<': types up to the matching '>' */
++	if (**pp != '<')
++		return NULL;
++	(*pp)++;
++	MonoType *args [64];
++	int n = 0;
++	while (**pp && **pp != '>') {
++		if (n == 64)
++			return NULL;
++		MonoType *t = k10_dec_type (pp, depth + 1);
++		if (!t)
++			return NULL;
++		args [n++] = t;
++		if (**pp == ',')
++			(*pp)++;
++	}
++	if (**pp != '>' || !n)
++		return NULL;
++	(*pp)++;
++	return mono_metadata_get_generic_inst (n, args);
++}
++
++static MonoType *
++k10_dec_type (const char **pp, int depth)
++{
++	if (depth > 12)
++		return NULL;
++	const char *p = *pp;
++	switch (*p) {
++	case 'P': {
++		char h [3] = { p [1], p [1] ? p [2] : 0, 0 };
++		*pp = p + 3;
++		MonoClass *k = NULL;
++		switch (strtoul (h, NULL, 16)) {
++		case MONO_TYPE_BOOLEAN: k = mono_defaults.boolean_class; break;
++		case MONO_TYPE_CHAR: k = mono_defaults.char_class; break;
++		case MONO_TYPE_I1: k = mono_defaults.sbyte_class; break;
++		case MONO_TYPE_U1: k = mono_defaults.byte_class; break;
++		case MONO_TYPE_I2: k = mono_defaults.int16_class; break;
++		case MONO_TYPE_U2: k = mono_defaults.uint16_class; break;
++		case MONO_TYPE_I4: k = mono_defaults.int32_class; break;
++		case MONO_TYPE_U4: k = mono_defaults.uint32_class; break;
++		case MONO_TYPE_I8: k = mono_defaults.int64_class; break;
++		case MONO_TYPE_U8: k = mono_defaults.uint64_class; break;
++		case MONO_TYPE_R4: k = mono_defaults.single_class; break;
++		case MONO_TYPE_R8: k = mono_defaults.double_class; break;
++		case MONO_TYPE_STRING: k = mono_defaults.string_class; break;
++		case MONO_TYPE_OBJECT: k = mono_defaults.object_class; break;
++		case MONO_TYPE_I: k = mono_defaults.int_class; break;
++		case MONO_TYPE_U: k = mono_defaults.uint_class; break;
++		case MONO_TYPE_TYPEDBYREF: k = mono_defaults.typed_reference_class; break;
++		}
++		return k ? m_class_get_byval_arg (k) : NULL;
++	}
++	case 'T': {
++		*pp = p + 1;
++		MonoClass *k = k10_dec_class (pp);
++		return k ? m_class_get_byval_arg (k) : NULL;
++	}
++	case 'G': {
++		*pp = p + 1;
++		MonoClass *gtd = k10_dec_class (pp);
++		MonoGenericInst *gi = k10_dec_inst (pp, depth);
++		if (!gtd || !gi || !mono_class_is_gtd (gtd))
++			return NULL;
++		MonoGenericClass *gc = mono_metadata_lookup_generic_class (gtd, gi, FALSE);
++		MonoClass *k = gc ? mono_class_create_generic_inst (gc) : NULL;
++		return k ? m_class_get_byval_arg (k) : NULL;
++	}
++	case 'Z': {
++		*pp = p + 1;
++		MonoType *e = k10_dec_type (pp, depth + 1);
++		return e ? m_class_get_byval_arg (mono_class_create_array (mono_class_from_mono_type_internal (e), 1)) : NULL;
++	}
++	case 'A': {
++		char *colon = strchr (p, ':');
++		if (!colon)
++			return NULL;
++		int rank = atoi (p + 1);
++		*pp = colon + 1;
++		MonoType *e = k10_dec_type (pp, depth + 1);
++		return e && rank > 0 ? m_class_get_byval_arg (mono_class_create_bounded_array (mono_class_from_mono_type_internal (e), rank, TRUE)) : NULL;
++	}
++	case 'R': {
++		*pp = p + 1;
++		MonoType *e = k10_dec_type (pp, depth + 1);
++		return e ? m_class_get_byval_arg (mono_class_create_ptr (e)) : NULL;
++	}
++	default:
++		return NULL;
++	}
++}
++
++static MonoMethod *
++k10_dec_method (const char *desc)
++{
++	const char *p = desc, *bang = strchr (p, '!');
++	if (!bang || strlen (bang + 1) < 8)
++		return NULL;
++	char *asmname = g_strndup (p, bang - p);
++	char tok [9];
++	memcpy (tok, bang + 1, 8);
++	tok [8] = 0;
++	p = bang + 9;
++	MonoImage *im = k10_image (asmname);
++	g_free (asmname);
++	if (!im)
++		return NULL;
++	ERROR_DECL (error);
++	MonoMethod *def = mono_get_method_checked (im, (guint32) strtoul (tok, NULL, 16), NULL, NULL, error);
++	if (!def) {
++		mono_error_cleanup (error);
++		return NULL;
++	}
++	MonoGenericContext ctx = { NULL, NULL };
++	while (*p == '|') {
++		char which = p [1];
++		p += 2;
++		MonoGenericInst *gi = k10_dec_inst (&p, 0);
++		if (!gi)
++			return NULL;
++		if (which == 'C')
++			ctx.class_inst = gi;
++		else if (which == 'M')
++			ctx.method_inst = gi;
++		else
++			return NULL;
++	}
++	if (*p)
++		return NULL;
++	if (!ctx.class_inst && !ctx.method_inst)
++		return def;
++	MonoMethod *m = mono_class_inflate_generic_method_checked (def, &ctx, error);
++	if (!is_ok (error)) {
++		mono_error_cleanup (error);
++		return NULL;
++	}
++	return m;
+ }
+ 
++static gboolean
++k10_bcl_image (const char *n)
++{
++	return !strcmp (n, "System.Private.CoreLib") || !strcmp (n, "System") || !strcmp (n, "mscorlib") || !strcmp (n, "netstandard") ||
++		g_str_has_prefix (n, "System.") || g_str_has_prefix (n, "Microsoft.");
++}
++
++/* after the profile's instances: the learned generic instances this image compiles (its own definitions; BCL definitions into the
++ * designated image) and the learned methods of a profile-only image put into its profile */
+ static void
++k10_add_learned (MonoAotCompile *acfg)
++{
++	k10_learned_load ();
++	if (!k10_learned)
++		return;
++	const char *self = acfg->image->assembly_name;
++	const char *designated = g_getenv ("SHEPHERD_AOT_LEARNED_IMAGE");
++	gboolean is_designated = designated && !strcmp (designated, self);
++	size_t sl = strlen (self);
++	GHashTableIter it;
++	gpointer key, val;
++	g_hash_table_iter_init (&it, k10_learned);
++	while (g_hash_table_iter_next (&it, &key, &val)) {
++		const char *d = (const char *) key;
++		const char *bang = strchr (d, '!');
++		if (!bang)
++			continue;
++		gboolean mine = (size_t) (bang - d) == sl && !strncmp (d, self, sl);
++		gboolean inflated = strchr (d, '|') != NULL;
++		if (!inflated) {
++			if (mine && acfg->aot_opts.profile_only) {   /* a profile-only image's method: into its profile (compile_method keeps it) */
++				MonoMethod *m = k10_dec_method (d);
++				if (m) {
++					g_hash_table_insert (acfg->profile_methods, m, m);
++					k10_learned_profiled++;
++				} else
++					k10_learned_failed++;
++			}
++			continue;
++		}
++		char *defimg = g_strndup (d, bang - d);
++		gboolean take = mine || (is_designated && k10_bcl_image (defimg));
++		g_free (defimg);
++		if (!take)
++			continue;
++		MonoMethod *m = k10_dec_method (d);
++		if (!m || mono_class_is_open_constructed_type (m_class_get_byval_arg (m->klass)) || (m->is_generic && !m->is_inflated)) {
++			if (mine)
++				k10_learned_failed++;   /* (an instance of a BCL definition the defining image cannot name is the designated image's) */
++			continue;
++		}
++		gboolean sharable = mono_method_is_generic_sharable_full (m, TRUE, FALSE, FALSE);
++		if (sharable && !mine)
++			continue;   /* (a shared instance is looked up in its defining image only: no use in the designated image) */
++		if (acfg->aot_opts.profile_only)
++			g_hash_table_insert (acfg->profile_methods, m, m);
++		/* what the runtime looks up (aot-runtime.c mono_aot_get_method): an instance over reference types is looked up ONLY as its shared
++		 * (System.__Canon) form, in the defining image -- compile that (add_extra_method_full puts it in the profile too); a value-type
++		 * instance is looked up concretely first (find_aot_method, every image) -- compile the concrete one, not its gsharedvt form */
++		if (sharable)
++			add_extra_method_full (acfg, m, TRUE, 0);
++		else
++			add_extra_method_full (acfg, m, FALSE, 0);
++		k10_learned_added++;
++	}
++}
++
++/* ---- cold code for size (mini-llvm.c asks per method) ---- */
++int
++mono_shepherd_k10_cold_mode (void)
++{
++	if (!k10_cold_read) {
++		k10_cold_read = 1;
++		const char *f = g_getenv ("SHEPHERD_AOT_COLD");
++		if (f && *f) {
++			k10_cold_hot = k9_read_lines (f, FALSE);
++			const char *m = g_getenv ("SHEPHERD_AOT_COLD_MODE");
++			k10_cold_mode = m && !strcmp (m, "minsize") ? 2 : 1;
++			k10_cold_all = g_getenv ("SHEPHERD_AOT_COLD_HOT") && !strcmp (g_getenv ("SHEPHERD_AOT_COLD_HOT"), "1");
++		}
++	}
++	return k10_cold_mode;
++}
++
++gboolean
++mono_shepherd_k10_is_cold (MonoMethod *method)
++{
++	if (!mono_shepherd_k10_cold_mode () || !method || method->wrapper_type != MONO_WRAPPER_NONE || !mono_method_get_token (method))
++		return FALSE;
++	MonoImage *im = m_class_get_image (method->klass);
++	if (!im || !im->assembly_name)
++		return FALSE;
++	char key [600];
++	snprintf (key, sizeof (key), "%s\t%08x", im->assembly_name, mono_method_get_token (method));
++	gboolean hot = g_hash_table_lookup (k10_cold_hot, key) != NULL;
++	if (hot)
++		k10_cold_hot_n++;
++	if (hot && !k10_cold_all)
++		return FALSE;
++	k10_cold_n++;
++	return TRUE;
++}
++
++/* the cold check without counting (the inliner asks for every callee) */
++static gboolean
++k10_cold_check (MonoMethod *method)
++{
++	if (!mono_shepherd_k10_cold_mode () || !method || method->wrapper_type != MONO_WRAPPER_NONE || !mono_method_get_token (method))
++		return FALSE;
++	MonoImage *im = m_class_get_image (method->klass);
++	if (!im || !im->assembly_name)
++		return FALSE;
++	if (k10_cold_all)
++		return TRUE;
++	char key [600];
++	snprintf (key, sizeof (key), "%s\t%08x", im->assembly_name, mono_method_get_token (method));
++	return g_hash_table_lookup (k10_cold_hot, key) == NULL;
++}
++
++/* SHEPHERD_AOT_COLD_INLINE=<bytes of IL>: a cold method's callees are inlined only below that size ([AggressiveInlining] ones too);
++ * -1 = no cap (unset, or not a cold method). Inlining never changes what code computes: this only keeps cold code small. */
++int
++mono_shepherd_k10_cold_inline_limit (MonoCompile *cfg)
++{
++	static MonoCompile *last_cfg;
++	static MonoMethod *last_method;
++	static int last_limit = -1, cap = -2;
++	if (cap == -2) {
++		const char *c = g_getenv ("SHEPHERD_AOT_COLD_INLINE");
++		cap = c && *c ? atoi (c) : -1;
++	}
++	if (cap < 0 || !cfg || !cfg->compile_aot || !mono_shepherd_k10_cold_mode ())
++		return -1;
++	if (cfg != last_cfg || cfg->method != last_method) {
++		last_cfg = cfg;
++		last_method = cfg->method;
++		last_limit = k10_cold_check (cfg->method) ? cap : -1;
++		if (last_limit >= 0)
++			k10_cold_inl_n++;
++	}
++	return last_limit;
++}
++
++void
++mono_shepherd_k10_cold_note (void)
++{
++	if (k10_cold_mode)
++		printf ("SHEPHERD kit #10 cold: %d LLVM methods at the size level (%s%s), %d of the methods that ran met; %d cold methods compiled with the inline cap SHEPHERD_AOT_COLD_INLINE (SHEPHERD_AOT_COLD, %d entries)\n", k10_cold_n,
++			k10_cold_mode == 2 ? "optsize + minsize" : "optsize", k10_cold_all ? "; SHEPHERD_AOT_COLD_HOT=1: the hot ones too" : "", k10_cold_hot_n, k10_cold_inl_n,
++			k10_cold_hot ? (int) g_hash_table_size (k10_cold_hot) : 0);
++}
++
++/* ---- the hot callers' inline limit and the census (method-to-ir.c asks) ---- */
++static char *
++k10_mangle (MonoMethod *method)
++{
++	/* get_debug_sym's mangling, without its duplicate suffix */
++	char *n1 = mono_method_full_name (method, TRUE);
++	size_t len = strlen (n1), j = 0;
++	char *n2 = (char *) g_malloc (len + 16);
++	for (size_t i = 0; i < len; ++i) {
++		if (i == 0 && n1 [0] >= '0' && n1 [0] <= '9')
++			n2 [j++] = '_';
++		else if (isalnum (n1 [i]))
++			n2 [j++] = n1 [i];
++		else if (n1 [i] == ' ' && n1 [i + 1] == '(' && n1 [i + 2] == ')')
++			i += 2;
++		else if (n1 [i] == ',' && n1 [i + 1] == ' ') {
++			n2 [j++] = '_';
++			i++;
++		} else if (n1 [i] == '(' || n1 [i] == ')' || n1 [i] == '>') {
++		} else
++			n2 [j++] = '_';
++	}
++	n2 [j] = 0;
++	g_free (n1);
++	return n2;
++}
++
++/* for the method being compiled (cfg->method): 0 = not a hot method (or no list); > 0 = the inline limit of its direct callees;
++ * -1 = a hot method, the limit unchanged (SHEPHERD_AOT_HOT_INLINE_LIMIT=0: the census alone) */
++int
++mono_shepherd_k10_hot_inline_limit (MonoCompile *cfg)
++{
++	static MonoCompile *last_cfg;
++	static MonoMethod *last_method;
++	static int last_hot;
++	if (!k10_hotinl_read) {
++		k10_hotinl_read = 1;
++		const char *f = g_getenv ("SHEPHERD_AOT_HOT_INLINE");
++		if (f && *f) {
++			k10_hotinl = k9_read_lines (f, FALSE);
++			const char *l = g_getenv ("SHEPHERD_AOT_HOT_INLINE_LIMIT");
++			if (l && *l)
++				k10_hotinl_limit = atoi (l);
++			const char *c = g_getenv ("SHEPHERD_AOT_INLINE_CENSUS");
++			if (c && *c) {
++				k10_census = fopen (c, "a");
++				if (!k10_census) {
++					fprintf (stderr, "SHEPHERD kit #10: cannot write %s\n", c);
++					exit (1);
++				}
++			}
++		}
++	}
++	if (!k10_hotinl || !cfg || !cfg->compile_aot)
++		return 0;
++	if (cfg != last_cfg || cfg->method != last_method) {
++		last_cfg = cfg;
++		last_method = cfg->method;
++		char *m = k10_mangle (cfg->method);
++		last_hot = g_hash_table_lookup (k10_hotinl, m) != NULL;
++		if (!last_hot && llvm_acfg && llvm_acfg->assembly_name_sym) {
++			char *pm = g_strdup_printf ("%s_%s", llvm_acfg->assembly_name_sym, m);
++			last_hot = g_hash_table_lookup (k10_hotinl, pm) != NULL;
++			g_free (pm);
++		}
++		g_free (m);
++		if (last_hot)
++			k10_hotinl_hits++;
++	}
++	if (!last_hot)
++		return 0;
++	return k10_hotinl_limit > 0 ? k10_hotinl_limit : -1;
++}
++
++void
++mono_shepherd_k10_inline_census (MonoCompile *cfg, MonoMethod *callee, gboolean verdict, int limit)
++{
++	if (!k10_census || !cfg || cfg->inline_depth)
++		return;
++	MonoMethodHeaderSummary h;
++	gboolean hs = mono_method_get_header_summary (callee, &h);
++	MonoImage *ri = m_class_get_image (cfg->method->klass), *ci = m_class_get_image (callee->klass);
++	char *rn = mono_method_full_name (cfg->method, TRUE), *cn = mono_method_full_name (callee, TRUE);
++	fprintf (k10_census, "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%s\n", ri && ri->assembly_name ? ri->assembly_name : "?", rn, ci && ci->assembly_name ? ci->assembly_name : "?",
++		 cn, hs ? (int) h.code_size : -1, hs ? (int) h.has_clauses : -1, limit, (callee->iflags & METHOD_IMPL_ATTRIBUTE_AGGRESSIVE_INLINING) ? 1 : 0,
++		 m_class_has_cctor (callee->klass) ? 1 : 0, (callee->iflags & METHOD_IMPL_ATTRIBUTE_NOINLINING) ? 1 : 0, verdict ? "inlined" : "refused");
++	g_free (rn);
++	g_free (cn);
++}
++
++static void
++k10_note (MonoAotCompile *acfg)
++{
++	if (k10_learned)
++		printf ("SHEPHERD kit #10 learned: %d generic instance(s) compiled here, %d profile-only method(s) put in the profile, %d record(s) of this image not loadable (SHEPHERD_AOT_LEARNED, %d records)\n",
++			k10_learned_added, k10_learned_profiled, k10_learned_failed, (int) g_hash_table_size (k10_learned));
++	if (k10_learned_kept)
++		printf ("SHEPHERD kit #10 learned: %d method(s) of %s kept past the keep list (SHEPHERD_AOT_KEEP)\n", k10_learned_kept, acfg->image->assembly_name);
++	if (k10_hotinl)
++		printf ("SHEPHERD kit #10 hot inline: %d hot method(s) compiled, inline limit %d for their direct callees (0 = Mono's own: census only; SHEPHERD_AOT_HOT_INLINE, %d names)%s\n",
++			k10_hotinl_hits, k10_hotinl_limit, (int) g_hash_table_size (k10_hotinl), k10_census ? "; census written" : "");
++	if (k10_census)
++		fflush (k10_census);
++	if (!acfg->aot_opts.llvm)
++		mono_shepherd_k10_cold_note ();   /* (a Mono-backend image: no LLVM module prints it) */
++}
++
++static void
+ compile_method (MonoAotCompile *acfg, MonoMethod *method)
+ {
+ 	MonoCompile *cfg;
+@@ -9743,8 +10355,14 @@
+ 
+ 	if (k9_skip_instance (acfg, method))   /* SHEPHERD-VITA kit #9 R3: a dead copy (the defining image has this instance) */
+ 		return;
+-	if (k9_keep_drop (acfg, method))   /* SHEPHERD-VITA kit #9 CoreLib trimming: not on the routes -> interpreted */
+-		return;
++	if (k9_keep_drop (acfg, method)) {   /* SHEPHERD-VITA kit #9 CoreLib trimming: not on the routes -> interpreted */
++		if (!k10_learned_method (acfg, method))   /* SHEPHERD-VITA kit #10: ... unless the play reached it (SHEPHERD_AOT_LEARNED) */
++			return;
++		k9_keep_dropped--;
++		k10_learned_kept++;
++	}
++	if (acfg->aot_opts.profile_only && k10_learned_method (acfg, method))   /* SHEPHERD-VITA kit #10: learned from play -> into the profile */
++		g_hash_table_insert (acfg->profile_methods, method, method);
+ 
+ 	if (acfg->aot_opts.profile_only && !g_hash_table_lookup (acfg->profile_methods, method)) {
+ 		if (acfg->aot_opts.llvm_only) {
+@@ -11191,6 +11809,7 @@
+ 	emit_info_symbol (acfg, "jit_code_start", TRUE);
+ 
+ 	k9_order_methods (acfg);   /* SHEPHERD-VITA kit #9 R5: SHEPHERD_AOT_ORDER */
++	k10_note (acfg);   /* SHEPHERD-VITA kit #10: the learned / hot-inline summary lines (each only when its variable is set) */
+ 	if (k9_skip || k9_inst_out)   /* SHEPHERD-VITA kit #9 R3: the dead instance copies left out / this image's instances logged */
+ 		printf ("SHEPHERD kit #9 R3: %d inflated methods not compiled here (the defining image holds them: SHEPHERD_AOT_SKIP_INSTANCES, %d keys); %d of this image's own instances logged (SHEPHERD_AOT_INSTANCES_OUT)\n",
+ 			k9_skipped, k9_skip ? (int) g_hash_table_size (k9_skip) : 0, k9_logged);
+@@ -15467,6 +16086,7 @@
+ 		for (l = acfg->profile_data; l; l = l->next)
+ 			add_profile_instances (acfg, (ProfileData*)l->data);
+ 	}
++	k10_add_learned (acfg);   /* SHEPHERD-VITA kit #10: SHEPHERD_AOT_LEARNED -- the instances / profile-only methods the play reached */
+ 
+ 	if (acfg->aot_opts.mibc_profile_files) {
+ 		GList *l;
+--- a/src/mono/mono/mini/mini-llvm.c
++++ b/src/mono/mono/mini/mini-llvm.c
+@@ -37,6 +37,10 @@
+ gboolean mono_shepherd_aot_order_active (void);
+ int mono_shepherd_aot_order_rank_cb (const char *name, void *data);
+ void mono_shepherd_aot_order_note (const char *what, int n);
++/* SHEPHERD-VITA kit #10 (aot-compiler.c, vita/patches/k10-aot-compiler.patch): cold code for size */
++int mono_shepherd_k10_cold_mode (void);
++gboolean mono_shepherd_k10_is_cold (MonoMethod *method);
++void mono_shepherd_k10_cold_note (void);
+ #include "llvm-jit.h"
+ #include "aot-compiler.h"
+ #include "mini-llvm.h"
+@@ -12796,6 +12800,14 @@
+ 
+ 	mono_llvm_add_func_attr (method, LLVM_ATTR_UW_TABLE);
+ 
++	/* SHEPHERD-VITA kit #10: SHEPHERD_AOT_COLD -- a method no run has seen run goes to the size level (optsize; minsize too with
++	 * SHEPHERD_AOT_COLD_MODE=minsize): LLVM's codegen choices only, the same results */
++	if (cfg->compile_aot && mono_shepherd_k10_cold_mode () && mono_shepherd_k10_is_cold (cfg->method)) {
++		mono_llvm_add_func_attr (method, LLVM_ATTR_OPTIMIZE_FOR_SIZE);
++		if (mono_shepherd_k10_cold_mode () == 2)
++			LLVMAddAttributeAtIndex (method, LLVMAttributeFunctionIndex, LLVMCreateEnumAttribute (LLVMGetTypeContext (LLVMTypeOf (method)), LLVMGetEnumAttributeKindForName ("minsize", 7), 0));
++	}
++
+ 	if (cfg->disable_omit_fp)
+ 		mono_llvm_add_func_attr_nv (method, "frame-pointer", "all");
+ 
+@@ -14580,6 +14592,7 @@
+ 		int n = mono_llvm_cpp_reorder_functions (module->lmodule, module->code_start, module->code_end, mono_shepherd_aot_order_rank_cb, NULL);
+ 		mono_shepherd_aot_order_note ("llvm", n);
+ 	}
++	mono_shepherd_k10_cold_note ();   /* SHEPHERD-VITA kit #10: SHEPHERD_AOT_COLD's count (only when it is set) */
+ 
+ 	/* Note: You can still dump an invalid bitcode file by running `llvm-dis`
+ 	 * in a debugger, set a breakpoint on `LLVMVerifyModule` and fake its
+--- a/src/mono/mono/mini/method-to-ir.c
++++ b/src/mono/mono/mini/method-to-ir.c
+@@ -4084,8 +4084,25 @@
+ 	return TRUE;
+ }
+ 
++/* SHEPHERD-VITA kit #10 (aot-compiler.c, vita/patches/k10-aot-compiler.patch): the hot methods' inline limit and the census */
++int mono_shepherd_k10_hot_inline_limit (MonoCompile *cfg);
++int mono_shepherd_k10_cold_inline_limit (MonoCompile *cfg);
++void mono_shepherd_k10_inline_census (MonoCompile *cfg, MonoMethod *callee, gboolean verdict, int limit);
++static gboolean k10_check_inlining_impl (MonoCompile *cfg, MonoMethod *method);
++
+ gboolean
+ mono_method_check_inlining (MonoCompile *cfg, MonoMethod *method)
++{
++	gboolean r = k10_check_inlining_impl (cfg, method);
++	int k10l = cfg->compile_aot && !cfg->inline_depth ? mono_shepherd_k10_hot_inline_limit (cfg) : 0;
++	if (k10l)
++		mono_shepherd_k10_inline_census (cfg, method, r, k10l);
++	return r;
++}
++
++/* (upstream's mono_method_check_inlining, renamed: kit #10 wraps it above) */
++static gboolean
++k10_check_inlining_impl (MonoCompile *cfg, MonoMethod *method)
+ {
+ 	MonoMethodHeaderSummary header;
+ 	MonoVTable *vtable;
+@@ -4145,6 +4162,17 @@
+ 		limit = inline_limit;
+ 	}
+ 
++	if (cfg->compile_aot && !cfg->inline_depth) {   /* SHEPHERD-VITA kit #10: a hot method's direct callees (SHEPHERD_AOT_HOT_INLINE) */
++		int k10l = mono_shepherd_k10_hot_inline_limit (cfg);
++		if (k10l > limit)
++			limit = k10l;
++	}
++	if (cfg->compile_aot) {   /* SHEPHERD-VITA kit #10: a cold method (no run saw it run) inlines only small callees (SHEPHERD_AOT_COLD_INLINE) */
++		int k10c = mono_shepherd_k10_cold_inline_limit (cfg);
++		if (k10c >= 0 && header.code_size >= GINT_TO_UINT32 (k10c))
++			return FALSE;
++	}
++
+ 	if (header.code_size >= GINT_TO_UINT32(limit) && !(method->iflags & METHOD_IMPL_ATTRIBUTE_AGGRESSIVE_INLINING))
+ 		return FALSE;
+ 

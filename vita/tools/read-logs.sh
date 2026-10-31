@@ -1,8 +1,17 @@
 #!/bin/zsh
-# SHEPHERD DEVICE KIT #8 (2026-10-21) -- copies every Shepherd log from the Vita's memory card to the Mac.
+# SHEPHERD DEVICE KIT #10 (2026-10-29) -- copies every Shepherd log from the Vita's memory card to the Mac.
+# (kit #10: + the kit #10 lines -- K10 MEM / POOL / LADDER (memory), H8 K10 aot / K10 ilz / K10 learn (aot), [k10] io (io), [k10] learning /
+#  Verify Files / Cache rows (cache), K10 boot screen / K10 IL bundle / K10 the splash's drain / K10 video / K10 BOOT anatomy (boot), K10 FP
+#  (fidelity) -- the README's per-start log folders runtime/logs/k10-step*/ (each launcher start of STEPS 1-2 writes its own engine log),
+#  THE BOOT TIME of the first vs the second start (STEPS 1 / 2), the learning-cache files (cache/k10index.tsv, k10-ilz-verified.tsv,
+#  il/k10-ilb.ok), every aot-learn.tsv (the next build's learned list), runtime/k10-avc-refeed.off)
+# (kit #9: + the kit #9 lines -- K9 GC / PIN sgen worker (lever 32), J2 kit #9 (JIT round 2), K9 unbox / K9 fast TLS (probe) / H8 fast TLS
+#  survey (runtime), FP (fidelity), the physics heartbeat part / END physics workers, the title press's PASS M1, runtime/k9-avc-drain.off
+#  (device) -- every cache/jit-learn*.tsv, and THE JIT A/B: each A/B start writes its engine logs to its own runtime/logs/play-ab-<n>-<arm>/
+#  (README-KIT9 STEPS 2-7); the pull that holds them runs vita/jit/ab/logic_ab.py on their prof.tsv files: game logic per arm, render flat)
 #
 # On the Vita: VitaShell -> START -> USB, cable in. Then on the Mac:
-#     ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit8/kit/read-logs.sh           (waits up to 60 min for the card; "read-logs.sh 120" waits 120)
+#     ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit10/kit/read-logs.sh          (waits up to 60 min for the card; "read-logs.sh 120" waits 120)
 #
 # It copies into ${SHEPHERD_WORK:-$HOME/shepherd-work}/devicelogs/<date-time>/:
 #   - every .txt file in ux0:data/shepherd/ (kit #8: menu_gl-measure.txt, menu-aot.txt, play.txt, play-mt.txt, play-gaot.txt and the launcher
@@ -39,7 +48,7 @@ O=${SHEPHERD_DEVICELOGS:-${SHEPHERD_WORK:-$HOME/shepherd-work}/devicelogs}/$(dat
 is_card() { [[ -d $1/VitaShell && -d $1/app && -d $1/data && ! -e $1/gc ]]; }
 is_cart() { [[ ! -d $1/VitaShell && -d $1/app ]] || return 1; [[ -d $1/gc || -d $1/license ]] && return 0
   local t=($1/app/[A-Z][A-Z][A-Z][A-Z][0-9][0-9][0-9][0-9][0-9](N/)); (( ${#t} )); }
-echo "read-logs.sh (Shepherd device kit #8): waiting up to $WAIT_MIN min for the Vita's MEMORY CARD (VitaShell: START -> USB)"
+echo "read-logs.sh (Shepherd device kit #10): waiting up to $WAIT_MIN min for the Vita's MEMORY CARD (VitaShell: START -> USB)"
 end=$(( $(date +%s) + WAIT_MIN * 60 )); V=; typeset -A told
 while [[ $(date +%s) -lt $end ]]; do
   cands=()
@@ -75,7 +84,13 @@ for f in "$D"/jitprobe.{faults,state,count}(N); do cp -p "$f" "$O/" && echo "   
 # (kit #8, integration review) save-backups/: the play apps' backups of each save file (read only, like probes/; before, the listing in 5e
 #  looked for a folder nothing copied); cache/jit-learn.tsv: the JIT app's learning cache (which hot loops it compiled at once on the 2nd start)
 [[ -d $D/save-backups ]] && { rsync -rt --exclude='._*' "$D/save-backups" "$O/" && echo "   save-backups/: $(find "$O/save-backups" -type f | wc -l | tr -d ' ') file(s) (kit #8: the 5 newest per save file + pending-restore/)"; }
-[[ -f $D/cache/jit-learn.tsv ]] && { mkdir -p "$O/cache"; cp -p "$D/cache/jit-learn.tsv" "$O/cache/" && echo "   cache/jit-learn.tsv (kit #8: the JIT app's learning cache, $(grep -vc '^#' "$O/cache/jit-learn.tsv") row(s))"; }
+# (kit #9) every JIT learning list: jit-learn.tsv (kit #8's name) and the A/B arms' / lockstep start's own (jit-learn-k9.tsv, -k8, -k9d0, -lockstep)
+for jl in "$D"/cache/jit-learn*.tsv(N); do [[ ${jl:t} == ._* ]] && continue; mkdir -p "$O/cache"; cp -p "$jl" "$O/cache/" && echo "   cache/${jl:t} (the JIT app's learning cache, $(grep -vc '^#' "$O/cache/${jl:t}") row(s))"; done
+# (kit #10) the learning caches' small text files: the index (what each entry is, its size and last use), the compressed-IL stamps (every
+#  managed-ilz/ DLL checked against its original once), the IL bundle's .ok (the bundle verified on this card), the boot screen's length
+for kf in cache/k10index.tsv cache/k10-ilz-verified.tsv cache/il/k10-ilb.ok cache/boot/k10-bootscreen.txt; do
+  [[ -f $D/$kf ]] || continue; mkdir -p "$O/${kf:h}"; cp -p "$D/$kf" "$O/$kf" && echo "   $kf (kit #10: $(grep -vc '^#' "$O/$kf") line(s))"
+done
 # 3. recent crash dumps (the Vita writes them to ux0:data/)
 cores=("$V"/data/psp2core-*.psp2dmp(N.m-3))
 if (( ${#cores} )); then mkdir -p "$O/coredumps"; for c in $cores; do cp -p "$c" "$O/coredumps/"; done; echo "   coredumps/: ${#cores} crash dump(s) from the last 3 days"
@@ -156,16 +171,21 @@ for x in play.txt play-mt.prev.txt play-mt.txt play-gaot.txt play-mt-launcher.tx
 #  [jsonbake] = the catalog bake ("the catalog came from the bake"); [Icall] hook list = the hook-list cache; [blackgc] = the black-frame
 #  GC at the Main Menu transition (mode scene); the long frames = every frame over 1 s after the Main Menu arrived (simstats-frames.tsv):
 #  Settings open / close, Credits open, the New Game load)
-for a in menu_gl-measure menu-aot play play-mt play-gaot play-mt-launcher play-gaot-launcher menu_gl-measure-llvm play-mt-llvm play-gaot-readahead; do
+for a in ${${(f)"$(cd $O/runtime/logs 2>/dev/null && print -l k10-step*(N/))"}} menu_gl-measure menu-aot play play-mt play-gaot play-mt-launcher play-gaot-launcher ${${(f)"$(cd $O/runtime/logs 2>/dev/null && print -l play-ab-*(N/))"}} menu_gl-measure-llvm play-mt-llvm play-gaot-readahead; do
   e=$O/runtime/logs/$a/engine.log; [[ -f $e ]] || continue
   case $a in
-    menu_gl-measure) echo "--- runtime/logs/$a/engine.log = STEP 1, Measure (00099, LLVM; the frame clock re-based by 376: the Main Menu at f1182, [sim] = frames 1677-1776; then the kit #7 probes) -- or X2's start (the built-in storage test)";;
-    menu-aot) echo "--- runtime/logs/$a/engine.log = STEP 2, Menu engine AOT (00011, LLVM; headless; re-based as STEP 1)";;
-    play) echo "--- runtime/logs/$a/engine.log = Play (00097, THE JIT APP): STEP 4's start with SHEPHERD_JIT=0 (STEP 3's JIT-on start was pulled before it, in the previous folder) -- or X5's lockstep start";;
-    play-mt) echo "--- runtime/logs/$a/engine.log = STEP 5, Play MT (00098, LLVM, kit #7's runtime: the same-kit control): idle 2 min + Settings (look) + rear corners + New Game ([sim] = frames 1301-1400) -- or X3's Frame Pacing start";;
-    play-gaot) echo "--- runtime/logs/$a/engine.log = STEP 9, Play game AOT (00095): the PS button / standby start (STEP 6's idle + Settings start: play-gaot.prev.txt's host log) -- or X1's 500 MHz start";;
-    play-mt-launcher) echo "--- runtime/logs/$a/engine.log = STEP 7, Play MT launcher (00193): the early logo, then New Game -- or X4's (b) start";;
-    play-gaot-launcher) echo "--- runtime/logs/$a/engine.log = STEP 8, Play game AOT launcher (00194): the early logo, idle -- or X4's (c) start";;
+    k10-step1*) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 1, Play MT launcher (00193), the FIRST start after the kit: the logos (188 / 188), the boot loading screen, the PS Vita rows + Verify Files, New Game (the learning caches fill)";;
+    k10-step2*) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 2, Play MT launcher (00193), the SECOND start: the boot with the bundle, the compressed-IL stamps and the learned prefetches, New Game";;
+    k10-step8*) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 8, Measure (00099) with the PC's float rules + the float bench (STEP F (b); STEP 3 = runtime/logs/menu_gl-measure/)";;
+    k10-x*) echo "--- runtime/logs/$a/engine.log = kit #10 optional extra ${a#k10-} (README-KIT10.txt)";;
+    menu_gl-measure) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 3, Measure (00099) as shipped (press nothing; the history's idle number; STEP F (a))";;
+    menu-aot) echo "--- runtime/logs/$a/engine.log = Menu engine AOT (00011; not in kit #10's run order)";;
+    play) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 4, Play (00097, THE JIT APP): the title press + the menu move, the idle minute";;
+    play-mt) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 5, Play MT (00098, 500 MHz with the owner's profile): idle + Settings + New Game ([sim] = frames 1301-1400) -- or the extras X1 / X2 / X4 when run after it";;
+    play-gaot) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 6, Play game AOT (00095): the title press only, the idle minute -- or X3 (the learned AOT app)";;
+    play-mt-launcher) echo "--- runtime/logs/$a/engine.log = Play MT launcher (00193) WITHOUT a STEP 1 / 2 file (STEPS 1-2 write runtime/logs/k10-step*/)";;
+    play-gaot-launcher) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 7, Play game AOT launcher (00194): both logos, the menu move, New Game";;
+    play-ab-*) echo "--- runtime/logs/$a/engine.log = a kit #9 JIT A/B start ${a#play-ab-} (00097; kit #9's README STEPS 2-7)";;
     menu_gl-measure-llvm|play-mt-llvm) echo "--- runtime/logs/$a/engine.log = kit #5's LLVM A/B app (not part of kit #6 / #7 / #8: never start it with the new DLLs on the card)";;
     play-gaot-readahead) echo "--- runtime/logs/$a/engine.log = kit #4's STEP 6 (the card read-ahead start; not part of kit #8)";;
   esac
@@ -285,18 +305,87 @@ done
 #     the game's own clips played by the video decoder, K8 boot = the model check / clean boot screen; physics (the play apps): PHYS = the level
 #     and the pool block, WARN PHYS = the settings file missing (level 0), END physics = the pool / Box2D high water
 echo "--- kit #8 lines (JIT, boot / launcher / real video, physics)"
-K8X='^(J1|WARN J1|J2|C3 jit-compiler|PIN jit-compiler|K8 |MEM (start|k8-released)|H2 partition|PHYS|WARN PHYS|END physics|WARN K8)|LOCKSTEP RACE|shepgl_tex_data'
+K8X='^(J1|WARN J1|J2|C3 jit-compiler|PIN jit-compiler|K8 |MEM (start|k8-released|before-gl|after-gl)|H2 partition|PHYS|WARN PHYS|END physics|WARN K8|K9 |WARN K9)|LOCKSTEP RACE|shepgl_tex_data'   # (kit #9 device: K9 / WARN K9 = the decoder's output delay, its library before vitaGL, the track's switches; MEM before-gl / after-gl = what vitaGL got)
 for f in $O/*.txt(N); do
   [[ ${f:t} == (card-manifest|device-profile|vita-settings|pad).txt ]] && continue
   n=$(grep -cE "$K8X" "$f" 2>/dev/null); (( n )) || continue
   echo "   ${f:t}:"; grep -hE "$K8X" "$f" | cut -c1-330 | sed 's/^/      /' | head -${SHOW_K8X:-40}
 done
 for e in $O/runtime/logs/*/engine.log(N); do
-  n=$(grep -cE '\[phys\] bound|\[physics2d\]|\[k8\] (preload|fixed steps)|\[shepjit\]|LOCKSTEP RACE' "$e" 2>/dev/null); (( n )) || continue
-  echo "   ${e:h:t}/engine.log:"; grep -hE '\[phys\] bound|\[physics2d\]|\[k8\] (preload|fixed steps)|\[shepjit\]|LOCKSTEP RACE' "$e" | sed 's/^\[ *\([0-9]*\)\] */f\1 /' | cut -c1-300 | sed 's/^/      /' | head -${SHOW_K8X:-24}
+  n=$(grep -cE '\[phys\] bound|\[physics2d\]|\[k8\] (preload|fixed steps)|\[shepjit\]|LOCKSTEP RACE|\[k9\]' "$e" 2>/dev/null); (( n )) || continue
+  echo "   ${e:h:t}/engine.log:"; grep -hE '\[phys\] bound|\[physics2d\]|\[k8\] (preload|fixed steps)|\[shepjit\]|LOCKSTEP RACE|\[k9\]' "$e" | sed 's/^\[ *\([0-9]*\)\] */f\1 /' | cut -c1-300 | sed 's/^/      /' | head -${SHOW_K8X:-24}
 done
 for t in $O/runtime/logs/*/shepjit-traces.tsv(N) $O/runtime/logs/*/shepjit-aborts.tsv(N) $O/cache/jit-learn.tsv(N); do echo "   ${t#$O/}: $(grep -vc '^#' "$t") row(s) (the JIT's traces / aborts / learning cache)"; done
 [[ -f $O/device-profile.txt ]] && { echo "   device-profile.txt (kit #8: the hardware model check and the real firmware):"; grep -E '^(model|firmware)' "$O/device-profile.txt" | tr -d '\r' | cut -c1-220 | sed 's/^/      /'; }
+
+# 5g. (kit #9) the host's kit #9 lines -- lever 32 (the gc track: K9 GC = the configuration, the majors in order as cs / cf pairs instead of long
+#     serial s pauses, the worker waits, the end line's pauses; PIN sgen worker = the concurrent marker on USER_2); JIT round 2 (J2 kit #9: the
+#     trap sites, recompiles, calls, decay); the runtime (K9 unbox: trimmed CoreLib methods reached -- a count near 1024 trampolines is the one
+#     to report; K9 fast TLS probe = STEP 0's "0 foreign values in N reads", a WARN line = SHEPHERD_FAST_TLS=0 in the env files; H8 fast TLS
+#     survey); fidelity (FP: every Mono thread's float rules, FZ 0 DN 0 expected); physics (END physics workers: only with workers on); the
+#     device track (K9 the splash's decoder: output delay N = both launcher steps; K9 video reserve / K9 video: the engine's own logo; the
+#     title press = PASS M1 "(nothing selected: the title press, kit #9)"; SUSP lines are in 5d)
+echo "--- kit #9 lines (lever 32 GC, JIT round 2, runtime, float rules, physics workers, the logos' decoder, the title press)"
+K9X='^(K9 |WARN K9|PIN sgen|J2 kit #9|H8 fast TLS|FP |WARN FP|END physics workers)|^PASS M1 .*title press'
+for f in $O/*.txt(N); do
+  [[ ${f:t} == (card-manifest|device-profile|vita-settings|pad).txt ]] && continue
+  n=$(grep -cE "$K9X" "$f" 2>/dev/null); (( n )) || continue
+  echo "   ${f:t}:"; grep -hE "$K9X" "$f" | cut -c1-300 | sed 's/^/      /' | head -${SHOW_K9:-48}
+  ph=$(grep '^P f=' "$f" | tail -1 | grep -oE '\| phys [^|]*' | head -1); [[ -n $ph ]] && echo "      the last heartbeat's physics part: $ph"
+done
+for e in $O/runtime/logs/*/engine.log(N); do
+  n=$(grep -cE '\[k9\]' "$e" 2>/dev/null); (( n )) || continue
+  echo "   ${e:h:t}/engine.log:"; grep -hE '\[k9\]' "$e" | sed 's/^\[ *\([0-9]*\)\] */f\1 /' | cut -c1-300 | sed 's/^/      /' | head -${SHOW_K9:-16}
+done
+if grep -qE $'\truntime/k9-avc-drain\\.(off|marker)$' "$O/card-manifest.txt" 2>/dev/null; then
+  echo "   !! runtime/k9-avc-drain.off / .marker is on the card: the decoder's end-of-stream call crashed or hung once and is now skipped (README-KIT9.txt: send the logs; delete the file to try again)"
+else echo "   runtime/k9-avc-drain.off: not on the card (the decoder's end-of-stream call never failed)"; fi
+for f in $O/env*.txt(N) $O/args*.txt(N); do echo "   (on the card) ${f:t}: $(grep -v '^#' "$f" | tr -d '\r' | tr '\n' ' ' | cut -c1-200)"; done
+# 5h. (kit #9, track jit) THE JIT A/B -- game-logic time per arm (README-KIT9 STEPS 2-7, X6): each start's prof.tsv in its own folder
+#     runtime/logs/play-ab-<n>-<arm>/ (the arm's env file sets SHEPHERD_LOG_DIR), read by vita/jit/ab/logic_ab.py: GAME LOGIC per arm (median /
+#     range), each arm against A (the JIT off); RENDER is the control (it must stay flat -- a start whose render moved > 0.5 ms is flagged)
+LA=${SHEPHERD_REPO:-${SHEPHERD_REPO:-$HOME/src/shepherd}}/vita/jit/ab/logic_ab.py
+typeset -A abf; abf=()
+for pt in $O/runtime/logs/play-ab-*/prof.tsv(N); do arm=${${pt:h:t}##*-}; abf[$arm]+="${abf[$arm]:+,}$pt"; done
+if (( ${#abf} )); then
+  echo "--- the JIT A/B (00097, game logic vs render): $(for k in ${(ok)abf}; do echo -n "$k: $(print -r -- ${abf[$k]} | tr ',' '\n' | wc -l | tr -d ' ') start(s)  "; done)"
+  if [[ -f $LA && -n ${abf[A]:-} ]]; then
+    args=(A=${abf[A]}); for k in ${(ok)abf}; do [[ $k == A ]] || args+=($k=${abf[$k]}); done
+    python3 "$LA" $args 2>&1 | sed 's/^/   /' || echo "   (logic_ab.py stopped; later: python3 $LA $args)"
+  else echo "   (logic_ab.py not found at $LA or no arm A yet: set SHEPHERD_REPO; the prof.tsv files are copied)"; fi
+fi
+
+# 5i. (kit #10) the host's and the engines' kit #10 lines -- memory (K10 MEM: the slot sizes / the ladder; K10 POOL: the shared pool when an env
+#     file turned it on, its "vitaGL" line is the device question; K10 MEM end: the ladder's steps and what each gave back), aot (H8 K10 aot,
+#     K10 ilz: the compressed-IL DLLs checked once / by stamp, K10 learn: the learning record), io ([k10] io / io end: the chunked pack, the
+#     decode-ahead worker, the lanes; Verify Files' read rate = the card's real MiB/s), cache ([k10] learning: the maps / predictions / Continue
+#     manifests; the PS Vita rows), boot (K10 boot screen, K10 IL bundle VERIFY / ON, K10 the splash's drain + K10 video: the logos 188 of 188 and
+#     whether the time stamps proved it, K10 BOOT anatomy), fidelity (K10 FP: the float rules, the bench)
+echo "--- kit #10 lines (memory, compressed IL, the chunked pack, the learning caches, the boot screen, the IL bundle, the logos' drain, float rules)"
+K10X='^(K10 |WARN K10|FAIL K10|H8 K10|H2 partition \(kit #10)'
+for f in $O/*.txt(N); do
+  [[ ${f:t} == (card-manifest|device-profile|vita-settings|pad).txt ]] && continue
+  n=$(grep -cE "$K10X" "$f" 2>/dev/null); (( n )) || continue
+  echo "   ${f:t}:"; grep -hE "$K10X" "$f" | cut -c1-330 | sed 's/^/      /' | head -${SHOW_K10:-60}
+done
+for e in $O/runtime/logs/*/engine.log(N); do
+  n=$(grep -cE '\[k10\]' "$e" 2>/dev/null); (( n )) || continue
+  echo "   ${e:h:t}/engine.log:"; grep -hE '\[k10\] (io|learning|Verify Files|Cache|memory ladder|load|preload)|\[k8\] preload' "$e" | sed 's/^\[ *\([0-9]*\)\] */f\1 /' | cut -c1-300 | sed 's/^/      /' | head -${SHOW_K10:-40}
+done
+# the boot time, the first start vs the second (README-KIT10 STEPS 1 / 2: the same launcher app twice; the host's K7 BOOT line = the time to
+# the game's splash, the work left after it, TOTAL = the Main Menu scene)
+bt() { grep -h '^K7 BOOT' "$1" 2>/dev/null | head -1 | grep -oE 'TOTAL [0-9.]+ ?s|total [0-9.]+ ?s' | head -1; }
+for app in play-mt-launcher play-gaot-launcher play-mt menu_gl-measure; do
+  [[ -f $O/$app.prev.txt && -f $O/$app.txt ]] || continue
+  echo "   boot, $app: the start before (.prev.txt) $(bt $O/$app.prev.txt) -> the last start $(bt $O/$app.txt)   [$(grep -h '^K7 BOOT' "$O/$app.txt" | head -1 | cut -c1-200)]"
+done
+for t in $O/runtime/logs/*/aot-learn.tsv(N); do echo "   ${t#$O/}: $(grep -vc '^#' "$t") method(s) the AOT code missed (kit #10 aot: python3 vita/tools/k10_learn.py merge -> the next build's learned list)"; done
+for t in $O/runtime/logs/*/assemblies.txt(N); do echo "   ${t#$O/}: $(grep -vc '^#' "$t") assemblies in boot order (the IL bundle's order: vita/tools/il_bundle.py)"; done
+[[ -f $O/cache/il/k10-ilb.ok ]] && echo "   cache/il/k10-ilb.ok on the card: the IL bundle is verified on this card ($(head -1 $O/cache/il/k10-ilb.ok))" || echo "   cache/il/k10-ilb.ok: NOT on the card (the bundle stayed in its compare start: K10 IL bundle lines above)"
+[[ -f $O/cache/k10-ilz-verified.tsv ]] && echo "   cache/k10-ilz-verified.tsv: $(grep -vc '^#' $O/cache/k10-ilz-verified.tsv) compressed-IL DLL(s) checked against their originals"
+if grep -qE $'\truntime/k10-avc-refeed\\.(off|marker)$' "$O/card-manifest.txt" 2>/dev/null; then
+  echo "   !! runtime/k10-avc-refeed.off / .marker is on the card: the logos' drain did not come back once and is now skipped (send the logs; delete the file to try again)"
+else echo "   runtime/k10-avc-refeed.off: not on the card (the logos' drain never failed)"; fi
 
 # 6. the numbers, version by version (owner request 2026-10-13): this pull's runs -> vita/perf-history.tsv + .md in the repo, then
 #    "vs last version" (idle Main Menu ms / fps, boot, memory, GC). Reads $O only. The two files are left for a commit after a look.

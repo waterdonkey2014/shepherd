@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- kit #10 fidelity (vita/notes/kit10-fidelity.md "2. Exact decoders"): the decoder pin. Compiles the engine's Shepherd.Assets SOURCES (the
+       crunch / LZ4 decoders the pack builder and the engine run on game data) and the bake's IMA ADPCM model (tools/FmodBake/Encode.cs) into
+       this assembly (own obj/bin, no ProjectReference: never writes the engine's outputs), and calls the reference decoders in process
+       (vita/tests/decoders/native: Unity's crunch fork, the Vita's own IMA decoder, the system liblz4). Reports go to the work dir given on
+       the command line (they name game assets: owner-local, never in git). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>Shepherd.DecoderPin</RootNamespace>
+    <NoWarn>$(NoWarn);CS8632;CS0162</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../../../engine/Shepherd.Assets/Shepherd.Assets/**/*.cs" Exclude="../../../../engine/Shepherd.Assets/Shepherd.Assets/obj/**;../../../../engine/Shepherd.Assets/Shepherd.Assets/bin/**" LinkBase="Assets" />
+    <Compile Include="../../../../tools/FmodBake/Encode.cs" Link="FmodBake/Encode.cs" />
+  </ItemGroup>
+</Project>

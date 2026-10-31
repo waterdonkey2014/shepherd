@@ -45,14 +45,23 @@ static class ResourceIcalls
     {
         bool mono = !t.IsInterface && typeof(MonoBehaviour).IsAssignableFrom(t);
         var hits = new List<UObject>();
-        foreach (var n in Objects.ById.Values)
+        // kit #9 engine (SHEPHERD_K9_FIND): the per-type list holds exactly this loop's hits, in its order (live records of type t, Objects.All's order).
+        // =check (review fix): the loop runs, the list's answer is compared with it element by element, the loop's answer is returned
+        var reg = K9Engine.Find ? Registry.ForType(t, Runtime.Time.FrameCount) : null;
+        if (reg != null && !K9Engine.FindCheck) { K9Engine.FindIndexed++; foreach (var n in reg.Items()) hits.Add(n.Managed); }
+        else
         {
-            if (n.Destroyed) continue;
-            var m = n.Managed;
-            if (m is null) continue;
-            if (mono) { if (m is not MonoBehaviour) continue; if (m.GetType() != t && !t.IsInstanceOfType(m)) continue; }
-            else if (!t.IsInstanceOfType(m)) continue;
-            hits.Add(m);
+            foreach (var n in Objects.ById.Values)
+            {
+                if (n.Destroyed) continue;
+                var m = n.Managed;
+                if (m is null) continue;
+                if (mono) { if (m is not MonoBehaviour) continue; if (m.GetType() != t && !t.IsInstanceOfType(m)) continue; }
+                else if (!t.IsInstanceOfType(m)) continue;
+                hits.Add(m);
+            }
+            if (reg != null) { var h2 = new List<UObject>(); foreach (var n in reg.Items()) h2.Add(n.Managed); K9Engine.CheckFind(t, hits, h2, K9Engine.FindAllKind); }
+            if (K9Engine.Find) K9Engine.FindScans++;
         }
         var arr = Array.CreateInstance(t, hits.Count);
         if (hits.Count > 0) Array.Copy(hits.ToArray(), arr, hits.Count);

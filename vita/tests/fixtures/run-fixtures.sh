@@ -8,7 +8,8 @@
 #                                    rng / time / the render stream) and writes a state dump of that frame (SHEPHERD_STATE_DUMP) next to it
 # env: FIXTURES_STORE (default ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit7/tests-work/fixtures/expected: owner-local -- hashes of game output), MACBOOT_BIN
 #      (the engine build to test, default the worktree's Debug build), FIXTURES_OUT (run dirs), FIXTURE_PACK_MENU / _CARD / _INTRO, P (parallel
-#      runs, default 3), FIXTURE_ENV ("K=V ..." added to every run: check a switch against the recording). Exit 0 = all PASS. Silent.
+#      runs, default 3), FIXTURE_ENV ("K=V ..." added to every run: check a switch against the recording), FIXTURES_K10=1 (kit #10: also
+#      manifest-k10.tsv's rows, the ones not yet in every store; a named row is found in either file). Exit 0 = all PASS. Silent.
 # Review fix (kit7-tests.md "Review fixes"): a run counts only if it ended cleanly -- macboot rc 0, the engine's END line ('done: ...') as
 # engine.log's last line, non-empty state and stream hashes, and the manifest's frame count or a clean early stop at its last frame (the
 # menu clock's 'stopping after frame N', the scene stop's 'END intro at frame N'). record keeps nothing unless BOTH runs are clean (two runs
@@ -22,11 +23,17 @@ mode=${1:?record|check}; shift; want=("$@")
 mkdir -p $STORE $OUTD
 typeset -A F_FR F_PACK F_PAD F_ENV
 names=()
+# kit #10 fidelity review fix: rows not yet in every store (manifest-k10.tsv) are read only when named or with FIXTURES_K10=1 -- a plain
+# check / record is kit #9's suite (manifest.tsv), green against the kit #9 store
+MANIFESTS=($T/manifest.tsv)
+[[ -f $T/manifest-k10.tsv ]] && { (( ${#want} )) || [[ ${FIXTURES_K10:-0} == 1 ]]; } && MANIFESTS+=($T/manifest-k10.tsv)
+for M in $MANIFESTS; do
 while IFS=$'\t' read -r n fr pk pad env what; do
   [[ -z $n || $n == \#* ]] && continue
   (( ${#want} )) && [[ ${want[(Ie)$n]} == 0 ]] && continue
   names+=($n); F_FR[$n]=$fr; F_PACK[$n]=$pk; F_PAD[$n]=$pad; F_ENV[$n]=$env
-done < $T/manifest.tsv
+done < $M
+done
 packdir() { case $1 in menu) print $PM;; card) print $PC;; intro) print $PI;; *) print $1;; esac; }
 one() {   # one <name> <run dir> [extra env...]
   local n=$1 o=$2; shift 2

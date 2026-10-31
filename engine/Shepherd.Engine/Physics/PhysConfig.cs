@@ -46,6 +46,18 @@ public static class PhysConfig
     /// steps a frame. Default: unity at level 3 and above, 5 below. (At the default 1/60 s frame the cap never binds; SHEPHERD_CAPTURE_DT above
     /// 0.1 s does.) Default (0): unity where Stage 3 runs (PhysWorld.Sim3), 5 elsewhere; the switch forces it at any level.</summary>
     public static readonly int StepCapEnv;     // 0 unset, else the cap (int.MaxValue = unity)
+    /// <summary>Kit #9 (physics-plan-v2 Stage 7 item 2 = the Law of the Vita part 2, patch P3): SHEPHERD_PHYS_WORKERS = native worker threads for
+    /// the step's forked phases (Collide's narrowphase, the trigger pass, the island solve), 0..3. Default 0 = serial (kit #8 exactly; the Vita
+    /// host may set the play apps' default, vita/shepherd/phys_host.inc.c). Results are bit-identical at any value (vita/physics/shim/sp_p3.cpp);
+    /// only the speed changes.</summary>
+    public static readonly int Workers;
+    /// <summary>SHEPHERD_PHYS_FORK=collide,triggers,islands: the fork thresholds (items; 0 = never fork that phase; empty / "default" = the
+    /// library's 16,16,4, set from PhysBench's device run). SHEPHERD_PHYS_SPIN_US: how long a worker spins before it sleeps (default 200).</summary>
+    public static readonly int ForkCollide = -1, ForkTriggers = -1, ForkIslands = -1, SpinUs = -1;
+    /// <summary>SHEPHERD_CHECK_PHYS=workers (or all): every forked phase also computed serially and compared (counted in the exit summary).</summary>
+    public static readonly bool CheckWorkers;
+    /// <summary>Kit #9: SHEPHERD_CHECK_PHYS=lazy (or all): the lazy hasChanged against the eager flags, every transform every frame (Native/Objects.cs).</summary>
+    public static bool CheckLazy => On && Native.NTransform.HcCheck;
 
     static PhysConfig()
     {
@@ -63,6 +75,17 @@ public static class PhysConfig
         CheckTree = On && (all || Check.Split(',').Contains("tree"));
         CheckHooks = On && (all || Check.Split(',').Contains("hooks"));
         CheckBrute = On && (all || Check.Split(',').Contains("brute"));   // physics Stage 2: queries and trigger pairs against a brute force without the broadphase
+        CheckWorkers = On && (all || Check.Split(',').Contains("workers"));   // kit #9: patch P3's forked phases against their serial runs
+        Workers = int.TryParse((Environment.GetEnvironmentVariable("SHEPHERD_PHYS_WORKERS") ?? "").Trim(), out var wk) && wk > 0 ? Math.Min(wk, 3) : 0;
+        var fork = (Environment.GetEnvironmentVariable("SHEPHERD_PHYS_FORK") ?? "").Trim();
+        if (fork.Length > 0 && fork != "default")
+        {
+            var f = fork.Split(',');
+            if (f.Length > 0 && int.TryParse(f[0].Trim(), out var a) && a >= 0) ForkCollide = a;
+            if (f.Length > 1 && int.TryParse(f[1].Trim(), out var b) && b >= 0) ForkTriggers = b;
+            if (f.Length > 2 && int.TryParse(f[2].Trim(), out var c) && c >= 0) ForkIslands = c;
+        }
+        if (int.TryParse((Environment.GetEnvironmentVariable("SHEPHERD_PHYS_SPIN_US") ?? "").Trim(), out var su) && su >= 0) SpinUs = su;
     }
 
     /// <summary>The boot line (Lifecycle's first frame) -- one place that says which physics this run has.</summary>
@@ -77,7 +100,7 @@ public static class PhysConfig
             : $"{Level} (Stage 3's combat + Stage 4 step 4a (the path icalls, the chain vertex filter, composite paths in body space, Synchronous composites) + Stage 6: the 3D island-ground ray -- Physics.Raycast / RaycastNonAlloc / RaycastTest against the MeshColliders (BVH, +z fast path) and Box / Sphere / Capsule, the 3D collider icalls; Stage 5 and Stage 4 steps 4b-4e are not built)";
         string asked = Asked != Level ? $"; SHEPHERD_PHYS={Raw} asked for level {Asked}, this build implements up to {Implemented}" : "";
         string bad = Raw.Length > 0 && Asked == 0 && Raw != "0" ? $"; SHEPHERD_PHYS='{Raw}' not understood: 0" : "";
-        string chk = Check.Length > 0 ? $"; checks {Check}" : "";
+        string chk = (Check.Length > 0 ? $"; checks {Check}" : "") + (Workers > 0 ? $"; workers {Workers} (patch P3)" : "");
         return $"[phys] level {lvl}{asked}{bad}{chk}; hypotheses: {Hypotheses.Describe()}";
     }
 }

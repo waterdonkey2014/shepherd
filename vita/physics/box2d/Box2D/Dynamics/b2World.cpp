@@ -1,3 +1,6 @@
+// ALTERED for Shepherd: physics-plan-v2 patch P3 (multicore, physics Stage 7 item 2): b2_unityJobs defined (NULL = stock) and Solve
+// hands over to SolveP3 (shim/sp_p3.cpp) while it is set and SolveP3 takes the step (else the stock Solve below runs). Listed in
+// vita/physics/box2d/PATCHES.md (row P3).
 // ALTERED for Shepherd: physics-plan-v2 patch P1 (Unity trigger phase + kinematic triggers, physics Stage 2), behind the
 // runtime flags b2_unityTriggerPhase / b2_unityKinematicTriggers (b2Contact.h); with both 0 this file behaves exactly as
 // stock Box2D 2.3.1. Listed in vita/physics/box2d/PATCHES.md (row P1). The original notice follows unchanged.
@@ -36,6 +39,9 @@
 #include <Box2D/Common/b2Draw.h>
 #include <Box2D/Common/b2Timer.h>
 #include <new>
+
+// Shepherd P3: the job system of the world being stepped (set by the shim around one b2World::Step; NULL = stock)
+b2UnityJobs* b2_unityJobs = NULL;
 
 b2World::b2World(const b2Vec2& gravity)
 {
@@ -388,6 +394,12 @@ void b2World::SetAllowSleeping(bool flag)
 // Find islands, integrate and solve constraints, solve position constraints
 void b2World::Solve(const b2TimeStep& step)
 {
+	// Shepherd P3: the forked island solve (shim/sp_p3.cpp: the same islands, applied in this function's order); not taken = stock
+	if (b2_unityJobs && SolveP3(step))
+	{
+		return;
+	}
+
 	m_profile.solveInit = 0.0f;
 	m_profile.solveVelocity = 0.0f;
 	m_profile.solvePosition = 0.0f;

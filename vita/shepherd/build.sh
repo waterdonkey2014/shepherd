@@ -215,14 +215,33 @@ fi
 # SHEPHERD_VITA_RUNTIME_OBJ (an explicit runtime) wins. SHEPHERD_K5_RUNTIMES=0 = the kit #4 shared runtimes (no cache; the host's H8
 # line says so). A missing kit #5 runtime stops the build: a kit must never lose lever 20 silently. (SHEPHERD_DIAG=1 links its own.)
 K5RT=${SHEPHERD_K5_RUNTIMES:-$B/kit5/runtimes}
+# device kit #9 (track gc, vita/notes/kit9-gc.md): the kit #9 runtimes = each recipe's kit #5 / kit #8 runtime + vita/patches/k9-gc.patch
+# (lever 32's worker hook, the per-scene nursery target, the used-size modes, M8's two-ended arena; every default in it is kit #8's
+# behaviour, the env file's GC switches turn them on: vita/shepherd/k9_gc.inc.c). Built with vita/toolchain/build-runtime-k9.sh
+# llvm|fix|jit|base $K9RT/<kind>; K9RT = SHEPHERD_K9_RUNTIMES (default $B/kit9/runtimes). Linked by default, and a missing one stops the build
+# (a kit must not lose its GC switches silently); SHEPHERD_K9_RUNTIMES=0 = kit #8's runtimes (host.c's weak references: the K9 GC line then
+# says the runtime has no kit #9 entry points). An explicit SHEPHERD_VITA_RUNTIME_OBJ still wins; the diag build links its own.
+K9RT=${SHEPHERD_K9_RUNTIMES:-$B/kit9/runtimes}
+K9_ON=0; [ -z "${SHEPHERD_VITA_RUNTIME_OBJ:-}" ] && [ "$K9RT" != 0 ] && [ "$K5RT" != 0 ] && [ "$DIAG" != 1 ] && K9_ON=1
 if [ -z "${SHEPHERD_VITA_RUNTIME_OBJ:-}" ] && [ "$K5RT" != 0 ] && [ "$DIAG" != 1 ]; then
   K5KIND=base; [ "$OWNER_AOT" = 1 ] && K5KIND=fix; [ -n "$AOT_LLVM" ] && K5KIND=llvm
   RT=$K5RT/$K5KIND/obj
   [ -f "$RT/mono/mini/libmonosgen-2.0.a" ] && [ -f "$K5RT/$K5KIND/K5-RUNTIME.txt" ] || { echo "the kit #5 runtime $RT is missing (or failed its member guard): vita/toolchain/build-runtime-k5.sh $K5KIND $K5RT/$K5KIND -- or SHEPHERD_K5_RUNTIMES=0 for kit #4's shared runtime (no lever 20)"; exit 1; }
+  if [ "$K9_ON" = 1 ] && [ "${SHEPHERD_JIT_APP:-0}" != 1 ]; then
+    RT=$K9RT/$K5KIND/obj
+    [ -f "$RT/mono/mini/libmonosgen-2.0.a" ] && [ -f "$K9RT/$K5KIND/K9-RUNTIME.txt" ] || { echo "kit #9: the kit #9 runtime $RT is missing (or failed its member guard): vita/toolchain/build-runtime-k9.sh $K5KIND $K9RT/$K5KIND -- or SHEPHERD_K9_RUNTIMES=0 for kit #8's runtime (no kit #9 GC switches)"; exit 1; }
+  fi
 fi
-# device kit #8 (track jit, vita/notes/kit8-jit.md): SHEPHERD_JIT_APP=1 builds the recipe as a JIT APP -- it links the kit #8 JIT runtime
-# (kit #5's LLVM runtime + the baseline JIT tier: vita/toolchain/build-runtime-k8.sh jit $K8RT/llvm-jit; K8RT = SHEPHERD_K8_RUNTIMES, default
-# $B/kit8/runtimes; SHEPHERD_VITA_RUNTIME_OBJ still wins) and host.c with SHEPHERD_JIT (vita/shepherd/k8_jit_host.inc.c: the ForVM code block
+# device kit #8 (track jit, vita/notes/kit8-jit.md): SHEPHERD_JIT_APP=1 builds the recipe as a JIT APP -- it links a JIT runtime and host.c
+# with SHEPHERD_JIT. Which runtime (kit #9 integration review fix: the old hint named a kind that is no longer kit #8's):
+#   - kit #9 (the default, K9_ON): the MERGED kit #9 JIT runtime $K9RT/jit = vita/toolchain/build-runtime-k9.sh jit (kit #5's LLVM runtime +
+#     the runtime / gc patches + kit #8's two JIT patches + vita/patches/k9-jit.patch);
+#   - SHEPHERD_K9_RUNTIMES=0 (= kit #8's runtimes): kit #8's EXACT JIT runtime $K8RT/llvm-jit = vita/toolchain/build-runtime-k8.sh jit8
+#     <dir>/llvm-jit with SHEPHERD_K8_RUNTIMES=<dir> (the default $B/kit8/runtimes never existed and build-runtime-k8.sh refuses to write under
+#     $B/kit8), or kit #8's kit build itself via SHEPHERD_VITA_RUNTIME_OBJ=$B/kit8/integ-work/kit-build/runtimes/llvm-jit/obj. NOT
+#     build-runtime-k8.sh jit: since kit #9 that kind adds k9-jit.patch (JIT round 2) -- a runtime whose K8-RUNTIME.txt names a k9- patch is
+#     refused here when it comes from $K8RT (an explicit SHEPHERD_VITA_RUNTIME_OBJ still wins, as always);
+# and host.c with SHEPHERD_JIT (vita/shepherd/k8_jit_host.inc.c: the ForVM code block
 # before the partition, the J1 / J2 lines). The app's SHEPHERD_JIT default is 1; SHEPHERD_JIT=0 in its env file = the kit #7 interpreter + AOT
 # path. LLVM engine-AOT recipes only (the play apps 00097 / 00098); the recipe keeps its title id, names and files. Unset = no JIT (kit #7).
 JIT_APP=${SHEPHERD_JIT_APP:-0}
@@ -230,7 +249,15 @@ if [ "$JIT_APP" = 1 ]; then
   { [ -n "$AOT_LLVM" ] && [ "$OWNER_AOT" != 1 ] && [ "$DIAG" != 1 ]; } || { echo "SHEPHERD_JIT_APP=1 needs an LLVM engine-AOT recipe (the play apps 00097 / 00098: the kit #8 JIT runtime is kit #5's LLVM runtime + the tier)"; exit 1; }
   K8RT=${SHEPHERD_K8_RUNTIMES:-$B/kit8/runtimes}
   RT=${SHEPHERD_VITA_RUNTIME_OBJ:-$K8RT/llvm-jit/obj}
-  { [ -f "$RT/mono/mini/libmonosgen-2.0.a" ] && [ -f "${RT%/obj}/K8-RUNTIME.txt" ]; } || { echo "SHEPHERD_JIT_APP=1: the kit #8 JIT runtime $RT is missing (or failed its member guard): vita/toolchain/build-runtime-k8.sh jit ${RT%/obj}"; exit 1; }
+  [ "$K9_ON" = 1 ] && RT=$K9RT/jit/obj   # kit #9 gc: the JIT runtime + k9-gc.patch (build-runtime-k9.sh jit; it writes K8-RUNTIME.txt too)
+  if [ "$K9_ON" = 1 ]; then
+    { [ -f "$RT/mono/mini/libmonosgen-2.0.a" ] && [ -f "${RT%/obj}/K8-RUNTIME.txt" ]; } || { echo "SHEPHERD_JIT_APP=1: the merged kit #9 JIT runtime $RT is missing (or failed its member guard): vita/toolchain/build-runtime-k9.sh jit ${RT%/obj} (call it by its ${SHEPHERD_WORK:-$HOME/shepherd-work}/... path) -- or SHEPHERD_K9_RUNTIMES=0 for kit #8's runtimes (then kit #8's exact JIT runtime: build-runtime-k8.sh jit8 <dir>/llvm-jit with SHEPHERD_K8_RUNTIMES=<dir>)"; exit 1; }
+  else
+    { [ -f "$RT/mono/mini/libmonosgen-2.0.a" ] && [ -f "${RT%/obj}/K8-RUNTIME.txt" ]; } || { echo "SHEPHERD_JIT_APP=1: kit #8's JIT runtime $RT is missing (or failed its member guard): vita/toolchain/build-runtime-k8.sh jit8 <dir>/llvm-jit with SHEPHERD_K8_RUNTIMES=<dir> (the default $B/kit8/runtimes is refused by that script), or kit #8's kit build: SHEPHERD_VITA_RUNTIME_OBJ=$B/kit8/integ-work/kit-build/runtimes/llvm-jit/obj -- NOT build-runtime-k8.sh jit, which adds kit #9's k9-jit.patch"; exit 1; }
+    if [ -z "${SHEPHERD_VITA_RUNTIME_OBJ:-}" ] && grep -q 'k9-' "${RT%/obj}/K8-RUNTIME.txt"; then
+      echo "SHEPHERD_JIT_APP=1 with SHEPHERD_K9_RUNTIMES=0 (= kit #8's runtimes): $RT is not kit #8's JIT runtime -- its K8-RUNTIME.txt names kit #9 patch(es): $(grep -ho 'k9-[a-z0-9-]*\.patch' "${RT%/obj}/K8-RUNTIME.txt" | sort -u | tr '\n' ' ')-- build kit #8's exact one with build-runtime-k8.sh jit8 (or name a runtime explicitly with SHEPHERD_VITA_RUNTIME_OBJ)"; exit 1
+    fi
+  fi
   arm-vita-eabi-nm "$RT/mono/mini/libmonosgen-2.0.a" 2>/dev/null | grep " T mono_shepjit_set_block$" > /dev/null || { echo "SHEPHERD_JIT_APP=1: $RT has no baseline JIT tier"; exit 1; }
 fi
 GLW=; [ "$GL" = 1 ] && GLW=-gl                     # work/out dirs of the GL app are separate from the headless build's
@@ -318,6 +345,10 @@ fi
 [ "$PHYS_LINK" = 1 ] && [ "$GL" != 1 ] && { echo "SHEPHERD_PHYS_LINK=1 links libshepphys into a GL app only (the headless host has no shepphys_proc)"; exit 1; }
 PHYS_DEFAULT=${SHEPHERD_PHYS_DEFAULT:-6}
 case "$PHYS_DEFAULT" in none|[0-7]) ;; *) echo "SHEPHERD_PHYS_DEFAULT=$PHYS_DEFAULT: none or 0..7"; exit 1 ;; esac
+# kit #9 (Law of the Vita part 2, patch P3): the play apps' default physics worker count (SHEPHERD_PHYS_WORKERS in the env file wins);
+# 0 = kit #8's serial step (the default until a device A/B: vita/notes/kit9-physics.md)
+PHYS_WORKERS_DEFAULT=${SHEPHERD_PHYS_WORKERS_DEFAULT:-0}
+case "$PHYS_WORKERS_DEFAULT" in [0-3]) ;; *) echo "SHEPHERD_PHYS_WORKERS_DEFAULT=$PHYS_WORKERS_DEFAULT: 0..3"; exit 1 ;; esac
 PHYSLIB=
 SHEPGL=$V/gltest/shepgl
 # newlib heap (link time). Engine-AOT builds default to 116 MiB (kit 3, vita/notes/m1-gl-app.md §4 "GL + engine AOT"): their eboot spans
@@ -470,6 +501,33 @@ case "$AOT_O" in *unsafe*|*all*) echo "SHEPHERD_AOT_O: 'unsafe' / 'all' change b
 # alignment the IR cannot guarantee and float maths keeps VFP semantics (NEON flushes denormals). Cost: +0.1 % (engine) to
 # +0.5 % (CoreLib) static instructions.
 LLVM_TRIPLE=armv7-vita-eabihf; [ "$AOT_LLVM" = thumb ] && LLVM_TRIPLE=thumbv7-vita-eabihf
+# device kit #9 (track runtime, R7 "LLVM safepoint thinning", vita/notes/kit9-runtime.md): SHEPHERD_AOT_SPP picks where opt's
+# place-safepoints puts the coop GC polls in LLVM-compiled code. Mono always passes -spp-all-backedges (a poll on EVERY loop back-edge);
+#   all = Mono's flags, kit #8's code byte for byte (the switch back);
+#   counted16 = no poll on the back-edge of a loop whose trip count LLVM proves fits in 16 bits (< 65,536 iterations: a bounded wait for
+#               a stop-the-world request), every other back-edge keeps its poll (-spp-no-call: a call in the loop does NOT excuse it);
+#               measured: -0.4 % of the polls (an array loop is bounded by Length, not provably < 2^16) -- not worth it;
+#   counted32 = the same for trip counts that fit in 32 bits (LLVM's own default width): -7.1 % of the poll sites on 00098 (153,874 ->
+#               143,003 relocations), the hot counted loops among them; a GC request waits at most for the rest of such a loop on another
+#               managed thread (a counted loop cannot spin-wait; calls keep their entry polls).
+# Polls decide only WHEN a thread notices a GC request, never what the code computes (identity: the frame records are kit #8's). The
+# DEFAULT is all (kit #9 runtime review fix): compiled-in polls have no env-file switch back, and what counted32 costs a stop-the-world
+# GC on the MT apps (00098 / 00193: the other managed threads finish their counted loops first) was never measured on a device --
+# counted32 is an opt-in recipe value until the owner decides (an A/B pair of eboots; vita/notes/kit9-runtime.md "Review fixes").
+# opt and llc are run from an overlay directory: opt is a wrapper that swaps the flag and runs the real opt; llc is the real one (a link).
+AOT_SPP=${SHEPHERD_AOT_SPP:-all}
+case "$AOT_SPP" in all) ;; counted16) SPP_FLAGS="-spp-counted-loop-trip-width=16 -spp-no-call" ;; counted32) SPP_FLAGS="-spp-no-call" ;;
+  *) echo "SHEPHERD_AOT_SPP must be all, counted16 or counted32"; exit 1 ;; esac
+LLVMBIN_REAL=${LLVMBIN:-}; LLVM_OVERLAY_OPT=   # (review fix: the stamps hash the REAL opt / llc; the overlay's wrapper is hashed besides)
+if [ -n "$AOT_LLVM" ] && [ "$AOT_SPP" != all ]; then
+  LB=$W/obj/llvm-bin-spp-$AOT_SPP; rm -rf "$LB"; mkdir -p "$LB"; ln -s "$LLVMBIN/llc" "$LB/llc"
+  { echo '#!/bin/zsh'
+    echo "# kit #9 R7: SHEPHERD_AOT_SPP=$AOT_SPP -- Mono's opt command with -spp-all-backedges replaced by: $SPP_FLAGS"
+    echo 'a=(); for x in "$@"; do if [[ $x == -spp-all-backedges ]]; then a+=('"${=SPP_FLAGS}"'); else a+=("$x"); fi; done'
+    echo "exec \"$LLVMBIN/opt\" \"\${a[@]}\""
+  } > "$LB/opt"; chmod +x "$LB/opt"
+  LLVMBIN=$LB/; LLVM_OVERLAY_OPT=$LB/opt
+fi
 [ -n "$AOT_LLVM" ] && AOT_OPTS="full,interp,static,asmonly,direct-icalls,direct-pinvoke,nodebug,llvm,llvm-path=$LLVMBIN,mtriple=$LLVM_TRIPLE,llvmllc=-mcpu=cortex-a9 -exception-model=dwarf -arm-assume-misaligned-load-store,mattr=+d32"
 # all runtime trampolines come from CoreLib's image; running out of a pool is fatal (see vita/notes/v5-runtime.md)
 CORELIB_TRAMPS=",ntrampolines=8192,nrgctx-trampolines=8192,nimt-trampolines=2048,ngsharedvt-trampolines=4096,nftnptr-arg-trampolines=4096,nunbox-arbitrary-trampolines=1024"
@@ -479,7 +537,9 @@ CORELIB_TRAMPS=",ntrampolines=8192,nrgctx-trampolines=8192,nimt-trampolines=2048
 [ "$OWNER_AOT" = 1 ] && CORELIB_TRAMPS=",${SHEPHERD_CORELIB_TRAMPS:-ntrampolines=32768,nrgctx-trampolines=16384,nimt-trampolines=4096,ngsharedvt-trampolines=4096,nftnptr-arg-trampolines=4096,nunbox-arbitrary-trampolines=1024}"
 # content stamps: the cross compiler + every DLL the module can depend on (CoreLib: itself; the BCL: the BCL; ours: all)
 BCL_FILES=("$PACK"/lib/net8.0/*.dll "$PACK/native/System.Private.CoreLib.dll")
-XTOOLS=("$X"); [ -n "$AOT_LLVM" ] && XTOOLS+=("$LLVMBIN/opt" "$LLVMBIN/llc")
+# (kit #9 runtime review fix: with the R7 overlay $LLVMBIN/opt is the generated wrapper -- the stamps hash the real opt / llc binaries and,
+# besides, the wrapper; without the overlay the list is kit #8's: the real $LLVMBIN/opt + llc)
+XTOOLS=("$X"); [ -n "$AOT_LLVM" ] && XTOOLS+=("$LLVMBIN_REAL/opt" "$LLVMBIN_REAL/llc" ${LLVM_OVERLAY_OPT:+"$LLVM_OVERLAY_OPT"})
 DEPS_CORELIB=$(cat "$W/bcl/System.Private.CoreLib.dll" $XTOOLS | shasum -a 256 | cut -c1-16)
 DEPS_BCL=$(cat $BCL_FILES $XTOOLS | shasum -a 256 | cut -c1-16)
 DEPS_ALL=$(cat "$W"/bcl/*.dll $XTOOLS | shasum -a 256 | cut -c1-16)
@@ -487,8 +547,109 @@ DEPS_ALL=$(cat "$W"/bcl/*.dll $XTOOLS | shasum -a 256 | cut -c1-16)
 [ "$DERIVED_AOT" = 1 ] && DEPS_DERIVED=$(cat "$W"/bcl/*.dll "$W/derived/Shepherd.Engine.Derived.dll" "$OWNER_MANAGED"/*.dll $XTOOLS | shasum -a 256 | cut -c1-16)
 [ "$OWNER_AOT" = 1 ] && DEPS_OWNER=$(cat "$W"/bcl/*.dll "$OWNER_MANAGED"/*.dll $XTOOLS ${OWNER_PROFILE:+"$OWNER_PROFILE"} | shasum -a 256 | cut -c1-16)
 for f in "$W"/aot/*.dll.s(N) "$W"/aot-owner/*.dll.s(N); do a=${${f:t}%.dll.s}; (( ${AOT[(Ie)$a]} )) && [ "$(aotdir $a)" = "${f:h}" ] || { echo "   (dropping stale $a)"; rm -f "${f:h}/$a".*; }; done
+# device kit #9 (track runtime, vita/notes/kit9-runtime.md): the kit #9 compiler's build-time rows (vita/patches/k9-aot-compiler.patch, built by
+# vita/toolchain/build-cross-k9.sh; point SHEPHERD_CROSS_LLVM_OBJ / SHEPHERD_CROSS_OBJ at it). Each is off unless asked for; compiled code, so
+# the switch back is a build without it:
+#   SHEPHERD_K9_DEDUP (R3 AOT dedup; unset / 0 = off -- kit #8's output, the review fix: no build-time row is a build.sh default -- 1 = on,
+#     auto = on when the compiler is the kit #9 one): an image does not compile the generic instances that the image DEFINING their generic type already
+#     compiled earlier in this build (CoreLib first, then the BCL, ...) -- only FULLY CONCRETE instances (a gsharedvt one names the caller's own
+#     type parameter: not the defining image's method) -- the runtime looks such a method up in the defining image first
+#     (aot-runtime.c find_aot_method), so those copies were never run -- dropping them only frees eboot span. Each image writes the instances
+#     it defines to <aot dir>/<image>.instances; every later image reads them all.
+#   SHEPHERD_K9_ORDER=<file> (R5 profile-ordered layout): symbol names, hottest first -- each image emits those methods first (LLVM: right after
+#     llvm_code_start; Mono backend: first in the .s). Layout only.
+#   SHEPHERD_K9_CORELIB_KEEP=<file> (CoreLib method-level trimming): "<image><TAB><token>" lines (owner-local: the methods the kit's routes
+#     call, from the VLX first-call traces) -- CoreLib's other non-generic, non-wrapper methods are not compiled and run in the interpreter.
+#   SHEPHERD_K9_DIVFAST=1 (E2 divfast, session 2; vita/patches/k9-divfast-compiler.patch): every emulated division / remainder gets an inline
+#     guard -- when the divisor cannot raise (b != 0, signed also b != -1) the emulation function is called directly, without its wrapper;
+#     64-bit operands that both fit in 32 bits go to the 32-bit function (E2's identity); anything else is the wrapper call as before (the
+#     same exceptions at the same place). The same results in every case; unset / 0 = off (kit #8's output).
+#     Review fix (kit #9 runtime review of b23b56a): every fast path also checks the runtime's switch word (vita/patches/k9-divfast-flag.patch,
+#     in the compiler AND the runtime) -- the ENV-FILE switch back: SHEPHERD_K9_DIVFAST=0 = every division is the wrapper call (kit #8's code
+#     path), SHEPHERD_K9_DIVMOD=0 = the 64-bit fast path off too (E2 off). A compiler or runtime without that patch is refused below.
+unset SHEPHERD_AOT_ORDER SHEPHERD_AOT_SKIP_INSTANCES SHEPHERD_AOT_INSTANCES_OUT SHEPHERD_AOT_KEEP SHEPHERD_AOT_DIVFAST   # (only set below, per image)
+# device kit #10 (track aot, vita/notes/kit10-aot.md): the kit #10 compiler's build-time rows (vita/patches/k10-aot-compiler.patch; build it with
+# SHEPHERD_K10_COMPILER=1 vita/toolchain/build-cross-k9.sh llvm|gameaot and point SHEPHERD_CROSS_LLVM_OBJ / SHEPHERD_CROSS_OBJ at it). Each is off
+# unless asked for (unset = the kit #9 images byte for byte); compiled code, so the switch back is a build without it. Every list is owner-local
+# (it names the game's methods): refused inside the repo.
+#   SHEPHERD_K10_AOTLEARNED=<file>[:<file>...] (AOT that learns from play): vita/tools/k10_learn.py's merge of the runtime's aot-learn.tsv records
+#     (device logs, vlx runs) -- every image compiles the listed methods it would have left to the interpreter (past the CoreLib keep list,
+#     into a profile-only owner image's profile) and the listed generic instances of its own definitions; instances of BCL definitions over
+#     the game's types go into the derived image (else the engine image): SHEPHERD_AOT_LEARNED_IMAGE. Same IL, compiled -- except where compiled
+#     ARM code is NOT exact: a pointer load / store of a float or struct faults at an unaligned address (VLDR / VSTR) where the interpreter
+#     reads it (kit #10 vlx gate: Sirenix's ArchitectureInfo.SetRuntimePlatform, SIGBUS) -- so the list must be k10_learn.py safe's output
+#     (v3), which drops every such method (it stays interpreted); build.sh refuses any other list, and refuses it with SHEPHERD_K10_HOTINL.
+#   SHEPHERD_K10_COLD=<file> (hot code for speed, cold code for size; LLVM images): "<image><TAB><token>" = the methods that ran (the first-call
+#     traces + the learning record, k10_learn.py hot); every other LLVM-compiled method gets optsize (SHEPHERD_K10_COLD_MODE=minsize is refused:
+#     see below); SHEPHERD_K10_COLD_HOT=1 = the A/B arm with every method at the size level; SHEPHERD_K10_COLD_INLINE=<bytes of IL> = a cold
+#     method's callees inlined by Mono's IR inliner only below that size ([AggressiveInlining] too; every backend -- the game-AOT app's Mono
+#     backend included). Codegen / inlining choices only: the same results.
+#   SHEPHERD_K10_HOTINL=<file> (whole-program inlining's nearest exact form): symbol names of the profile's hot methods (the R5 order list);
+#     a listed method inlines its direct callees (any image: Mono's IR inliner) up to SHEPHERD_K10_HOTINL_LIMIT bytes of IL (default 60;
+#     0 = Mono's own limit); SHEPHERD_K10_INLINE_CENSUS=<file> appends every hot method's inlining decisions there (no codegen change).
+unset SHEPHERD_AOT_LEARNED SHEPHERD_AOT_LEARNED_IMAGE SHEPHERD_AOT_COLD SHEPHERD_AOT_COLD_MODE SHEPHERD_AOT_COLD_HOT SHEPHERD_AOT_COLD_INLINE SHEPHERD_AOT_HOT_INLINE SHEPHERD_AOT_HOT_INLINE_LIMIT SHEPHERD_AOT_INLINE_CENSUS
+K10_LEARNED=${SHEPHERD_K10_AOTLEARNED:-}; K10_COLD=${SHEPHERD_K10_COLD:-}; K10_COLD_MODE=${SHEPHERD_K10_COLD_MODE:-optsize}; K10_COLD_HOT=${SHEPHERD_K10_COLD_HOT:-0}
+K10_HOTINL=${SHEPHERD_K10_HOTINL:-}; K10_HOTINL_LIMIT=${SHEPHERD_K10_HOTINL_LIMIT:-60}; K10_CENSUS=${SHEPHERD_K10_INLINE_CENSUS:-}; K10_COLD_INLINE=${SHEPHERD_K10_COLD_INLINE:-}
+# (minsize is refused: under it LLVM calls a target it calls more than once through a register -- blx rN -- and Mono's trampolines patch
+#  every resolved call site as a direct Thumb BL: the kit #10 vlx gate's "Assertion at tramp-arm.c:1126, (t1 >> 11) == 0x1e" -- optsize is
+#  the size level; the compiler patch keeps the minsize code path only for that record)
+case "$K10_COLD_MODE" in optsize) ;; minsize) echo "SHEPHERD_K10_COLD_MODE=minsize is refused: LLVM's minsize calls through registers (blx rN) where Mono's trampolines patch direct BLs (tramp-arm.c:1126 assertion under vlx); use optsize"; exit 1 ;; *) echo "SHEPHERD_K10_COLD_MODE must be optsize"; exit 1 ;; esac
+if [ -n "$K10_LEARNED$K10_COLD$K10_HOTINL$K10_CENSUS" ]; then
+  strings "$X" | grep SHEPHERD_AOT_LEARNED > /dev/null || { echo "SHEPHERD_K10_AOTLEARNED / _COLD / _HOTINL need the kit #10 compiler (SHEPHERD_K10_COMPILER=1 vita/toolchain/build-cross-k9.sh): $X lacks it"; exit 1; }
+  for f in ${(s.:.)K10_LEARNED} $K10_COLD $K10_HOTINL; do [ -f "$f" ] || { echo "kit #10: no such file: $f"; exit 1; }; case "$f" in "$REPO"/*) echo "kit #10: the lists name the game's methods; they must not live in the repo ($f)"; exit 1 ;; esac; done
+  [ -z "$K10_CENSUS" ] || [ -n "$K10_HOTINL" ] || { echo "SHEPHERD_K10_INLINE_CENSUS needs SHEPHERD_K10_HOTINL (the hot methods it is taken for)"; exit 1; }
+  # (the learned list must have been through k10_learn.py safe: a method whose IL loads / stores a float or struct through an unmanaged
+  #  address faults when compiled -- the A9's VLDR / VSTR need alignment, the interpreter's reads do not -- so it must stay interpreted)
+  #  -- v2: also the callees the compiler may inline into a learned method (an inlined access is compiled into the caller); a v1 list is refused
+  #  -- v3 (kit #10 review of v2): conservative -- a callee the scan cannot resolve drops the record (the facades' type forwarders followed
+  #     first), and an ldfld / stfld of a float / 64-bit / struct field in a method that handles unmanaged pointers counts; a v2 list is refused
+  for f in ${(s.:.)K10_LEARNED}; do head -1 "$f" | grep -q '^# k10_learn.py safe v3 ' || { echo "SHEPHERD_K10_AOTLEARNED=$f: not a k10_learn.py safe v3 list (run vita/tools/k10_learn.py safe <merged> <out> <owner managed> <work/bcl>: methods with pointer float / struct accesses -- their own or an inlinable callee's -- and methods calling what the scan cannot resolve must stay interpreted)"; exit 1; }; done
+  # (safe scans the callees Mono's inliner may take at ITS limits -- 30 B of IL, [AggressiveInlining] 256 --; SHEPHERD_K10_HOTINL raises the
+  #  limit in the listed hot methods, so a learned method on that list could inline callees safe never scanned: the two are refused together)
+  [ -z "$K10_LEARNED" ] || [ -z "$K10_HOTINL" ] || { echo "SHEPHERD_K10_AOTLEARNED with SHEPHERD_K10_HOTINL is refused: k10_learn.py safe assumes Mono's own inline limits (30 B / 256 B aggressive); the hot-inline limit ($K10_HOTINL_LIMIT) would inline callees safe never scanned into a learned method"; exit 1; }
+  [ -z "$K10_COLD_INLINE" ] || [ -n "$K10_COLD" ] || { echo "SHEPHERD_K10_COLD_INLINE needs SHEPHERD_K10_COLD (the methods that ran: the rest is cold)"; exit 1; }
+fi
+K10_LIMG=; [ "$ENGINE_AOT" = 1 ] && K10_LIMG=Shepherd.Engine; [ "$DERIVED_AOT" = 1 ] && K10_LIMG=Shepherd.Engine.Derived
+K9_DEDUP=${SHEPHERD_K9_DEDUP:-0}; K9_ORDER=${SHEPHERD_K9_ORDER:-}; K9_KEEP=${SHEPHERD_K9_CORELIB_KEEP:-}; K9_INST=()
+K9_DIVFAST=${SHEPHERD_K9_DIVFAST:-0}; [ "$K9_DIVFAST" = 1 ] || K9_DIVFAST=0
+if [ "$K9_DIVFAST" = 1 ]; then
+  strings "$X" | grep SHEPHERD_AOT_DIVFAST > /dev/null || { echo "SHEPHERD_K9_DIVFAST=1 needs a kit #9 compiler with vita/patches/k9-divfast-compiler.patch (vita/toolchain/build-cross-k9.sh): $X lacks it"; exit 1; }
+  # (review fix) the run-time switch: the compiler's guards load mono_shepherd_k9_divfast_flags, which the runtime must define and register
+  strings "$X" | grep mono_shepherd_k9_divfast_flags > /dev/null || { echo "SHEPHERD_K9_DIVFAST=1: the compiler $X has no run-time switch (vita/patches/k9-divfast-flag.patch; rebuild it with vita/toolchain/build-cross-k9.sh) -- its divisions could not be switched back from the env file"; exit 1; }
+  arm-vita-eabi-nm "$RT/mono/mini/libmonosgen-2.0.a" 2>/dev/null | grep -E ' [DdBb] mono_shepherd_k9_divfast_flags$' > /dev/null || { echo "SHEPHERD_K9_DIVFAST=1: the runtime $RT lacks divfast's switch word (vita/patches/k9-divfast-flag.patch: vita/toolchain/build-runtime-k9.sh)"; exit 1; }
+fi
+# SHEPHERD_K9_DEDUP: unset / 0 = off (kit #8's output; the kit recipe passes 1), 1 = on (the compiler must be the kit #9 one), auto = on when it is
+if [ "$K9_DEDUP" = auto ]; then K9_DEDUP=0; strings "$X" | grep SHEPHERD_AOT_SKIP_INSTANCES > /dev/null && K9_DEDUP=1 || true; fi
+if [ "$K9_DEDUP" = 1 ] || [ -n "$K9_ORDER" ] || [ -n "$K9_KEEP" ]; then
+  strings "$X" | grep SHEPHERD_AOT_SKIP_INSTANCES > /dev/null || { echo "SHEPHERD_K9_DEDUP / _ORDER / _CORELIB_KEEP need the kit #9 compiler (vita/toolchain/build-cross-k9.sh): $X lacks it"; exit 1; }
+  [ -z "$K9_ORDER" ] || [ -f "$K9_ORDER" ] || { echo "SHEPHERD_K9_ORDER=$K9_ORDER: no such file"; exit 1; }
+  [ -z "$K9_KEEP" ] || [ -f "$K9_KEEP" ] || { echo "SHEPHERD_K9_CORELIB_KEEP=$K9_KEEP: no such file"; exit 1; }
+  case "$K9_KEEP" in "$REPO"/*) echo "SHEPHERD_K9_CORELIB_KEEP: the keep list comes from the game's runs; it must not live in the repo ($K9_KEEP)"; exit 1 ;; esac
+  case "$K9_ORDER" in "$REPO"/*) echo "SHEPHERD_K9_ORDER: the order list comes from the game's runs (ported game methods' symbol names); it must not live in the repo ($K9_ORDER)"; exit 1 ;; esac
+  # a trimmed CoreLib needs fix A in the runtime (a value-type method the image did not compile must enter the interpreter, not get ANOTHER
+  # method's unbox trampoline): the fix runtime's own fix A (00095 / 00194) or vita/patches/k9-partial-unbox.patch (build-runtime-k9.sh llvm|jit)
+  if [ -n "$K9_KEEP" ]; then
+    rm -rf "$W/obj/k9fixa"; mkdir -p "$W/obj/k9fixa"
+    (cd "$W/obj/k9fixa" && arm-vita-eabi-ar x "$RT/mono/mini/libmonosgen-2.0.a" aot-runtime.c.obj)
+    { arm-vita-eabi-nm "$W/obj/k9fixa/aot-runtime.c.obj" | grep -E ' [BCD] mono_shepherd_k9_unbox_fallbacks$' > /dev/null \
+      || arm-vita-eabi-objdump -dr "$W/obj/k9fixa/aot-runtime.c.obj" | awk '/^[0-9a-f]+ <.*>:$/ {fn=$2} fn=="<mono_aot_get_unbox_trampoline>:" && /R_ARM_[A-Z_]*(CALL|JUMP24)[[:space:]]+mono_aot_get_unbox_arbitrary_trampoline$/ {n++} END {exit !(n > 0)}'; } \
+      || { echo "SHEPHERD_K9_CORELIB_KEEP: the runtime $RT lacks fix A (a trimmed CoreLib's uncompiled struct methods would get another method's unbox trampoline): build it with vita/toolchain/build-runtime-k9.sh llvm|jit (k9-partial-unbox.patch) or use the fix runtime"; exit 1; }
+  fi
+fi
 for a in $AOT; do
   AD=$(aotdir $a); dll="$W/bcl/$a.dll"; s="$AD/$a.dll.s"; o="$AD/$a.dll.o"; lo="$AD/$a-llvm.o"
+  K9ENV=(); K9S=
+  if [ "$K9_DEDUP" = 1 ]; then
+    K9ENV+=(SHEPHERD_AOT_INSTANCES_OUT=$AD/$a.instances); (( ${#K9_INST} )) && K9ENV+=(SHEPHERD_AOT_SKIP_INSTANCES=${(j.:.)K9_INST})
+    K9S+=" k9dedup=$( { (( ${#K9_INST} )) && cat $K9_INST | shasum -a 256 | cut -c1-16; } || true)"   # (|| true: an empty list is not a failure under set -e)
+  fi
+  [ -n "$K9_ORDER" ] && { K9ENV+=(SHEPHERD_AOT_ORDER=$K9_ORDER); K9S+=" k9order=$(shasum -a 256 "$K9_ORDER" | cut -c1-16)"; }
+  [ -n "$K9_KEEP" ] && [ "$a" = System.Private.CoreLib ] && { K9ENV+=(SHEPHERD_AOT_KEEP=$K9_KEEP); K9S+=" k9keep=$(shasum -a 256 "$K9_KEEP" | cut -c1-16)"; }
+  [ "$K9_DIVFAST" = 1 ] && { K9ENV+=(SHEPHERD_AOT_DIVFAST=1); K9S+=" k9divfast=1"; }
+  # device kit #10 (track aot): the kit #10 compiler rows (above)
+  [ -n "$K10_LEARNED" ] && { K9ENV+=(SHEPHERD_AOT_LEARNED=$K10_LEARNED ${K10_LIMG:+SHEPHERD_AOT_LEARNED_IMAGE=$K10_LIMG}); K9S+=" k10learned=$(cat ${(s.:.)K10_LEARNED} | shasum -a 256 | cut -c1-16):$K10_LIMG"; }
+  [ -n "$K10_COLD" ] && { K9ENV+=(SHEPHERD_AOT_COLD=$K10_COLD SHEPHERD_AOT_COLD_MODE=$K10_COLD_MODE SHEPHERD_AOT_COLD_HOT=$K10_COLD_HOT ${K10_COLD_INLINE:+SHEPHERD_AOT_COLD_INLINE=$K10_COLD_INLINE}); K9S+=" k10cold=$(shasum -a 256 "$K10_COLD" | cut -c1-16):$K10_COLD_MODE:$K10_COLD_HOT:${K10_COLD_INLINE:-}"; }   # (optsize: LLVM images; the inline cap: every backend)
+  [ -n "$K10_HOTINL" ] && { K9ENV+=(SHEPHERD_AOT_HOT_INLINE=$K10_HOTINL SHEPHERD_AOT_HOT_INLINE_LIMIT=$K10_HOTINL_LIMIT ${K10_CENSUS:+SHEPHERD_AOT_INLINE_CENSUS=$K10_CENSUS}); K9S+=" k10hotinl=$(shasum -a 256 "$K10_HOTINL" | cut -c1-16):$K10_HOTINL_LIMIT${K10_CENSUS:+:census}"; }
   [ "$a" = Shepherd.Engine.Derived ] && dll="$W/derived/$a.dll"
   is_owner $a && dll="$OWNER_MANAGED/$a.dll"
   # LLVM: llc must write an object (llvm-outfile=*.o): the Mono LLVM 16 llc for osx-arm64 crashes in its asm streamer on the
@@ -504,8 +665,9 @@ for a in $AOT; do
     *) EXTRA= DEPS=$DEPS_BCL ;;
   esac
   fi
-  stamp="$AD/$a.stamp"; want="$DEPS opts=$AOT_OPTS$EXTRA inl=$MONO_AGGRESSIVE_INLINELIMIT${GLW}${AOT_O:+ O=$AOT_O}${AOT_LLVM:+ armhf-cc=$LLVM_ARMHF_CC:${SHEPHERD_LLVM_ARMHF_CC:-} eh-vfp=${SHEPHERD_EH_VFP_FIX:-}}"
-  if [ -f "$o" ] && { [ -z "$AOT_LLVM" ] || [ -f "$lo" ]; } && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]; then echo "   $a: up to date"; continue; fi
+  stamp="$AD/$a.stamp"; want="$DEPS opts=$AOT_OPTS$EXTRA inl=$MONO_AGGRESSIVE_INLINELIMIT${GLW}${AOT_O:+ O=$AOT_O}${AOT_LLVM:+ armhf-cc=$LLVM_ARMHF_CC:${SHEPHERD_LLVM_ARMHF_CC:-} eh-vfp=${SHEPHERD_EH_VFP_FIX:-}}$K9S"
+  if [ -f "$o" ] && { [ -z "$AOT_LLVM" ] || [ -f "$lo" ]; } && [ "$(cat "$stamp" 2>/dev/null)" = "$want" ]; then echo "   $a: up to date"; [ "$K9_DEDUP" = 1 ] && [ -f "$AD/$a.instances" ] && K9_INST+=("$AD/$a.instances"); continue; fi
+  rm -f "$AD/$a.instances"
   rm -f "$stamp" "$lo"
   if is_owner $a; then
     # an owner module (game / rewritten Unity code, owner-local): compiled from the owner folder against the packaged set; inlines only the
@@ -513,7 +675,7 @@ for a in $AOT; do
     # strict (only the profile's methods and generic class instances, their shared bodies and the interpreter's entry / gsharedvt
     # wrappers for their signatures; the rest of the module stays interpreted)
     OWNER_ENV=(SHEPHERD_AOT_INLINE_IMAGES=$OWNER_INLINE_IMAGES); (( ${OWNER_PART[(Ie)$a]} )) && OWNER_ENV+=(SHEPHERD_AOT_PROFILE_STRICT=1)
-    env $OWNER_ENV MONO_PATH="$W/bcl:$OWNER_MANAGED" \
+    env $OWNER_ENV $K9ENV MONO_PATH="$W/bcl:$OWNER_MANAGED" \
       "$X" $XO --aot=${AOT_OPTS/direct-pinvoke,/}$EXTRA,outfile="$s" "$dll" > "$AD/$a.log" 2>&1 || { tail -20 "$AD/$a.log"; exit 1; }
   elif [ "$a" = Shepherd.Engine ]; then
     # the owner's managed folder resolves the engine's Unity / game types; nothing of theirs is inlined; only the engine's own
@@ -521,20 +683,21 @@ for a in $AOT; do
     # the headless build links only the checkpoint export: its other __Internal imports (the GL app's shepgl_* and the pad
     # reader) stay late-bound (never called there); the GL build links them all
     DIRECT='direct-pinvokes=__Internal!shepherd_vita_engine_checkpoint'; [ "$GL" = 1 ] && DIRECT='direct-pinvokes=__Internal'
-    SHEPHERD_AOT_INLINE_IMAGES=$ENGINE_INLINE_IMAGES MONO_PATH="$W/bcl:$OWNER_MANAGED" \
+    env $K9ENV SHEPHERD_AOT_INLINE_IMAGES=$ENGINE_INLINE_IMAGES MONO_PATH="$W/bcl:$OWNER_MANAGED" \
       "$X" $XO --aot=${AOT_OPTS/direct-pinvoke,/$DIRECT,}$LOUT,outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
   elif [ "$a" = Shepherd.Engine.Derived ]; then
     # the owner-local derived module: resolves against the packaged set, its own folder and the owner's managed folder; inlines only
     # itself, the engine and the BCL; declares no P/Invoke of its own (any it reaches stays late-bound, as in the engine image)
-    SHEPHERD_AOT_INLINE_IMAGES=$DERIVED_INLINE_IMAGES MONO_PATH="$W/bcl:$W/derived:$OWNER_MANAGED" \
+    env $K9ENV SHEPHERD_AOT_INLINE_IMAGES=$DERIVED_INLINE_IMAGES MONO_PATH="$W/bcl:$W/derived:$OWNER_MANAGED" \
       "$X" $XO --aot=${AOT_OPTS/direct-pinvoke,/}$LOUT,outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
   else
-  MONO_PATH="$W/bcl" "$X" $XO --aot=$AOT_OPTS$EXTRA$LOUT,outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
+  env $K9ENV MONO_PATH="$W/bcl" "$X" $XO --aot=$AOT_OPTS$EXTRA$LOUT,outfile="$s" "$dll" > "$W/aot/$a.log" 2>&1 || { tail -20 "$W/aot/$a.log"; exit 1; }
   fi
   arm-vita-eabi-as -mfpu=neon -mfloat-abi=hard -o "$o" "$s"
   rm -f "$s.bc" "$s.opt.bc"                          # LLVM's intermediate bitcode (CoreLib: ~1 GB)
   echo "$want" > "$stamp"
-  echo "   $a: $(grep -o 'Compiled: [0-9/]*' "$AD/$a.log" | tail -1)"
+  if [ "$K9_DEDUP" = 1 ]; then [ -f "$AD/$a.instances" ] || : > "$AD/$a.instances"; K9_INST+=("$AD/$a.instances"); fi
+  echo "   $a: $(grep -o 'Compiled: [0-9/]*' "$AD/$a.log" | tail -1)$(grep -h '^SHEPHERD kit #9' "$AD/$a.log" | sed 's/^SHEPHERD kit #9 /; k9 /' | tr '\n' ' ')"
 done
 DER_DIR=; [ "$DERIVED_AOT" = 1 ] && DER_DIR=$W/derived   # (the derived module's own IL: an owner dir, it is not packaged)
 if [ -n "$AOT_LLVM" ]; then
@@ -673,6 +836,12 @@ if [ "$GL" = 1 ]; then
     -DSHEPGL_GLSTACK_ID="\"${GLSTACK_ID% }\"" \
     -ffile-prefix-map="$V"=/shepherd-vita -I"$SHEPGL" -c "$SHEPGL/shepgl_vita.c" -o "$W/obj/shepgl_vita.o"
   GL_OBJS=("$W/obj/shepgl_vita.o")
+  # kit #10 memory review fix R1 (vita/notes/kit10-memory.md "Review fixes"): vitaGL with newlib split over two blocks (the shared pool,
+  # SHEPHERD_K10_POOL=1, opt-in) -- wrappers of vitaGL's vgl_free / vgl_realloc / vgl_malloc_usable_size (the --wrap flags on SPLASH_LD below) hand newlib's chunks to
+  # newlib and the pool block is GPU-mapped after vglInit; outside the pool the wrappers call vitaGL's own functions (kit #9's path)
+  arm-vita-eabi-gcc -std=gnu11 -O2 -Wall -Wextra -ffunction-sections -fdata-sections -ffile-prefix-map="$V"=/shepherd-vita \
+    -c "$HERE/k10_vglmem.c" -o "$W/obj/k10_vglmem.o" || exit 1
+  GL_OBJS+=("$W/obj/k10_vglmem.o")
 fi
 if [ "$AUDIO" = 1 ]; then
   echo "== 4c. audio: libshepaudio_vita.a (vita/audio/build.sh vita: its own link check) + the audio pool"
@@ -692,29 +861,35 @@ if [ "$PHYS_LINK" = 1 ]; then
   grep -q "^check_syms: OK" "$W/obj/shepphys-build.log" || { grep -A3 "check_syms" "$W/obj/shepphys-build.log"; echo "libshepphys_vita.a failed its symbol / FMA / NEON check"; exit 1; }
   cp "$W/physics/vita/libshepphys_vita.a" "$W/obj/libshepphys_vita.a"
   PHYSLIB="$W/obj/libshepphys_vita.a"
-  PHYS_STATE="libshepphys linked ($(sed -nE 's/^libshepphys_vita.a: (text [0-9]+) .*/\1 B/p' "$W/obj/shepphys-build.log"), sha256 $(shasum -a 256 "$PHYSLIB" | cut -c1-16)); the play apps' default level SHEPHERD_PHYS=$PHYS_DEFAULT (env file wins; 0 / none = kit #7), the pool block from the arena's share at level >= 1"
+  PHYS_STATE="libshepphys linked ($(sed -nE 's/^libshepphys_vita.a: (text [0-9]+) .*/\1 B/p' "$W/obj/shepphys-build.log"), sha256 $(shasum -a 256 "$PHYSLIB" | cut -c1-16)); the play apps' default level SHEPHERD_PHYS=$PHYS_DEFAULT (env file wins; 0 / none = kit #7), the pool block from the arena's share at level >= 1; physics workers $PHYS_WORKERS_DEFAULT by default (kit #9, patch P3; SHEPHERD_PHYS_WORKERS in the env file wins)"
   echo "   $PHYS_STATE"
 fi
 
 echo "== 5. generated tables (AOT module registration, static P/Invoke symbol table)"
-HOST_EXPORTS=(shepherd_vita_engine_checkpoint shepherd_vita_pin shepherd_vita_worker_mask shepherd_vita_k6 shepherd_vita_gc_pause_us shepherd_vita_k7 shepherd_vita_k7_ptr shepherd_spine_clip_api shepherd_spine_clip_start shepherd_spine_clip_tris shepherd_vita_k8)   # shepherd_vita_k8: kit #8 play track (Runtime/K8Play.cs: the measured clock, frame pacing; vita/shepherd/k8_play.inc.c); shepherd_vita_pin: the engine's core pinning (Diag/VitaHost.cs; kit 3), every build; shepherd_vita_worker_mask: k4 4-core split; shepherd_vita_k6: kit #6 Settings > Graphics rows (Runtime/VitaToggles.cs: 4th CPU Core, CPU Speed, the clock readout); shepherd_vita_gc_pause_us: kit #6 GC pause timer (Diag/SimStats.cs: each frame's stop-the-world time); shepherd_vita_k7 / _k7_ptr: kit #7 measure track (Diag/K7.cs: the black box's frame ring, the profiler block, the overlay's free memory, the BOOT numbers; vita/shepherd/k7_measure.h); shepherd_spine_clip_*: kit #7 spine track (Runtime/SpineClipNative.cs: the native clipping port, vita/shepherd/spine_clip_abi.h)
+HOST_EXPORTS=(shepherd_vita_engine_checkpoint shepherd_vita_pin shepherd_vita_worker_mask shepherd_vita_k6 shepherd_vita_gc_pause_us shepherd_vita_k7 shepherd_vita_k7_ptr shepherd_spine_clip_api shepherd_spine_clip_start shepherd_spine_clip_tris shepherd_vita_k8 shepherd_vita_k10 shepherd_vita_k10_cache)   # shepherd_vita_k10_cache: kit #10 cache track (Runtime/K10Cache.cs: the card's free space, the idle window; vita/shepherd/k10_cache.inc.c -- NOT shepherd_vita_k10, the io track's export); shepherd_vita_k10: device kit #10 io (Runtime/K10Io.cs: the chunked pack's decoders, the DMA copy; vita/shepherd/k10_io.inc.c); shepherd_vita_k8: kit #8 play track (Runtime/K8Play.cs: the measured clock, frame pacing; vita/shepherd/k8_play.inc.c); shepherd_vita_pin: the engine's core pinning (Diag/VitaHost.cs; kit 3), every build; shepherd_vita_worker_mask: k4 4-core split; shepherd_vita_k6: kit #6 Settings > Graphics rows (Runtime/VitaToggles.cs: 4th CPU Core, CPU Speed, the clock readout); shepherd_vita_gc_pause_us: kit #6 GC pause timer (Diag/SimStats.cs: each frame's stop-the-world time); shepherd_vita_k7 / _k7_ptr: kit #7 measure track (Diag/K7.cs: the black box's frame ring, the profiler block, the overlay's free memory, the BOOT numbers; vita/shepherd/k7_measure.h); shepherd_spine_clip_*: kit #7 spine track (Runtime/SpineClipNative.cs: the native clipping port, vita/shepherd/spine_clip_abi.h)
+HOST_EXPORTS+=(shepherd_vita_engine_mem)   # kit #10 memory: the memory-pressure ladder's level (Runtime/MemLadder.cs; vita/shepherd/k10_mem.inc.c)
 [ "$DIAG" = 1 ] && HOST_EXPORTS+=(shepherd_vita_diag_phase)   # DIAG: the engine's boot-phase marker (Diag/BootPhase.cs)
 [ "$GL" = 1 ] && HOST_EXPORTS+=(shepherd_vita_pad_read shepherd_vita_touch_read shepaudio_proc shepherd_vita_k8_pad shepphys_proc)   # shepaudio_proc: the audio app's table, a NULL stub in the silent GL app; touch_read: kit #5 front touch (Icalls/VitaTouch.cs); shepherd_vita_k8_pad: kit #8 play (the right stick + rear touch); shepphys_proc: physics' binding (Physics/ShepPhys.cs) -- libshepphys's table when the eboot links it (kit #8, SHEPHERD_PHYS_LINK), else a NULL stub
+[ "$GL" = 1 ] && HOST_EXPORTS+=(shepherd_vita_k10_api shepherd_vita_k10_bootscreen_end shepherd_vita_k10_bootscreen_info)   # kit #10 boot track: the boot screen (Runtime/K10Boot.cs; host.c k10_boot.inc.c)
 [ "$GL" = 1 ] && [ "$K8_ENGINE" = 1 ] && HOST_EXPORTS+=(shepherd_vita_video_api shepherd_vita_video_open shepherd_vita_video_decode shepherd_vita_video_close)   # kit #8 boot track: the engine's real video (Runtime/K8Video.cs; host.c k8_boot.inc.c)
 { arm-vita-eabi-nm -g --defined-only "$W/obj/libSystem.Native.vita.a" $GL_OBJS | awk 'NF==3 && $2=="T" {print $3}'; printf '%s\n' $HOST_EXPORTS; } | sort -u > "$W/obj/static-candidates.txt"
 # the GL app: every shepgl_* export (the engine binds shepgl_proc, _state, _status, _attach, _swap, _has_extension,
 # _display_fbo, _pool_kib; the rest are harmless) and the pad reader
-grep -E '^(SystemNative_|CryptoNative_|CompressionNative_|Brotli(Decoder|Encoder)|NetSecurityNative_|GlobalizationNative_|corehost_|shepherd_vita_engine_|shepherd_vita_pin$|shepherd_vita_worker_mask$|shepherd_vita_k6$|shepherd_vita_gc_pause_us$|shepherd_vita_k7$|shepherd_vita_k7_ptr$|shepherd_vita_video_(api|open|decode|close)$|shepherd_spine_clip_(api|start|tris)$|shepherd_vita_pad_read$|shepherd_vita_touch_read$|shepherd_vita_k8$|shepherd_vita_k8_pad$|shepgl_|shepaudio_proc$|shepphys_proc$|shepherd_vita_diag_phase$)' "$W/obj/static-candidates.txt" > "$W/obj/static-symbols.txt"
+grep -E '^(SystemNative_|CryptoNative_|CompressionNative_|Brotli(Decoder|Encoder)|NetSecurityNative_|GlobalizationNative_|corehost_|shepherd_vita_engine_|shepherd_vita_pin$|shepherd_vita_worker_mask$|shepherd_vita_k6$|shepherd_vita_gc_pause_us$|shepherd_vita_k7$|shepherd_vita_k7_ptr$|shepherd_vita_video_(api|open|decode|close)$|shepherd_vita_k10_(api|bootscreen_end|bootscreen_info)$|shepherd_spine_clip_(api|start|tris)$|shepherd_vita_pad_read$|shepherd_vita_touch_read$|shepherd_vita_k8$|shepherd_vita_k10$|shepherd_vita_k10_cache$|shepherd_vita_k8_pad$|shepgl_|shepaudio_proc$|shepphys_proc$|shepherd_vita_diag_phase$)' "$W/obj/static-candidates.txt" > "$W/obj/static-symbols.txt"
 # every entry point the packaged BCL declares must be answerable (shim or stub)
 # (the BCL's native libraries + "__Internal"; the engine's own Mac-only imports -- SDL3, libc, libSystem.B, CoreFoundation --
 #  are deliberately unanswered: never bound under the Vita profile + null renderer, see checks.txt)
 # (the headless build: the GL app's own __Internal imports -- shepgl_* and the pad reader, Render/ShepGl.cs and Icalls/VitaPad.cs --
 #  are unanswered too: they are bound only under SHEPHERD_GL_HOST=shepgl / SHEPHERD_VITA_PAD=1, which only the GL host sets)
-GLONLY='^(shepgl_|shepherd_vita_pad_read$|shepherd_vita_touch_read$|shepaudio_proc$|shepherd_vita_k8_pad$|shepphys_proc$|shepherd_vita_video_)'; [ "$GL" = 1 ] && GLONLY='^$'   # (Stage C: shepaudio_proc, Audio/ShepAudio.cs; kit #5: the touch reader, Icalls/VitaTouch.cs; kit #8 play: the rear touch reader; physics: shepphys_proc, Physics/ShepPhys.cs; kit #8 boot: the real video, Runtime/K8Video.cs)
+GLONLY='^(shepgl_|shepherd_vita_pad_read$|shepherd_vita_touch_read$|shepaudio_proc$|shepherd_vita_k8_pad$|shepphys_proc$|shepherd_vita_video_|shepherd_vita_k10_)'; [ "$GL" = 1 ] && GLONLY='^$'   # (Stage C: shepaudio_proc, Audio/ShepAudio.cs; kit #5: the touch reader, Icalls/VitaTouch.cs; kit #8 play: the rear touch reader; physics: shepphys_proc, Physics/ShepPhys.cs; kit #8 boot: the real video, Runtime/K8Video.cs)
 awk -F'\t' -v g="$GLONLY" 'NR>1 && $2 ~ /^(libSystem\.(Native|Security\.Cryptography\.Native\.OpenSsl|IO\.Compression\.Native|Globalization\.Native|Net\.Security\.Native)|libhostpolicy|__Internal)$/ && !($2 == "__Internal" && $3 ~ g) {print $3}' "$W/obj/pinvokes.tsv" | sort -u > "$W/obj/declared.txt"
 awk -F'\t' -v g="$GLONLY" 'NR>1 && ($2 !~ /^(libSystem\.(Native|Security\.Cryptography\.Native\.OpenSsl|IO\.Compression\.Native|Globalization\.Native|Net\.Security\.Native)|libhostpolicy|__Internal)$/ || ($2 == "__Internal" && $3 ~ g)) {print $1" -> "$2"!"$3}' "$W/obj/pinvokes.tsv" | sort -u > "$OUT/unanswered-imports.txt"
 comm -23 "$W/obj/declared.txt" "$W/obj/static-symbols.txt" > "$W/obj/unanswered.txt"
 [ ! -s "$W/obj/unanswered.txt" ] || { echo "declared but not in the static table:"; cat "$W/obj/unanswered.txt"; exit 1; }
+# kit #9 fidelity, second review (host.c SHEPHERD_K9_FLOATPC; vita/notes/kit9-fidelity.md 13.2): the card ("(owner)") assemblies the AOT images
+# bind, from the GUID gates' reports above -- Mono (aot-only) stops at an image whose assembly or a referenced one has another MVID, so the host
+# never takes such a DLL from the switch's folder, and leaves the owner modules unregistered only when the folder holds one of THEIR assemblies
+k9_bound() { [ -f "$1" ] && sed -nE 's/.*\| image_table [0-9]+: //p' "$1" | tr ',' '\n' | sed -nE 's/^ *([^ ]+) \(owner\):.*/\1/p' | sort -u; }
 {
   echo "/* GENERATED by vita/shepherd/build.sh */"
   echo "#include <stddef.h>"
@@ -725,12 +900,14 @@ comm -23 "$W/obj/declared.txt" "$W/obj/static-symbols.txt" > "$W/obj/unanswered.
   for a in $AOT; do is_owner $a || echo "\tmono_aot_register_module (mono_aot_module_${${a//./_}//-/_}_info);"; done
   echo "}"
   echo "const char *const shepherd_aot_module_names [] = {"; for a in $AOT; do is_owner $a || echo "\t\"$a\","; done; echo "\tNULL };"
+  echo "const char *const shepherd_aot_bound_names [] = {"; k9_bound "$OUT/aot-guids.txt" | while read -r b; do echo "\t\"$b\","; done; echo "\tNULL };"
   if [ "$OWNER_AOT" = 1 ]; then
     # the owner-local game modules: their own table, registered by host.c (SHP_GAME_AOT) unless SHEPHERD_GAME_AOT=0
     echo "void shepherd_register_owner_aot_modules (void) {"
     for a in $OWNER_FULL $OWNER_PART; do echo "\tmono_aot_register_module (mono_aot_module_${${a//./_}//-/_}_info);"; done
     echo "}"
     echo "const char *const shepherd_owner_aot_module_names [] = {"; for a in $OWNER_FULL $OWNER_PART; do echo "\t\"$a\","; done; echo "\tNULL };"
+    echo "const char *const shepherd_owner_aot_bound_names [] = {"; { printf '%s\n' $OWNER_FULL $OWNER_PART; k9_bound "$OUT/aot-guids-owner.txt"; } | sort -u | while read -r b; do echo "\t\"$b\","; done; echo "\tNULL };"
   fi
   while read -r s; do echo "extern void $s (void);"; done < "$W/obj/static-symbols.txt"
   echo "const MonoVitaStaticSymbol shepherd_static_symbols [] = {"
@@ -755,9 +932,10 @@ if [ "$DIAG" = 1 ]; then
   DIAG_OBJS=("$W/obj/diag/diag_wraps_S.o" "$W/obj/diag/diag_wraps_c.o"); DIAG_LD=("@$W/obj/diag/wraps.rsp")
 fi
 [ "$AUDIO" = 1 ] && GL_DEFS+=(-DSHEPHERD_AUDIO -I"$V/audio/include" -I"$HERE")
-[ "$PHYS_LINK" = 1 ] && GL_DEFS+=(-DSHP_PHYS_LINK -DSHP_PHYS_DEFAULT="\"$PHYS_DEFAULT\"")   # kit #8: libshepphys's table in shepphys_proc (phys_host.inc.c)
+[ "$PHYS_LINK" = 1 ] && GL_DEFS+=(-DSHP_PHYS_LINK -DSHP_PHYS_DEFAULT="\"$PHYS_DEFAULT\"" -DSHP_PHYS_WORKERS="\"$PHYS_WORKERS_DEFAULT\"")   # kit #8: libshepphys's table in shepphys_proc (phys_host.inc.c)
 [ "$MT" = 1 ] && GL_DEFS+=(-DSHP_MT_DEFAULT)   # the MT variant: SHEPHERD_MT_RENDER=1 by default (engine_env)
 [ "$TEST_CLOCK" = 1 ] && GL_DEFS+=(-DSHP_TEST_CLOCK)   # the measurement variant: the frame clock + pad.txt, "boot 1460 0" by default
+[ "$GL" = 1 ] && [ "$K8_ENGINE" = 1 ] && GL_DEFS+=(-DSHP_K8_ENGINE)   # kit #9 review (device track): the engine has the real-video code -- the host's decoder reserve is taken only then (k8_boot.inc.c)
 # kit #7 spine track: Spine clipping's native port (owner-local engine/Derived/native/spine_clip_impl.h) only in the owner-only derived-AOT apps
 # (their eboots already hold derived code); every other build compiles host.c's stub (the engine then runs the game's managed clipping).
 # SHEPHERD_SPINE_CLIP_PORT=0 builds the stub everywhere.
@@ -766,7 +944,13 @@ if [ "$DERIVED_AOT" = 1 ] && [ -f "$SPCLIP_IMPL" ] && [ "${SHEPHERD_SPINE_CLIP_P
   GL_DEFS+=(-DSHP_SPINE_CLIP_DERIVED -ffp-contract=off -I"$HERE" -I"$REPO/engine/Derived/native"); SPCLIP_STATE="the owner-local native port (engine/Derived/native, sha256 $(shasum -a 256 "$SPCLIP_IMPL" | cut -c1-16))"
 fi
 echo "   spine clipping in host.c: $SPCLIP_STATE"
-arm-vita-eabi-gcc $CFLAGS -Wextra -Wno-unused-parameter -Wno-sign-compare $MONO_INC -I"$COMMON" $GL_DEFS $APP_DEFS -DSHP_BUILD_ID="\"$BUILD_ID\"" -DSHP_BCL_AOT_TRIM="\"$BCL_TRIM_ENV\"" -DSHP_NEWLIB_HEAP_MB=$NEWLIB_MB -DSHP_LOG_NAME="\"$LOG_NAME\"" -DSHP_LOG_PREV_NAME="\"$LOG_PREV_NAME\"" -DSHP_ENV_NAME="\"$ENV_NAME\"" -DSHP_ARGS_NAME="\"$ARGS_NAME\"" -c "$HERE/host.c" -o "$W/obj/host.o"
+# device kit #10 io (vita/shepherd/k10_io.inc.c): the chunked pack's LZ4 decoder is always in; SHEPHERD_K10_ZSTD=1 also links vitasdk's
+# libzstd.a decoder (zstd chunks: tools/VitaPack --repack --codec auto) -- ~160 KB of eboot text with its legacy-format decoders, so off by
+# default (the default packs are LZ4 + stored: vita/notes/kit10-io.md has the size / time trade)
+K10_ZSTD=${SHEPHERD_K10_ZSTD:-0}; K10_LIBS=()
+[ "$K10_ZSTD" = 1 ] && { GL_DEFS+=(-DSHEPHERD_K10_ZSTD); K10_LIBS=(-lzstd); }
+echo "   kit #10 io decoders in host.c: LZ4$([ "$K10_ZSTD" = 1 ] && echo " + zstd (vitasdk libzstd.a, SHEPHERD_K10_ZSTD=1)" || echo " (zstd left out: SHEPHERD_K10_ZSTD=1 adds it)")"
+arm-vita-eabi-gcc $CFLAGS -Wextra -Wno-unused-parameter -Wno-sign-compare $MONO_INC -I"$COMMON" $GL_DEFS $APP_DEFS -DSHP_BUILD_ID="\"$BUILD_ID\"" -DSHP_BCL_AOT_TRIM="\"$BCL_TRIM_ENV\"" -DSHP_K9_DIVFAST=$K9_DIVFAST -DSHP_NEWLIB_HEAP_MB=$NEWLIB_MB -DSHP_LOG_NAME="\"$LOG_NAME\"" -DSHP_LOG_PREV_NAME="\"$LOG_PREV_NAME\"" -DSHP_ENV_NAME="\"$ENV_NAME\"" -DSHP_ARGS_NAME="\"$ARGS_NAME\"" -c "$HERE/host.c" -o "$W/obj/host.o"
 arm-vita-eabi-gcc -O2 -I"$COMMON" -c "$COMMON/debugScreen.c" -o "$W/obj/debugScreen.o"
 
 echo "== 6. link"
@@ -793,7 +977,10 @@ GL_LIBS=(); [ "$GL" = 1 ] && GL_LIBS=(-lvitaGL -lvitashark -lSceShaccCgExt -lmat
 GCGOV_LD=(-Wl,--wrap=ves_icall_System_GC_InternalCollect)
 # kit #8 boot track (the clean boot screen): vitaGL's own splash goes through shepgl_vita.c's __wrap_invoke_splashscreen, which leaves it
 # out when the host asks (shepgl_config.no_vgl_splash) -- every GL eboot; without the flag vitaGL's splash runs as in kit #7
-SPLASH_LD=(); [ "$GL" = 1 ] && SPLASH_LD=(-Wl,--wrap=invoke_splashscreen)
+SPLASH_LD=(); [ "$GL" = 1 ] && SPLASH_LD=(-Wl,--wrap=invoke_splashscreen -Wl,--wrap=sceDisplaySetFrameBuf)   # kit #10 boot track: + sceDisplaySetFrameBuf (k10_boot.inc.c: vitaGL's flips held off the display while the boot screen shows)
+# kit #10 memory review fix R1: vitaGL's address-classified frees go through k10_vglmem.c (every GL eboot / engine module; pass-through outside
+# the shared pool). The link fails without these flags (k10_vglmem.o references __real_vgl_*)
+[ "$GL" = 1 ] && SPLASH_LD+=(-Wl,--wrap=vgl_free -Wl,--wrap=vgl_realloc -Wl,--wrap=vgl_malloc_usable_size)
 # kit #8 boot track: a launcher build links the same objects as the ENGINE MODULE -- no crt0 (k8_module.c's module_start is the entry and
 # k8_entry starts newlib), the toolchain's crti / crtbegin / crtend / crtn kept (newlib's __libc_init_array calls _init); the process
 # parameters (sceUserMainThreadStackSize) live in the launcher eboot
@@ -811,7 +998,7 @@ fi
 arm-vita-eabi-gcc -Wl,-q -Wl,--gc-sections $ENTRY_LD -Wl,-Map="$W/obj/shepherd_menu.map" -o "$W/obj/shepherd_menu.elf" \
   $CRT_PRE "$W/obj/host.o" $MOD_OBJS $DIAG_OBJS "$W/obj/shepherd_tables.o" "$W/obj/debugScreen.o" $GL_OBJS $AOT_OBJS $DIAG_LD $GCGOV_LD $SPLASH_LD \
   -Wl,--start-group $MONO_LIBS "$W/obj/libSystem.Native.vita.a" -Wl,--end-group \
-  $GL_LIBS -lz -lpthread -lm -lc $STUB_LIBS $CRT_POST 2> "$W/obj/link.log" \
+  $GL_LIBS $K10_LIBS -lz -lpthread -lm -lc $STUB_LIBS $CRT_POST 2> "$W/obj/link.log" \
   || { grep -E "undefined reference|error" "$W/obj/link.log" | sed 's/.*undefined reference to/undefined:/' | sort | uniq -c | sort -rn | head -60; exit 1; }
 grep -i "warning" "$W/obj/link.log" | grep -v "has a LOAD segment with RWX permissions" | head -10 || true
 arm-vita-eabi-nm "$W/obj/shepherd_menu.elf" > "$W/obj/elf-symbols.txt"
@@ -835,6 +1022,20 @@ NEWLIB_VAL=$(arm-vita-eabi-objdump -s --start-address=0x$(awk '$3=="_newlib_heap
 echo "   newlib heap (_newlib_heap_size_user): $((16#$NEWLIB_VAL / 1048576)) MiB"
 arm-vita-eabi-size -A "$W/obj/shepherd_menu.elf" | grep -E "^\.(text|rodata|data|bss)|Total" > "$OUT/elf-sections.txt"
 arm-vita-eabi-size "$W/obj/shepherd_menu.elf" | tee "$OUT/elf-size.txt"
+# kit #9 fidelity, review fix (roadmap "VFP-only float maths with FZ / DN off (never NEON for floats)"; vita/tools/neon_float_scan.py): no NEON
+# float ARITHMETIC in the game-visible native code -- the whole linked ELF (runtime + interpreter, newlib's libm, the host + Spine clipping,
+# libshepphys, the AOT images) and, in the JIT app, the stencils the tier copies (data in the ELF: scanned as their object); allowed only in
+# vitaGL / math-neon (the GPU's matrices and uniforms) and shepaudio's mixer (audio samples): output the game's code never reads. NEON constant
+# moves and float <-> int conversions are exact on both units (counted apart). A finding stops the build; SHEPHERD_NEON_GATE=0 skips the scan
+# (the eboot is the same either way: the scan only reads).
+if [ "${SHEPHERD_NEON_GATE:-1}" != 0 ]; then
+  NEON_X=(); [ "$JIT_APP" = 1 ] && NEON_X=("${RT%/obj}/stencils/shepjit-stencils.o")
+  for x in $NEON_X; do [ -f "$x" ] || { echo "NEON gate: the JIT stencils object $x is missing (the JIT runtime's build makes it: vita/toolchain/build-runtime-k9.sh jit for the merged kit #9 runtime, build-runtime-k8.sh jit8 for kit #8's)"; exit 1; }; done
+  python3 "$V/tools/neon_float_scan.py" --fail --per-func 12 --map "$W/obj/shepherd_menu.map" --allow 'libvitaGL\.a|libmathneon\.a|libshepaudio_vita\.a' \
+    "$W/obj/shepherd_menu.elf" $NEON_X > "$OUT/neon-float.txt" \
+    || { cat "$OUT/neon-float.txt"; echo "NEON float arithmetic outside vitaGL / math-neon / shepaudio (vita/tools/neon_float_scan.py): the build stops"; exit 1; }
+  echo "   NEON floats: $(tail -1 "$OUT/neon-float.txt")"
+fi
 
 echo "== 7. SELF + VPK"
 if [ -n "$AOT_LLVM" ]; then
@@ -934,9 +1135,12 @@ IL=0; for f in "$W"/bcl/*.dll; do IL=$((IL + $(stat -f %z "$f"))); done
   echo "$BCL_TRIM_NOTE"
   echo "physics (kit #8): $PHYS_STATE"
   echo "runtime: $RT ($(arm-vita-eabi-nm "$RT/mono/mini/libmonosgen-2.0.a" 2>/dev/null | grep ' [DdBb] mono_shepherd_interp_cicache_mode$' > /dev/null && echo 'with the kit #5 AOT->interpreter call-info cache: vita/toolchain/build-runtime-k5.sh' || echo 'no call-info cache: a kit #4 runtime'))"
+  echo "kit #9 gc runtime: $(arm-vita-eabi-nm "$RT/mono/mini/libmonosgen-2.0.a" 2>/dev/null | grep ' T mono_vita_vm_arena_set_policy$' > /dev/null && echo "yes (vita/patches/k9-gc.patch: the env file's GC switches work; $(grep -h '^patch: k9-gc' "${RT%/obj}/K9-RUNTIME.txt" 2>/dev/null))" || echo 'no (kit #8 runtime: SHEPHERD_K9_RUNTIMES=0 or an explicit SHEPHERD_VITA_RUNTIME_OBJ -- the K9 GC switches that need it stay off)')"
   [ -n "$AOT_O" ] && echo "AOT optimisation flags (SHEPHERD_AOT_O, kit #5 lever 30): -O=$AOT_O on every image"
+  echo "kit #10 aot track (build-time rows; the switch back is a build without them): learned ${K10_LEARNED:+ON ($(cat ${(s.:.)K10_LEARNED} | grep -vc '^#' | tr -d ' ') records; generic instances of BCL definitions into $K10_LIMG)}${K10_LEARNED:-off}; cold-for-size ${K10_COLD:+ON ($K10_COLD_MODE$([ "$K10_COLD_HOT" = 1 ] && echo ', every method: the A/B arm')${K10_COLD_INLINE:+, cold inline cap $K10_COLD_INLINE B of IL}; $(wc -l < "$K10_COLD" | tr -d ' ') methods that ran)}${K10_COLD:-off}; hot inline ${K10_HOTINL:+ON (limit $K10_HOTINL_LIMIT; $(wc -l < "$K10_HOTINL" | tr -d ' ') names)}${K10_HOTINL:-off}${K10_CENSUS:+; inline census -> $K10_CENSUS}; runtime: learning record $(arm-vita-eabi-nm "$RT/mono/mini/libmonosgen-2.0.a" 2>/dev/null | grep ' T mono_shepherd_k10_learn_take$' > /dev/null && echo 'in it (SHEPHERD_K10_AOTLEARN=0 in the env file: none)' || echo 'not in it'), compressed IL $(arm-vita-eabi-nm "$RT/mono/mini/libmonosgen-2.0.a" 2>/dev/null | grep ' [DdBb] mono_shepherd_k10_ilz_images$' > /dev/null && echo 'in it (managed-ilz/ on the card; SHEPHERD_K10_ILZ=0: the original DLLs)' || echo 'not in it')"
+  echo "kit #9 runtime track: fast TLS (R1) $(arm-vita-eabi-nm "$RT/mono/mini/libmonosgen-2.0.a" 2>/dev/null | grep ' [DdBb] mono_shepherd_fast_tls_mode$' > /dev/null && echo 'in the runtime (SHEPHERD_FAST_TLS=0 in the env file: pthread_getspecific, kit #8)' || echo 'not in this runtime'); LLVM safepoints (R7) SHEPHERD_AOT_SPP=$AOT_SPP$([ "$AOT_SPP" != all ] && echo " ($SPP_FLAGS instead of -spp-all-backedges; SHEPHERD_AOT_SPP=all: kit #8's polls)"); R3 dedup $([ "$K9_DEDUP" = 1 ] && echo "ON (SHEPHERD_K9_DEDUP=1)" || echo off); R5 order ${K9_ORDER:-off}; CoreLib keep list ${K9_KEEP:+ON ($(wc -l < "$K9_KEEP" | tr -d ' ') entries)}${K9_KEEP:-off}; E2 divfast $([ "$K9_DIVFAST" = 1 ] && echo "ON (SHEPHERD_K9_DIVFAST=1: no-wrapper division fast paths, each behind the runtime's switch word -- SHEPHERD_K9_DIVFAST=0 in the env file: every division through its wrapper, kit #8's code path; SHEPHERD_K9_DIVMOD=0: the 64-bit fast path off too)" || echo off) (R7 / R3 / R5 / the keep list are build-time rows: no env-file switch, the switch back is a build without them)"
   [ -n "$AOT_LLVM" ] && echo "LLVM ($AOT_LLVM$([ "$K6_LLVM_DEFAULT" = 1 ] && echo ', the kit #6 default: SHEPHERD_AOT_LLVM=0 builds without')): armhf float-argument fix $LLVM_ARMHF_CC; exception fix (compiler A + runtime B/C) $LLVM_EH_VFP${LLVM_EH_VFP_WHY:+ ($LLVM_EH_VFP_WHY)}; runtime $RT"
-  [ "$JIT_APP" = 1 ] && echo "baseline JIT tier (kit #8, SHEPHERD_JIT_APP=1): runtime $RT ($(grep -h '^patch: k8-' "${RT%/obj}/K8-RUNTIME.txt" | tr '\n' ' ')); the app's SHEPHERD_JIT default 1, SHEPHERD_JIT=0 in $ENV_NAME = the kit #7 interpreter + AOT path"
+  [ "$JIT_APP" = 1 ] && echo "baseline JIT tier (kit #8, SHEPHERD_JIT_APP=1): runtime $RT ($(grep -h '^patch: k[89]-' "${RT%/obj}/K8-RUNTIME.txt" | tr '\n' ' ')); the app's SHEPHERD_JIT default 1, SHEPHERD_JIT=0 in $ENV_NAME = the kit #7 interpreter + AOT path; with k9-jit.patch (kit #9 JIT round 2) SHEPHERD_JIT9=0 = kit #8's tier"
   [ "$OWNER_AOT" = 1 ] && echo "owner game AOT (OWNER-LOCAL, not packaged): ${#OWNER_FULL} whole + ${#OWNER_PART} partial modules, text $(awk -F'\t' 'NR>3 {s+=$6} END {printf "%d bytes (%.2f MiB)", s, s/1048576}' "$OUT/owner-modules.tsv"); CoreLib pools$CORELIB_TRAMPS; SHEPHERD_GAME_AOT=0 in $ENV_NAME skips them"
 } > "$OUT/build-info.txt"
 cat "$OUT/build-info.txt"

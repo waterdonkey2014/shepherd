@@ -7,8 +7,10 @@
 #              scenario traced and replayed bit for bit, the prof library), Vita archive + T1 eboot (symbol check, FMA / NEON scan),
 #              QEMU's Cortex-A9 (T1 8/8, the self-test's hash = the Mac's), the determinism variants and risk probes, the ASan/UBSan build
 #   2 box2d    diff -r of vita/physics/box2d/Box2D against the approved archive (SHEPHERD_BOX2D_ARCHIVE; skipped when absent): exactly the five
-#              files of patch P1 (Stage 2), the two of patch P2 (E1: the per-step speed clamps) and the two of patch P5 (Stage 4b: Unity's
-#              polygon weld) differ, and their unified diffs equal the committed box2d/P1.diff, box2d/P2.diff and box2d/P5.diff
+#              files of patch P1 (Stage 2), the two of patch P2 (E1: the per-step speed clamps), the two of patch P5 (Stage 4b: Unity's
+#              polygon weld) and the nine of patch P3 (kit #9, Stage 7 item 2: multicore; five shared with P1 / P2) differ; layered (kit #9):
+#              box2d/P1.diff, P2.diff, P5.diff apply cleanly to the archive and the result differs from the vendored tree in exactly P3's nine
+#              files, whose unified diffs equal box2d/P3.diff
 #              Stage 1 adds: the Unity layer's self-test (S1, Mac = QEMU), B2's link map; Stage 2: S2 (P1's probes, serials, queries; Mac = QEMU);
 #              Stage 3: S3 (forces, impulses, H-DAMP, restitution, the clamp, frozen axes, one-sided chains, contact snapshots; Mac = QEMU)
 #              Stage 6: S6 (the 3D island-ground ray: the tilted Unity plane's hit bits, culling, primitives, filters, modes, 20,000 +z rays fast =
@@ -62,6 +64,9 @@
 #              thread and Spine's dispatch thread finish within the frame, the one schedule both switches pin (the combat flake was the
 #              original game's own thread timing under the Mac's load); COMBAT_TEST_SWITCHES=0 runs the plain drive (the flaky schedule).
 #              COMBAT6=1: also two runs at SHEPHERD_PHYS=6 (the play apps' level since kit #8) with identical pose hashes and events.
+#   6 workers  (kit #9: Stage 7 item 2, patch P3) the engine checks again with the worker pool (WORKERS=N, default 2; every phase forked; the check
+#              mode on): physcheck all at level 6, the walk at level 6 traced (= INTRO4_GOLDEN; the trace replayed serially on the Mac and on QEMU:
+#              the per-step lockstep check), the combat drive (= COMBAT_GOLDEN, the events = step 5's serial run); 0 check mismatches
 #   -          save-booted drives (after D15): n/a until then
 # Outputs: vita/physics/out/ (native), runtime/logs/physics/check-phys-*/ (engine runs) -- both git-ignored; build trees under
 # SHEPHERD_PHYS_WORK. Silent: no audio anywhere (SHEPHERD_AUDIO=off, SHEPHERD_AUDIO_OUT=null), the Mac's mute state is logged at start
@@ -72,7 +77,7 @@
 #      COMBAT_TEST_SWITCHES, COMBAT6 as described above.
 set -u
 setopt pipe_fail
-HERE=${0:A:h}; REPO=${HERE:h:h}
+HERE=${0:a:h}; REPO=${HERE:h:h}   # (kit #9: :a, not :A -- a worktree reached through a symlink keeps its space-free path for CMake / Ninja)
 export TMPDIR=${SHEPHERD_PHYS_TMPDIR:-${SHEPHERD_WORK:-$HOME/shepherd-work}/tmp} DOTNET_ROOT=$HOME/.dotnet PATH="$HOME/.dotnet:$PATH" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 export MSBUILDDISABLENODEREUSE=1 DOTNET_CLI_USE_MSBUILD_SERVER=0
 mkdir -p $TMPDIR
@@ -93,31 +98,30 @@ say "check-phys (physics stage 6 + E1 + stage 4a, 4b + review; kit #8: merged on
 # 1 native
 if want native; then
   step native env SHEPHERD_PHYS_SRC=$HERE zsh $HERE/build.sh all
-  grep -hE "T1 SUMMARY arm64:|B3 OK|B3 FAILED|B2 OK|B2 FAILED|S0 RESULT|S1 RESULT|S2 RESULT|S3 RESULT|S6 RESULT|TRACE SUMMARY|check_syms:|QEMU RESULT|S0 qemu hash|S1 qemu hash|S2 qemu hash|S3 qemu hash|S6 qemu hash|san \(ASan" $OUT/check-phys-native.log | sed 's/^/    /' | tee -a $S
+  grep -hE "T1 SUMMARY arm64:|B3 OK|B3 FAILED|B2 OK|B2 FAILED|S0 RESULT|S1 RESULT|S2 RESULT|S3 RESULT|S6 RESULT|S7 RESULT|^P3 |TRACE SUMMARY|check_syms:|QEMU RESULT|S0 qemu hash|S1 qemu hash|S2 qemu hash|S3 qemu hash|S6 qemu hash|S7 qemu hash|san \(ASan|tsan \(ThreadSanitizer|== gjk-stats" $OUT/check-phys-native.log | sed 's/^/    /' | tee -a $S   # (kit #9: S7, P3's worker runs, tsan)
 fi
 
 # 2 box2d against the archive
 if want box2d; then
   A=${SHEPHERD_BOX2D_ARCHIVE:-${SHEPHERD_WORK:-$HOME/shepherd-work}/physics1/box2d/box2d-v2.3.1.tar.gz}
   if [[ -f $A ]]; then
-    b2() {
+    b2() {   # kit #9: patch P3 shares files with P1 / P2, so the check is layered: archive + P1 + P2 + P5 (each applies cleanly), then P3
       local d=$TMPDIR/check-phys-b2.$$; rm -rf $d; mkdir -p $d; tar -xzf $A -C $d && shasum -a 256 $A || return 1
       local diffs=$(cd $d/box2d-2.3.1/Box2D && diff -rq Box2D $HERE/box2d/Box2D | sed -E 's|^Files Box2D/([^ ]+) and .*|\1|' | sort | tr '\n' ' ')
-      local want="Collision/Shapes/b2PolygonShape.cpp Collision/Shapes/b2PolygonShape.h Dynamics/Contacts/b2Contact.cpp Dynamics/Contacts/b2Contact.h Dynamics/b2ContactManager.cpp Dynamics/b2ContactManager.h Dynamics/b2Island.cpp Dynamics/b2Island.h Dynamics/b2World.cpp "
+      local want="Collision/Shapes/b2PolygonShape.cpp Collision/Shapes/b2PolygonShape.h Collision/b2Distance.cpp Dynamics/Contacts/b2Contact.cpp Dynamics/Contacts/b2Contact.h Dynamics/Contacts/b2ContactSolver.cpp Dynamics/Contacts/b2ContactSolver.h Dynamics/b2ContactManager.cpp Dynamics/b2ContactManager.h Dynamics/b2Island.cpp Dynamics/b2Island.h Dynamics/b2World.cpp Dynamics/b2World.h "
       print "files differing from the archive: ${diffs:-none}"
-      [[ "$diffs" == "$want" ]] || { print "expected exactly P1's five files, P2's two and P5's two"; rm -rf $d; return 1; }
-      (cd $d/box2d-2.3.1/Box2D && for f in Dynamics/Contacts/b2Contact.h Dynamics/Contacts/b2Contact.cpp Dynamics/b2ContactManager.h Dynamics/b2ContactManager.cpp Dynamics/b2World.cpp; do
-         diff -u --label a/Box2D/$f --label b/Box2D/$f Box2D/$f $HERE/box2d/Box2D/$f; done) > $OUT/p1.diff
-      (cd $d/box2d-2.3.1/Box2D && for f in Dynamics/b2Island.h Dynamics/b2Island.cpp; do
-         diff -u --label a/Box2D/$f --label b/Box2D/$f Box2D/$f $HERE/box2d/Box2D/$f; done) > $OUT/p2.diff
-      (cd $d/box2d-2.3.1/Box2D && for f in Collision/Shapes/b2PolygonShape.h Collision/Shapes/b2PolygonShape.cpp; do
-         diff -u --label a/Box2D/$f --label b/Box2D/$f Box2D/$f $HERE/box2d/Box2D/$f; done) > $OUT/p5.diff
-      cmp -s $OUT/p1.diff $HERE/box2d/P1.diff; local r=$?; (( r )) && print "the P1 files differ from box2d/P1.diff"
-      cmp -s $OUT/p2.diff $HERE/box2d/P2.diff; local r2=$?; (( r2 )) && print "the P2 files differ from box2d/P2.diff"
-      cmp -s $OUT/p5.diff $HERE/box2d/P5.diff; local r5=$?; (( r5 )) && print "the P5 files differ from box2d/P5.diff"
-      rm -rf $d; return $(( r || r2 || r5 ))
+      [[ "$diffs" == "$want" ]] || { print "expected exactly the files of P1 (5), P2 (2), P5 (2) and P3 (9, five shared with P1 / P2)"; rm -rf $d; return 1; }
+      (cd $d/box2d-2.3.1/Box2D && for x in P1 P2 P5; do patch -p1 --quiet --no-backup-if-mismatch < $HERE/box2d/$x.diff || { print "box2d/$x.diff does not apply to the archive"; exit 1; }; done) || { rm -rf $d; return 1; }
+      local staged=$(cd $d/box2d-2.3.1/Box2D && diff -rq Box2D $HERE/box2d/Box2D | sed -E 's|^Files Box2D/([^ ]+) and .*|\1|' | sort | tr '\n' ' ')
+      local want3="Collision/b2Distance.cpp Dynamics/Contacts/b2ContactSolver.cpp Dynamics/Contacts/b2ContactSolver.h Dynamics/b2ContactManager.cpp Dynamics/b2ContactManager.h Dynamics/b2Island.cpp Dynamics/b2Island.h Dynamics/b2World.cpp Dynamics/b2World.h "
+      print "files differing from archive + P1 + P2 + P5: ${staged:-none}"
+      [[ "$staged" == "$want3" ]] || { print "expected exactly P3's nine files after P1 / P2 / P5"; rm -rf $d; return 1; }
+      (cd $d/box2d-2.3.1/Box2D && for f in Collision/b2Distance.cpp Dynamics/Contacts/b2ContactSolver.h Dynamics/Contacts/b2ContactSolver.cpp Dynamics/b2ContactManager.h Dynamics/b2ContactManager.cpp Dynamics/b2World.h Dynamics/b2World.cpp Dynamics/b2Island.h Dynamics/b2Island.cpp; do
+         diff -u --label a/Box2D/$f --label b/Box2D/$f Box2D/$f $HERE/box2d/Box2D/$f; done) > $OUT/p3.diff
+      cmp -s $OUT/p3.diff $HERE/box2d/P3.diff; local r3=$?; (( r3 )) && print "the P3 files differ from archive + P1 + P2 + P5 + box2d/P3.diff"
+      rm -rf $d; return $r3
     }
-    step box2d b2 && say "    exactly P1's five files, P2's two and P5's two differ from the approved archive ($(cut -c1-16 < <(shasum -a 256 $A))), as box2d/P1.diff, P2.diff and P5.diff record"
+    step box2d b2 && say "    the archive + box2d/P1.diff + P2.diff + P5.diff (each applies cleanly) differs from the vendored tree in exactly P3's nine files, as box2d/P3.diff records ($(cut -c1-16 < <(shasum -a 256 $A)))"
   else say "box2d: the archive $A is not on this machine -- skipped"; fi
 fi
 
@@ -214,11 +218,15 @@ if want intro; then
           if cmp -s $H/level4.txt $H/check.txt; then print "level 4: the pose hashes = level $IP's"
           else print "level 4: the pose hashes = level $IP's through $(( $(cmp $H/level4.txt $H/check.txt | sed -E 's/.* line ([0-9]+).*/\1/') - 1 )) hashes, then differ (Stage 4b: Unity's composite outline); the last: $(tail -1 $H/level4.txt)"; fi
           if [[ -f "${INTRO4_GOLDEN:-}" ]]; then cmp $H/level4.txt $INTRO4_GOLDEN && print "level 4: = the level-4 golden ($(tail -1 $INTRO4_GOLDEN))" || { print "level 4 pose hashes differ from the level-4 golden"; return 1; }; fi
-          engine intro6 "${IV[@]}" SHEPHERD_PHYS=6 SHEPHERD_CHECK_PHYS=ray3d SHEPHERD_PHYS_HASH=$H/level6.txt -- boot ${INTRO_FRAMES:-6100} 0 || return 1
+          # (kit #9 review fix: + lazyw -- the lazy hasChanged against the eager flags every frame WITH seeded hasChanged writes, so the walk's
+          # written transforms, marks and reparents are compared too; the walk's own code writes none. The poses must stay level 4's)
+          engine intro6 "${IV[@]}" SHEPHERD_PHYS=6 SHEPHERD_CHECK_PHYS=ray3d,lazyw SHEPHERD_PHYS_HASH=$H/level6.txt -- boot ${INTRO_FRAMES:-6100} 0 || return 1
           engine intro6t "${IV[@]}" SHEPHERD_PHYS=6 SHEPHERD_PHYS_HASH=$H/level6t.txt SHEPHERD_PHYS_TRACE=$H/drive6.sptr -- boot ${INTRO_FRAMES:-6100} 0 || return 1
           cmp $H/level6.txt $H/level4.txt && cmp $H/level6t.txt $H/level4.txt || { print "level 6 pose hashes differ from level 4's"; return 1; }
           local L6=$LOGS/check-phys-intro6/engine.log
           grep -q "check ray3d: [0-9]* rays re-run on the general path and by brute force: 0 differences; synced colliders against their transforms: 0 misses" $L6 || { print "level 6: ray3d check differences"; return 1; }
+          grep -qE "check lazy: [0-9]+ frames, [0-9]+ transforms compared, 0 mismatches \(lazyw: [1-9][0-9]* seeded writes\)" $L6 || { print "level 6: the lazy hasChanged check (lazyw) failed or wrote nothing"; return 1; }
+          print "level 6: the lazy hasChanged check with seeded writes: $(grep -hoE 'hasChanged reads [0-9]+, writes [0-9]+; check lazy: [^)]*\)' $L6)"
           print "level 6: the pose hashes = level 4's; $(grep -ho 'check ray3d: [^;]*; [^;]*' $L6)"
           SHEPHERD_PHYS_SRC=$HERE zsh $HERE/build.sh qemu-replay $H/drive6.sptr || return 1
           rm -f $H/drive6.sptr
@@ -249,7 +257,11 @@ if want combat; then
     combat() {
       local H=$LOGS/check-phys-combat-hash; mkdir -p $H; rm -f $H/*(N)
       engine combat "${CV[@]}" SHEPHERD_PHYS_HASH=$H/a.txt SHEPHERD_PHYS_EVENTLOG=$H/a.events -- boot ${COMBAT_FRAMES:-14700} 0 || return 1
-      engine combat2 "${CV[@]}" SHEPHERD_PHYS_HASH=$H/b.txt SHEPHERD_PHYS_EVENTLOG=$H/b.events -- boot ${COMBAT_FRAMES:-14700} 0 || return 1
+      # (kit #9 review fix: the second run with SHEPHERD_CHECK_PHYS=lazyw -- seeded hasChanged writes, the lazy form compared every frame;
+      # its poses and events must still be the first run's)
+      engine combat2 "${CV[@]}" SHEPHERD_CHECK_PHYS=lazyw SHEPHERD_PHYS_HASH=$H/b.txt SHEPHERD_PHYS_EVENTLOG=$H/b.events -- boot ${COMBAT_FRAMES:-14700} 0 || return 1
+      grep -qE "check lazy: [0-9]+ frames, [0-9]+ transforms compared, 0 mismatches \(lazyw: [1-9][0-9]* seeded writes\)" $LOGS/check-phys-combat2/engine.log || { print "combat: the lazy hasChanged check (lazyw) failed or wrote nothing"; return 1; }
+      print "combat: run 2 with the lazy hasChanged check + seeded writes: $(grep -hoE 'hasChanged reads [0-9]+, writes [0-9]+; check lazy: [^)]*\)' $LOGS/check-phys-combat2/engine.log)"
       engine combat3 "${CV[@]}" SHEPHERD_PHYS_HASH=$H/traced.txt SHEPHERD_PHYS_TRACE=$H/drive.sptr -- boot ${COMBAT_FRAMES:-14700} 0 || return 1
       cmp $H/a.txt $H/b.txt && cmp $H/a.txt $H/traced.txt && cmp $H/a.events $H/b.events || { print "the combat drive's pose hashes / events differ between runs"; return 1; }
       print "combat pose hashes: $(wc -l < $H/a.txt) per-50-step hashes identical in 3 runs, events identical in 2; the last: $(tail -1 $H/a.txt)"
@@ -269,6 +281,52 @@ if want combat; then
     step combat combat
     grep -hE "combat pose hashes:|combat:|combat level 6:|REPLAY|stage 3:|\[test-(astar|spine)\]|SETUP MISMATCH" $OUT/check-phys-combat.log | sed 's/^/    /' | cut -c1-500 | tee -a $S
   else say "combat: COMBAT_PAD not given (owner-local) -- skipped"; fi
+fi
+
+# 6 workers (kit #9: physics-plan-v2 Stage 7 item 2 = the Law of the Vita part 2, patch P3): the same engine checks with the worker pool --
+# SHEPHERD_PHYS_WORKERS=$WORKERS (default 2), every phase forked from one item (SHEPHERD_PHYS_FORK=1,1,1), the check mode on (every forked
+# phase against its serial run): physcheck all at level 6; with INTRO_PACK / INTRO_PAD the walk at level 6 (= INTRO4_GOLDEN when given,
+# as level 6 = level 4) traced, the trace replayed SERIALLY on the Mac and on QEMU's Cortex-A9 (the per-step lockstep check: every step's
+# pose hash of the forked run = the serial replay's); with COMBAT_PAD the combat drive at level 3 (= COMBAT_GOLDEN when given, the events =
+# step 5's serial run when it ran). 0 check mismatches everywhere.
+if want workers; then
+  WK=${WORKERS:-2}
+  WE=(SHEPHERD_PHYS_WORKERS=$WK SHEPHERD_PHYS_FORK=1,1,1)
+  workers_bar() {
+    local H=$LOGS/check-phys-workers-hash; mkdir -p $H; rm -f $H/*(N)
+    engine physcheck6w SHEPHERD_PHYS=6 SHEPHERD_CHECK_PHYS=all "${WE[@]}" -- physcheck all || return 1
+    local L=$LOGS/check-phys-physcheck6w/engine.log
+    grep -hE "\[physcheck\] RESULT" $L | sed 's/^\[ *[0-9]*\] */    physcheck level 6, workers: /'
+    grep -q "\[physcheck\] RESULT ALL PASS" $L || { print "physcheck with workers failed"; return 1; }
+    grep -q "workers (patch P3): $WK live" $L || { print "physcheck: the workers did not run"; return 1; }
+    ! grep -q "check: [0-9]* phases compared, [1-9]" $L || { print "physcheck: check mismatches"; return 1; }
+    if [[ -n "${INTRO_PACK:-}" && -f ${INTRO_PACK}/shepherd.pack && -f ${INTRO_PAD:-/nonexistent} ]]; then
+      local IVW=(SHEPHERD_PROFILE=vita SHEPHERD_RENDER=gl SHEPHERD_GL_DXT=1 SHEPHERD_PACK=$INTRO_PACK SHEPHERD_PACK_STRICT=1 SHEPHERD_STOP_SCENE= SHEPHERD_PAD_FILE=$INTRO_PAD)
+      engine introw "${IVW[@]}" SHEPHERD_PHYS=6 "${WE[@]}" SHEPHERD_CHECK_PHYS=workers SHEPHERD_PHYS_HASH=$H/walk6.txt SHEPHERD_PHYS_TRACE=$H/walk6.sptr -- boot ${INTRO_FRAMES:-6100} 0 || return 1
+      local LI=$LOGS/check-phys-introw/engine.log
+      grep -h "\[phys\] workers (patch P3):" $LI | sed 's/^\[ *[0-9]*\] */    walk: /' | cut -c1-600
+      grep -q "check: [0-9]* phases compared, 0 mismatches" $LI || { print "walk: check mismatches (or the check did not run)"; return 1; }
+      if [[ -f "${INTRO4_GOLDEN:-}" ]]; then cmp $H/walk6.txt $INTRO4_GOLDEN && print "walk, workers $WK: = the level-4 golden ($(tail -1 $INTRO4_GOLDEN))" || { print "walk with workers: pose hashes differ from the level-4 golden"; return 1; }
+      else print "walk, workers $WK: $(wc -l < $H/walk6.txt) hashes, the last $(tail -1 $H/walk6.txt)"; fi
+      SHEPHERD_PHYS_SRC=$HERE zsh $HERE/build.sh qemu-replay $H/walk6.sptr || return 1
+      rm -f $H/walk6.sptr
+    fi
+    if [[ -f ${COMBAT_PAD:-/nonexistent} ]]; then
+      local CVLW=${COMBAT_VIDEO_LENGTHS:-$OUT/combat-video-lengths.tsv}
+      [[ -f $CVLW ]] || printf '%s\n' "# check-phys combat drive: the intro clip's TEST length (2 s = physics' former SHEPHERD_VIDEO_STANDIN=2 knob), not the game's 13 s" "Intro	60	30/1" > $CVLW
+      local CTSW=(SHEPHERD_TEST_ASTAR=join SHEPHERD_TEST_SPINE=join); [[ ${COMBAT_TEST_SWITCHES:-1} == 0 ]] && CTSW=()
+      engine combatw SHEPHERD_PROFILE=vita SHEPHERD_RENDER=gl SHEPHERD_GL_DXT=1 SHEPHERD_STOP_SCENE= SHEPHERD_PAD_FILE=$COMBAT_PAD SHEPHERD_PHYS=3 SHEPHERD_VIDEO_LENGTHS=$CVLW $CTSW \
+        "${WE[@]}" SHEPHERD_CHECK_PHYS=workers SHEPHERD_PHYS_HASH=$H/combat.txt SHEPHERD_PHYS_EVENTLOG=$H/combat.events -- boot ${COMBAT_FRAMES:-14700} 0 || return 1
+      local LC=$LOGS/check-phys-combatw/engine.log
+      grep -h "\[phys\] workers (patch P3):" $LC | sed 's/^\[ *[0-9]*\] */    combat: /' | cut -c1-600
+      grep -q "check: [0-9]* phases compared, 0 mismatches" $LC || { print "combat: check mismatches (or the check did not run)"; return 1; }
+      if [[ -f "${COMBAT_GOLDEN:-}" ]]; then cmp $H/combat.txt $COMBAT_GOLDEN && print "combat, workers $WK: = the golden ($(tail -1 $COMBAT_GOLDEN))" || { print "combat with workers: pose hashes differ from the golden"; return 1; }; fi
+      local CE=$LOGS/check-phys-combat-hash/a.events
+      if [[ -f $CE ]]; then cmp $H/combat.events $CE && print "combat, workers $WK: events = the serial run's" || { print "combat with workers: events differ from the serial run's"; return 1; }; fi
+    fi
+  }
+  step workers workers_bar
+  grep -hE "physcheck level 6, workers|walk|combat|REPLAY" $OUT/check-phys-workers.log | sed 's/^/    /' | cut -c1-500 | tee -a $S
 fi
 
 say "n/a: the save-booted drives (they need the owner's save export, D15)"

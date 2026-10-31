@@ -28,5 +28,12 @@ public static class CanvasGroupIcalls
         return null;
     }
     [Icall("UnityEngine.CanvasGroup::get_alpha")] static object GA(object[] a) => Get(a[0], "alpha", 1f);
-    [Icall("UnityEngine.CanvasGroup::set_alpha")] static object SA(object[] a) { Objects.Get(a[0])?.Set("alpha", Convert.ToSingle(a[1])); return null; }
+    // kit #9 fidelity (stand-in fix "canvasgroup", kit7-tests.md finding 17): Unity clamps the alpha a script writes to [0, 1] (the oracle:
+    // -0.5 reads back 0, 1.5 reads back 1, in every case of d-ui-canvasgroup; NaN passes through either way); kit #8 stored it as given
+    [Icall("UnityEngine.CanvasGroup::set_alpha")] static object SA(object[] a)
+    {
+        float v = Convert.ToSingle(a[1]);
+        if (K9Fidelity.FixCanvasGroup) v = v < 0f ? 0f : v > 1f ? 1f : v;
+        Objects.Get(a[0])?.Set("alpha", v); return null;
+    }
 }

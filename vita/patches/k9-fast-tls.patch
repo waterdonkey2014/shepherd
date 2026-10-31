@@ -1,0 +1,208 @@
+--- a/src/mono/mono/utils/mono-tls.c
++++ b/src/mono/mono/utils/mono-tls.c
+@@ -136,7 +136,126 @@
+ 
+ gint32 mono_tls_offsets [TLS_KEY_NUM];
+ 
++#if defined(HOST_VITA) && !defined(MONO_KEYWORD_THREAD) && !defined(DISABLE_THREADS)
++/*
++ * SHEPHERD-VITA device kit #9 R1 "fast TLS" (mono-tls.h, vita/notes/kit9-runtime.md): the runtime's thread-local keys mirrored in the
++ * Vita's per-thread TLS slots. These globals are read (weakly) by vita/shepherd/host.c for its H8 line and its exit line.
++ */
++#include <stdlib.h>
++#include <string.h>
++
++int mono_shepherd_fast_tls_mode = -1;          /* -1 not read yet; 0 off (SHEPHERD_FAST_TLS=0); 1 on; 2 check; 3 off: an unknown value; 4 probe */
++unsigned mono_shepherd_fast_tls_avoid;         /* set by the host before the first key (review fix): bit i = slot FIRST + i was not NULL on the
++                                                  host's main thread (someone else's) -- never claimed */
++int mono_shepherd_fast_tls_keys;               /* keys mirrored in a slot */
++int mono_shepherd_fast_tls_pthread_keys;       /* keys on pthread_getspecific only (mode off, or no free slot left) */
++int mono_shepherd_fast_tls_busy;               /* slots skipped at the claim: not NULL on the claiming thread, or in the host's avoid mask */
++int mono_shepherd_fast_tls_first = MONO_VITA_TLS_SLOT_FIRST;
++int mono_shepherd_fast_tls_last = -1;          /* the highest slot claimed */
++volatile unsigned mono_shepherd_fast_tls_mismatches;   /* check: reads whose slot differed from pthread_getspecific; probe: reads that found a
++                                                          non-NULL value in a slot the runtime never writes (someone else's) */
++volatile int mono_shepherd_fast_tls_mismatch_slot = -1; /* the first such read's slot */
++void * volatile mono_shepherd_fast_tls_mismatch_value;  /* the first such read's slot value (probe: another module's pointer) */
++volatile unsigned mono_shepherd_fast_tls_reads;   /* check / probe: the slot reads compared or watched (b23b56a review fix: the END line says how many) */
++
++static pthread_mutex_t vita_tls_lock = PTHREAD_MUTEX_INITIALIZER;
++static int vita_tls_next;                      /* the next slot to try, as an index from MONO_VITA_TLS_SLOT_FIRST */
++static void (*vita_tls_dtors [MONO_VITA_TLS_SLOTS]) (void *);
++
++/* the destructor of a key with slot FIRST + i: pthread-embedded has already cleared its own value; clear the mirror, then run it */
++#define VITA_TLS_DTOR(i) static void vita_tls_dtor_##i (void *v) { *(void **) sceKernelGetTLSAddr (MONO_VITA_TLS_SLOT_FIRST + (i)) = NULL; vita_tls_dtors [i] (v); }
++VITA_TLS_DTOR(0) VITA_TLS_DTOR(1) VITA_TLS_DTOR(2) VITA_TLS_DTOR(3) VITA_TLS_DTOR(4) VITA_TLS_DTOR(5) VITA_TLS_DTOR(6) VITA_TLS_DTOR(7)
++VITA_TLS_DTOR(8) VITA_TLS_DTOR(9) VITA_TLS_DTOR(10) VITA_TLS_DTOR(11) VITA_TLS_DTOR(12) VITA_TLS_DTOR(13) VITA_TLS_DTOR(14) VITA_TLS_DTOR(15)
++static void (*const vita_tls_dtor_wrappers [MONO_VITA_TLS_SLOTS]) (void *) = {
++	vita_tls_dtor_0, vita_tls_dtor_1, vita_tls_dtor_2, vita_tls_dtor_3, vita_tls_dtor_4, vita_tls_dtor_5, vita_tls_dtor_6, vita_tls_dtor_7,
++	vita_tls_dtor_8, vita_tls_dtor_9, vita_tls_dtor_10, vita_tls_dtor_11, vita_tls_dtor_12, vita_tls_dtor_13, vita_tls_dtor_14, vita_tls_dtor_15
++};
++
++static int
++vita_tls_mode (void)
++{
++	if (mono_shepherd_fast_tls_mode < 0) {
++		const char *e = getenv ("SHEPHERD_FAST_TLS");
++		int m;
++		if (!e || !*e || !strcmp (e, "1") || !strcmp (e, "on"))
++			m = 1;
++		else if (!strcmp (e, "0") || !strcmp (e, "off"))
++			m = 0;
++		else if (!strcmp (e, "check"))
++			m = 2;
++		else if (!strcmp (e, "probe"))
++			m = 4;
++		else
++			m = 3;   /* fail-safe: pthread_getspecific, as kit #8 */
++		mono_shepherd_fast_tls_mode = m;
++	}
++	return mono_shepherd_fast_tls_mode;
++}
++
++int
++mono_vita_native_tls_alloc (MonoVitaNativeTlsKey *key, void *destructor)
++{
++	int mode = vita_tls_mode (), i = -1;
++	void (*dtor) (void *) = (void (*) (void *)) destructor;
++	memset (key, 0, sizeof (*key));
++	if (mode == 1 || mode == 2 || mode == 4) {
++		pthread_mutex_lock (&vita_tls_lock);
++		while (vita_tls_next < MONO_VITA_TLS_SLOTS) {
++			int s = vita_tls_next++;
++			if (!(mono_shepherd_fast_tls_avoid & (1u << s)) && *(void **) sceKernelGetTLSAddr (MONO_VITA_TLS_SLOT_FIRST + s) == NULL) {
++				i = s;
++				break;
++			}
++			mono_shepherd_fast_tls_busy++;
++		}
++		pthread_mutex_unlock (&vita_tls_lock);
++	}
++	if (i >= 0 && dtor && mode != 4) {   /* (probe: the slot is never written, nothing to clear) */
++		vita_tls_dtors [i] = dtor;
++		dtor = vita_tls_dtor_wrappers [i];
++	}
++	if (pthread_key_create (&key->key, dtor) != 0)
++		return 0;   /* (as before; a claimed slot is simply never used) */
++	if (i >= 0) {
++		key->sidx = MONO_VITA_TLS_SLOT_FIRST + i + 1;
++		key->check = mode == 2 ? 1 : mode == 4 ? 2 : 0;
++		mono_shepherd_fast_tls_keys++;
++		if (MONO_VITA_TLS_SLOT_FIRST + i > mono_shepherd_fast_tls_last)
++			mono_shepherd_fast_tls_last = MONO_VITA_TLS_SLOT_FIRST + i;
++	} else {
++		mono_shepherd_fast_tls_pthread_keys++;
++	}
++	return 1;
++}
++
+ void
++mono_vita_native_tls_free (MonoVitaNativeTlsKey *key)
++{
++	pthread_key_delete (key->key);
++	/* this thread's mirror; the slot is never handed out again (other threads may still hold the old key's values in it) */
++	if (key->sidx != 0 && key->check != 2)
++		*(void **) sceKernelGetTLSAddr (key->sidx - 1) = NULL;
++}
++
++void *
++mono_vita_native_tls_get_checked (MonoVitaNativeTlsKey key)
++{
++	void *p = pthread_getspecific (key.key);
++	if (key.sidx != 0) {
++		void *s = *(void **) sceKernelGetTLSAddr (key.sidx - 1);
++		__atomic_fetch_add (&mono_shepherd_fast_tls_reads, 1, __ATOMIC_RELAXED);   /* (check / probe modes only: the default path never comes here) */
++		if (key.check == 2 ? s != NULL : s != p) {   /* probe: the runtime never writes the slot; check: the slot must equal pthread's */
++			if (__atomic_fetch_add (&mono_shepherd_fast_tls_mismatches, 1, __ATOMIC_RELAXED) == 0) {
++				mono_shepherd_fast_tls_mismatch_slot = key.sidx - 1;
++				mono_shepherd_fast_tls_mismatch_value = s;
++			}
++		}
++	}
++	return p;
++}
++#endif
++
++void
+ mono_tls_init_gc_keys (void)
+ {
+ #ifdef MONO_KEYWORD_THREAD
+--- a/src/mono/mono/utils/mono-tls.h
++++ b/src/mono/mono/utils/mono-tls.h
+@@ -94,8 +94,76 @@
+ 	void** const p = (void**)teb->TlsExpansionSlots;
+ 
+ 	return p ? p [index - TLS_MINIMUM_AVAILABLE] : NULL;
++}
++
++#elif defined(HOST_VITA)
++
++/*
++ * SHEPHERD-VITA device kit #9, track runtime, row R1 "fast TLS" (vita/patches/k9-fast-tls.patch, vita/notes/kit9-runtime.md).
++ * vitasdk's pthread_getspecific is pthread-embedded's pte_osTlsGetValue: newlib's __getreent_for_thread (8 registers + d8 pushed, a
++ * 136-byte frame, sceKernelGetTLSAddr (0x89)) and then a walk of the thread's key list -- hundreds of instructions for every read of
++ * the runtime's thread-local values (the LMF, the thread info, the domain, the JIT TLS, the interpreter context, the small id ...).
++ * Here every runtime key is ALSO mirrored in one of the Vita's own per-thread TLS slots (sceKernelGetTLSAddr (slot): a word per slot
++ * per thread, zero in a new thread -- newlib's reent slot 0x89 relies on the same), so a read is one import call + one load:
++ *   - a key keeps its pthread key: pthread_setspecific is still done on every set, so the destructors run exactly as before (each
++ *     destructor is entered through a wrapper that clears the slot first, as pthread-embedded clears its own value), and the pthread
++ *     value stays the store of record;
++ *   - a read takes the slot (the same value: every set writes both, and both start NULL in every thread).
++ * SHEPHERD_FAST_TLS (env file, read at the first key): unset / 1 / on = the slots; 0 / off = pthread_getspecific for every read (kit
++ * #8's runtime path); check = the slots AND pthread_getspecific on every read, compared (a mismatch is counted, logged once, and the
++ * pthread value is returned; the slots ARE written, so this checks the runtime's own mirror, not a foreign writer); probe = kit #8's
++ * path (pthread_getspecific for every read) and the claimed slots are NEVER written: every read also loads its slot and counts a
++ * non-NULL value -- someone else's (a system module keeping per-thread state there) -- without disturbing it (the device test for the
++ * slots, review fix). Any other value = off (fail-safe; the host's H8 line says so). The slots are claimed from
++ * MONO_VITA_TLS_SLOT_FIRST on: only slots that read NULL on the claiming thread AND that the host did not find in use on its main thread
++ * (mono_shepherd_fast_tls_avoid, set before the first key); a key with no free slot keeps the pthread path.
++ */
++#include <pthread.h>
++
++typedef struct {
++	pthread_key_t key;   /* pthread-embedded's key */
++	int sidx;            /* 1 + the sceKernelGetTLSAddr slot mirroring this key; 0 = none (pthread_getspecific): also an unallocated key */
++	int check;           /* 0 = the slot is the value; 1 = SHEPHERD_FAST_TLS=check: every read compares the slot with pthread_getspecific;
++	                        2 = probe: the slot is never written, every read counts a non-NULL value in it (someone else's) */
++} MonoVitaNativeTlsKey;
++#define MonoNativeTlsKey MonoVitaNativeTlsKey
++#define MONO_VITA_TLS_SLOT_FIRST 0x8a   /* right after newlib's reent slot 0x89 */
++#define MONO_VITA_TLS_SLOTS 16
++
++void *sceKernelGetTLSAddr (int key);
++int mono_vita_native_tls_alloc (MonoVitaNativeTlsKey *key, void *destructor);
++void mono_vita_native_tls_free (MonoVitaNativeTlsKey *key);
++void *mono_vita_native_tls_get_checked (MonoVitaNativeTlsKey key);
++
++MONO_INLINE void*
++mono_native_tls_get_value (MonoVitaNativeTlsKey key)
++{
++	if (G_LIKELY (key.sidx != 0 && !key.check))
++		return *(void **) sceKernelGetTLSAddr (key.sidx - 1);
++	return mono_vita_native_tls_get_checked (key);
+ }
+ 
++MONO_INLINE int
++mono_native_tls_alloc (MonoNativeTlsKey *key, void *destructor)
++{
++	return mono_vita_native_tls_alloc (key, destructor);
++}
++
++MONO_INLINE void
++mono_native_tls_free (MonoNativeTlsKey key)
++{
++	mono_vita_native_tls_free (&key);
++}
++
++MONO_INLINE int
++mono_native_tls_set_value (MonoNativeTlsKey key, gpointer value)
++{
++	int res = !pthread_setspecific (key.key, value);
++	if (key.sidx != 0 && key.check != 2)   /* (probe: never written) */
++		*(void **) sceKernelGetTLSAddr (key.sidx - 1) = value;
++	return res;
++}
++
+ #else
+ 
+ #include <pthread.h>

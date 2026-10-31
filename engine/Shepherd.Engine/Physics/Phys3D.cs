@@ -42,8 +42,8 @@ public static class Phys3D
     // the project's 3D settings (PhysicsManager): VERIFIED by `physcheck settings` (PhysCheck6.SettingsCheck); a decoded record wins when present
     public static bool QueriesHitTriggers => PhysSettings.PhysicsManager.Bytes == 272 ? PhysSettings.PhysicsManager.QueriesHitTriggers : true;
     public static bool QueriesHitBackfaces => PhysSettings.PhysicsManager.Bytes == 272 ? PhysSettings.PhysicsManager.QueriesHitBackfaces : false;
-    public static Vector3 Gravity => PhysSettings.PhysicsManager.Bytes == 272 ? new Vector3(PhysSettings.PhysicsManager.GravityX, PhysSettings.PhysicsManager.GravityY, PhysSettings.PhysicsManager.GravityZ)
-                                                                              : new Vector3(0f, 0f, -9.81f);
+    public static Vector3 Gravity => PhysSettings.PhysicsManager.Bytes == 272 ? PG.V3(PhysSettings.PhysicsManager.GravityX, PhysSettings.PhysicsManager.GravityY, PhysSettings.PhysicsManager.GravityZ)
+                                                                              : PG.V3(0f, 0f, -9.81f);   // kit #9 glue math rule
     // hypothesis switches (Appendix A rows added by Stage 6): H-RAYPOINT=bary is E1's (the `ray` variant deleted); H-NONALLOC stays open (E1: PhysX's pruner order)
     static readonly bool NonAllocSorted = Hypotheses.Get("NONALLOC") == "closest";
     static readonly bool CheckRay = PhysConfig.Check == "all" || PhysConfig.Check.Split(',').Contains("ray3d");

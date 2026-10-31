@@ -224,6 +224,14 @@ sealed class GxpCache
     /// that fails (e.g. a full card) removes its temp file (kit #5 review).</summary>
     public static string WriteAtomic(string path, byte[] b)
     {
+        // kit #10 io (Runtime/K10Io.cs, write discipline): a results-only file under the card's cache/ folder is written in an idle window;
+        // SHEPHERD_K10_WRITES=0 / SHEPHERD_K10_IO=0 = written now, as before
+        if (Runtime.K10Io.Defer(path, b)) return null;
+        return WriteNow(path, b);
+    }
+    /// <summary>Kit #10 io: <see cref="WriteAtomic"/>'s write, now (the write discipline's writer calls it in its idle window).</summary>
+    public static string WriteNow(string path, byte[] b)
+    {
         string tmp = null;
         try
         {

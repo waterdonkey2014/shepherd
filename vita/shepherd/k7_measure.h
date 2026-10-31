@@ -188,7 +188,7 @@ static int k7_bb_write (const char *file, const char *why, unsigned frames_max, 
 		    (unsigned) (fi.size_user / 1024), (unsigned) (fi.size_cdram / 1024), (unsigned) (fi.size_phycont / 1024), aok ? "" : "~",
 		    aok ? (unsigned) (as.used / 1024) : 0u, aok ? (unsigned) (as.peak / 1024) : 0u, aok ? (unsigned) (as.arena_size / 1024) : 0u,
 		    g_runtime_up ? (unsigned) (mono_gc_get_heap_size () / 1024) : 0u, g_max_heap_mb, gcs.count [0], gcs.count [1], gcs.total_us [0] / 1000.0,
-		    gcs.total_us [1] / 1000.0, mono_vita_heap_limit_count (), g_oom_count, g_fail_count, __malloc_max_sbrked_mem / 1024, SHP_NEWLIB_HEAP_MB * 1024);
+		    gcs.total_us [1] / 1000.0, mono_vita_heap_limit_count (), g_oom_count, g_fail_count, k10_nl_fix_k (__malloc_max_sbrked_mem), k10_newlib_cap_k ());   /* (kit #10 memory review fix R8: without the shared pool's gap, against what newlib may grow to now -- kit #9's figures outside the pool) */
 	o = k7_put (o, "# clocks: arm %d bus %d gpu %d MHz\n", scePowerGetArmClockFrequency (), scePowerGetBusClockFrequency (), scePowerGetGpuClockFrequency ());
 	if (g_k7_bb_blk) {
 		unsigned head = (unsigned) g_k7_bb_blk [1], have = head < K7_BB_FRAMES ? head : K7_BB_FRAMES;
@@ -458,8 +458,8 @@ int shepherd_vita_k7 (int op, int arg)
 		sceKernelGetFreeMemorySize (&fi);
 		return (int) (fi.size_user / 1024);
 	}
-	case 3:   /* the newlib heap's sbrk'd size, KiB */
-		return (int) (mallinfo ().arena / 1024);
+	case 3:   /* the newlib heap's sbrk'd size, KiB (kit #10 memory review fix R8: without the shared pool's gap; kit #9's figure outside the pool) */
+		return (int) k10_nl_fix_k ((unsigned long long) (unsigned) mallinfo ().arena);
 	case 4:   /* the process time at main, ms (the eboot's load before main) */
 		return (int) (g_t0 / 1000u);
 	case 5:   /* a black box event from the engine (arg: 1 = its own FAIL test) */

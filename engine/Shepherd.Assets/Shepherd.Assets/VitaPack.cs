@@ -91,7 +91,7 @@ public sealed class PackImage
     public override string ToString() => $"{(TextureFormat)Format} {Width}x{Height}{(TopDown ? " top-down" : "")} ({Length} B)";
 }
 
-public sealed class PackReader : IDisposable
+public sealed partial class PackReader : IDisposable
 {
     /// <summary>Key under which a decoded Texture2D tree carries its <see cref="PackImage"/> (never a Unity field name).</summary>
     public const string ImageKey = "__packImage";
@@ -130,17 +130,25 @@ public sealed class PackReader : IDisposable
     public static IPackReadLog OnRead;
     public long StoreHits, StoreBytes;
     /// <summary>Which pack this is, for a learned read-order map: the TOC's checksum and the file's size (a re-baked pack is another).</summary>
-    public string Identity => _tocHash.ToString("x8") + "-" + (PayloadOffset + PayloadSize).ToString();
+    public string Identity => _tocHash.ToString("x8") + "-" + (PayloadOffset + PayloadSize).ToString() + (_v2 ? "-c" + _cTableHash.ToString("x8") : "");
     /// <summary>A read for the preload (its own thread): the card, in <see cref="MaxRead"/> pieces, never the store and never reported. False at
     /// the pack's end or on an error.</summary>
+    /// <summary>Kit #10 integration review (the memory ladder's step 1): the preload's own staging buffers (the chunked pack's compressed run +
+    /// decoded tile, native memory) given back; the preload's next read makes them again. Called only while no <see cref="PreloadRead"/> runs
+    /// (K8Preload stops its worker first). Returns the bytes freed (0 for a version-1 pack, or when none were made).</summary>
+    public long ReleasePreloadStaging() => _v2 ? V2ReleasePreloadStaging() : 0;
     public bool PreloadRead(long offset, Span<byte> dst)
     {
+        if (_v2) return V2PreloadRead(offset, dst);   // kit #10 io: the logical bytes, decoded on the preload's own thread
         try
         {
             int done = 0;
+            // kit #10 io: with the lanes on, background reads of at most 128 KiB, each after the foreground lane cleared (off = kit #9's 512 KiB pieces)
+            int piece = IoLanes.On ? (128 << 10) : MaxRead;
             while (done < dst.Length)
             {
-                int k = RandomAccess.Read(_h, dst.Slice(done, Math.Min(MaxRead, dst.Length - done)), offset + done);
+                if (IoLanes.On) IoLanes.BgGate();
+                int k = RandomAccess.Read(_h, dst.Slice(done, Math.Min(piece, dst.Length - done)), offset + done);
                 if (k <= 0) return false;
                 done += k;
             }
@@ -213,7 +221,7 @@ public sealed class PackReader : IDisposable
         ReadExact(0, hdr);
         if (BinaryPrimitives.ReadUInt32LittleEndian(hdr) != VitaPackFormat.Magic) throw new InvalidDataException($"{path}: not a Shepherd Vita pack");
         int ver = BinaryPrimitives.ReadUInt16LittleEndian(hdr.AsSpan(4));
-        if (ver != VitaPackFormat.Version) throw new InvalidDataException($"{path}: pack version {ver}, this engine reads {VitaPackFormat.Version}");
+        if (ver != VitaPackFormat.Version && ver != VitaPack2Format.Version) throw new InvalidDataException($"{path}: pack version {ver}, this engine reads {VitaPackFormat.Version} and {VitaPack2Format.Version}");
         Flags = BinaryPrimitives.ReadUInt32LittleEndian(hdr.AsSpan(8));
         uint tocHash = BinaryPrimitives.ReadUInt32LittleEndian(hdr.AsSpan(12));
 #if !SHEPHERD_NO_K8
@@ -222,9 +230,22 @@ public sealed class PackReader : IDisposable
         long tocOff = BinaryPrimitives.ReadInt64LittleEndian(hdr.AsSpan(16)), tocSize = BinaryPrimitives.ReadInt64LittleEndian(hdr.AsSpan(24));
         PayloadOffset = BinaryPrimitives.ReadInt64LittleEndian(hdr.AsSpan(32)); PayloadSize = BinaryPrimitives.ReadInt64LittleEndian(hdr.AsSpan(40));
         TocBytes = tocSize;
-        var toc = new byte[checked((int)tocSize)];
-        ReadExact(tocOff, toc);
-        if (VitaPackFormat.Fnv1a(toc) != tocHash) throw new InvalidDataException($"{path}: TOC checksum mismatch (truncated or corrupt pack)");
+        byte[] toc;
+        if (ver == VitaPack2Format.Version)
+        {   // kit #10 io: the chunk table, the stored TOC decoded -- review: a chunked pack refused here (the host then opens the version-1 file)
+            // gives back the native buffers V2Open made and its file handle (they were kept for the whole session)
+            try
+            {
+                toc = V2Open(hdr, tocSize);
+                if (VitaPackFormat.Fnv1a(toc) != tocHash) throw new InvalidDataException($"{path}: TOC checksum mismatch (truncated or corrupt pack)");
+            }
+            catch { V2Dispose(); _h.Dispose(); throw; }
+        }
+        else
+        {
+            toc = new byte[checked((int)tocSize)]; ReadExact(tocOff, toc);
+            if (VitaPackFormat.Fnv1a(toc) != tocHash) throw new InvalidDataException($"{path}: TOC checksum mismatch (truncated or corrupt pack)");
+        }
         var r = new SpanReader(toc, bigEndian: false);
         // strings
         int ns = r.I32(); _strOfs = new int[ns + 1];
@@ -261,7 +282,7 @@ public sealed class PackReader : IDisposable
         _objCount = r.I32(); _objToc = r.Bytes(_objCount * 32).ToArray();
         int nao = r.I32(); for (int i = 0; i < nao; i++) { int fi = r.I32(); long pid = r.I64(); _absentObjects.Add((fi, pid)); }
         if ((Flags & VitaPackFormat.FlagProperties) != 0) { int np = r.I32(); for (int i = 0; i < np; i++) { var k = Str(r.I32()); _props[k] = Str(r.I32()); } }
-        if (ReadAhead)
+        if (ReadAhead && !_v2)
         {   // all of the read-ahead path's buffers, now and on this thread: WindowCount windows + the worker's one + the straddle scratch
             _wins = Enumerable.Range(0, WindowCount).Select(_ => new Win { B = new byte[WindowSize] }).ToArray();
             _ahBuf = new byte[WindowSize]; _scratch = new byte[WindowSize / 2];
@@ -271,7 +292,18 @@ public sealed class PackReader : IDisposable
 
     public static PackReader Open(string path)
     {
-        if (Directory.Exists(path)) path = System.IO.Path.Combine(path, VitaPackFormat.PackFileName);
+        if (Directory.Exists(path))
+        {   // kit #10 io: the chunked pack beside the version-1 file when the host asked for it and supplied its decoders (PreferV2 + Decoder)
+            var v2 = System.IO.Path.Combine(path, VitaPack2Format.FileName); var v1 = System.IO.Path.Combine(path, VitaPackFormat.PackFileName);
+            bool useV2 = PreferV2 && ChunkDecoder != null && File.Exists(v2);
+            // (a shepherd.pk2 beside a shepherd.pack must have been made from THAT file: a stale one is refused -- the host then opens the version-1 file)
+            bool both = useV2 && File.Exists(v1);
+            if (both) VitaPack2Format.CheckMadeFrom(v2, v1);
+            var pr = new PackReader(useV2 ? v2 : v1);
+            if (both)   // kit #10 io review: the header says nothing about the payload's bytes -- the TOC's payload hash does, else sampled chunks
+                try { pr.V2CheckMadeFrom(v1); } catch { pr.Dispose(); throw; }
+            return pr;
+        }
         return new PackReader(path);
     }
 
@@ -351,6 +383,21 @@ public sealed class PackReader : IDisposable
     /// must finish with the span before the next read.</summary>
     ReadOnlySpan<byte> Bytes(long offset, int len)
     {
+        if (!LayerTiming || t_layerDepth > 0) return BytesCore(offset, len);
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();   // kit #10 io: the reading thread's whole time in the pack layer (stats)
+        t_layerDepth++;
+        try { return BytesCore(offset, len); }
+        finally { t_layerDepth--; LayerTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0; LayerCalls++; }
+    }
+    [ThreadStatic] static int t_layerDepth;   // (the outermost call counts: a window fill inside Bytes is not counted twice)
+    /// <summary>Kit #10 io: time every Bytes / on-demand ReadExact call (stats; the engine's SHEPHERD_K10_TIMING=1, off by default = kit #9's path).</summary>
+    public static bool LayerTiming;
+    public long LayerTicks, LayerCalls;
+    public double LayerMs => LayerTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+    ReadOnlySpan<byte> BytesCore(long offset, int len)
+    {
+        VisitLog?.OnVisit(offset, len);   // kit #10 io (SHEPHERD_K10_READLOG; null otherwise)
+        if (_v2) return V2Bytes(offset, len);
         _wins ??= Enumerable.Range(0, WindowCount).Select(_ => new Win()).ToArray();
         if (ReadAhead && len <= WindowSize / 2 && offset >= PayloadOffset && offset + len <= PayloadOffset + PayloadSize) return AlignedBytes(offset, len);
         Win lru = _wins[0];
@@ -544,17 +591,56 @@ public sealed class PackReader : IDisposable
 #if !SHEPHERD_NO_K8
     void ReadExact(long offset, Span<byte> dst, bool ahead = false)
     {
+        if (LayerTiming && !ahead && t_layerDepth == 0)
+        {
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            t_layerDepth++;
+            try { ReadExactCore(offset, dst, false); }
+            finally { t_layerDepth--; lock (_lock) { LayerTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0; LayerCalls++; } }
+            return;
+        }
+        ReadExactCore(offset, dst, ahead);
+    }
+    void ReadExactCore(long offset, Span<byte> dst, bool ahead)
+    {
         if (!ahead)
         {   // kit #8 (K8Preload): every on-demand read is reported for the read-order map (also one the store serves: the map is the
             // scene's whole read order), then the preload's store is asked first
+            VisitLog?.OnVisit(offset, dst.Length);   // kit #10 io
             OnRead?.OnRead(offset, dst.Length);
             var st = Store;
             if (st != null && st.Take(offset, dst)) { lock (_lock) { StoreHits++; StoreBytes += dst.Length; } return; }
         }
+        if (_v2) { V2ReadLogical(offset, dst); return; }   // kit #10 io: the chunks covering [offset, offset + len), decoded
+        // kit #10 io: the reading thread's reads are the foreground lane, the k4 read-ahead's a background one (IoLanes; off = kit #9)
+        if (IoLanes.On)
+        {
+            if (ahead) IoLanes.BgGate(); else IoLanes.FgEnter();
+            try { ReadCard(offset, dst); } finally { if (!ahead) IoLanes.FgExit(); }
+            return;
+        }
 #else
     void ReadExact(long offset, Span<byte> dst)
     {
+        if (LayerTiming && t_layerDepth == 0)
+        {
+            long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+            t_layerDepth++;
+            try { ReadExactCore(offset, dst); }
+            finally { t_layerDepth--; lock (_lock) { LayerTicks += System.Diagnostics.Stopwatch.GetTimestamp() - t0; LayerCalls++; } }
+            return;
+        }
+        ReadExactCore(offset, dst);
+    }
+    void ReadExactCore(long offset, Span<byte> dst)
+    {
+        VisitLog?.OnVisit(offset, dst.Length);   // kit #10 io
+        if (_v2) { V2ReadLogical(offset, dst); return; }
 #endif
+        ReadCard(offset, dst);
+    }
+    void ReadCard(long offset, Span<byte> dst)
+    {
         int done = 0;
         while (done < dst.Length)
         {
@@ -699,7 +785,7 @@ public sealed class PackReader : IDisposable
     public string Stats() =>
         $"pack {System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(Path))}: open {OpenMs:F1} ms (TOC {TocBytes / 1048576.0:F2} MiB, {_objCount} objects in {_files.Length} files, {_bundles.Length} bundles, {_shapes.Length} shapes, {_str.Length} strings); " +
         $"{Reads} reads {BytesRead / 1048576.0:F1} MiB in {ReadMs:F0} ms (window hits {WindowHits}); {TreeDecodes} trees decoded in {DecodeMs:F0} ms; {RawReads} raw; {ImageReads} images {ImageBytes / 1048576.0:F1} MiB; " +
-        $"primitive boxes shared {BoxesShared}, new {BoxesNew}" + AheadStats();
+        $"primitive boxes shared {BoxesShared}, new {BoxesNew}" + AheadStats() + V2Stats() + (LayerTiming ? $"; kit #10 layer time: {LayerCalls} calls, {LayerMs:F0} ms on the reading threads" : "");
     /// <summary><see cref="ReadAhead"/>'s part of <see cref="Stats"/> (empty when off).</summary>
     string AheadStats()
     {
@@ -710,9 +796,9 @@ public sealed class PackReader : IDisposable
     }
 
 #if SHEPHERD_EBOOT
-    public void Dispose() { lock (_ah) { _ahStop = true; Monitor.PulseAll(_ah); } _h.Dispose(); }
+    public void Dispose() { lock (_ah) { _ahStop = true; Monitor.PulseAll(_ah); } V2Dispose(); _h.Dispose(); }
 #else
-    public void Dispose() { Sched.Point(Sched.AheadDispose); lock (_ah) { _ahStop = true; Sched.PulseAll(_ah); } _h.Dispose(); }
+    public void Dispose() { Sched.Point(Sched.AheadDispose); lock (_ah) { _ahStop = true; Sched.PulseAll(_ah); } V2Dispose(); _h.Dispose(); }
 #endif
 
     // ------------------------------------------------------------------ value decoder

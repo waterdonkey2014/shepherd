@@ -1,0 +1,57 @@
+--- a/src/mono/mono/metadata/jit-icall-reg.h
++++ b/src/mono/mono/metadata/jit-icall-reg.h
+@@ -343,6 +343,7 @@
+ MONO_JIT_ICALL (mono_marshal_lookup_pinvoke) \
+ MONO_JIT_ICALL (mono_gsharedvt_constrained_call_fast) \
+ MONO_JIT_ICALL (mono_dummy_runtime_init_callback) \
++MONO_JIT_ICALL (mono_shepherd_k9_divfast_flags) /* SHEPHERD-VITA kit #9 (k9-divfast-flag.patch): a data address, never called; last: no id moves */ \
+ 	\
+ MONO_JIT_ICALL (count) \
+ 
+--- a/src/mono/mono/mini/mini-runtime.c
++++ b/src/mono/mono/mini/mini-runtime.c
+@@ -4912,8 +4912,35 @@
+ 
+ 	return domain;
+ }
++
++/*
++ * SHEPHERD-VITA device kit #9, track runtime (vita/patches/k9-divfast-flag.patch, vita/notes/kit9-runtime.md "E2 divfast"): the RUN-TIME
++ * switch of E2 divfast (vita/patches/k9-divfast-compiler.patch, an AOT compiler option). An image compiled with SHEPHERD_AOT_DIVFAST=1 loads
++ * this word in front of every emulated division / remainder -- through a JIT_ICALL_ADDR_NOCALL GOT slot: the JIT icall of the same name is
++ * registered with the word's ADDRESS as its "function" (it is never called) -- and takes a no-wrapper fast path only when the word allows:
++ *   2 = every fast path (the default);
++ *   1 = SHEPHERD_K9_DIVMOD=0 (E2 off): the 32-bit and constant-divisor fast paths only; a 64-bit division takes the wrapper call (on to
++ *       mono_lldiv & co., where E2 is off too: libgcc's 64-bit routine, as kit #8);
++ *   0 = SHEPHERD_K9_DIVFAST=0: no fast path -- every division is the wrapper call emitted before divfast, kit #8's code path.
++ * Read once from the environment (mini_init: before any managed code runs). The host's H8 line reads the word weakly. An image compiled
++ * without divfast never reads it; with the variables unset the compiler's output does not change (no other JIT icall id moves).
++ */
++gint32 mono_shepherd_k9_divfast_flags = 2;
+ 
+ static void
++k9_divfast_flags_init (void)
++{
++	const char *f = getenv ("SHEPHERD_K9_DIVFAST"), *d = getenv ("SHEPHERD_K9_DIVMOD");
++	if (f && (!strcmp (f, "0") || !strcmp (f, "off")))
++		mono_shepherd_k9_divfast_flags = 0;
++	else if (d && (!strcmp (d, "0") || !strcmp (d, "off")))
++		mono_shepherd_k9_divfast_flags = 1;
++	else
++		mono_shepherd_k9_divfast_flags = 2;
++	register_dyn_icall ((gpointer) &mono_shepherd_k9_divfast_flags, mono_shepherd_k9_divfast_flags, NULL, TRUE);
++}
++
++static void
+ register_icalls (void)
+ {
+ 	/*
+@@ -5176,6 +5203,8 @@
+ 
+ 	/* Register dummy icall placeholder for runtime init callback support in native-to-managed wrapper */
+ 	register_icall_no_wrapper (mono_dummy_runtime_init_callback, mono_icall_sig_void);
++
++	k9_divfast_flags_init ();   /* SHEPHERD-VITA kit #9: E2 divfast's run-time switch (above) */
+ 
+ #ifdef MONO_ARCH_HAS_REGISTER_ICALL
+ 	mono_arch_register_icall ();

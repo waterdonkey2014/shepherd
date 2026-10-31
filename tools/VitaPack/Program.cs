@@ -8,7 +8,7 @@ namespace Shepherd.VitaPack;
 /// tools/VitaPack — bakes the Vita pack (V3 part 2, vita/notes/v3b-pack.md) for the objects a recorded engine boot touched
 /// (SHEPHERD_PACK_RECORD) plus their PPtr closure.
 ///   dotnet bin/VitaPack.dll --data &lt;game Data dir&gt; --record &lt;rec.txt&gt; [--record &lt;rec2.txt&gt;] --out runtime/vitapack/&lt;name&gt;
-///          [--language &lt;code&gt; (default en)] [--keep-joystick-maps] [--closure full|none] [--max 2048] [--no-verify] [-j N]
+///          [--language &lt;code&gt; (default en)] [--keep-joystick-maps] [--closure full|none] [--max 2048] [--no-verify] [--no-payload-hash] [-j N]
 /// Writes &lt;out&gt;/shepherd.pack and &lt;out&gt;/report.txt. The pack is derived game data: --out must be under runtime/vitapack/.
 /// The FMOD bank key never enters a pack: FMODUnity.Settings is baked with an empty EncryptionKey (Trims.cs), and every bake
 /// ends with a key scan of its output (KeyScan.cs; a hit or an unreadable key fails the bake).
@@ -19,6 +19,8 @@ static class Program
 {
     public static string DataDir, OutDir; static readonly List<string> Records = new(), ScanRoots = new();
     public static string Closure = "full"; public static int MaxSide = 2048; static bool Verify = true, Bench; public static int Jobs = 4;
+    /// <summary>--no-payload-hash: no payload-hash TOC property (the bake as before kit #10; vita/notes/kit10-io.md "Review fixes").</summary>
+    public static bool NoPayloadHash;
     /// <summary>--language &lt;code&gt;: the one I2 language this pack carries (owner decision: single-language Vita builds;
     /// default English; the future builder lets each user pick one). --keep-joystick-maps: keep Rewired's 334 joystick maps.</summary>
     public static string Language = "en"; public static bool KeepJoystickMaps;
@@ -43,6 +45,14 @@ static class Program
 
     static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0] == "--repack") return Repack.Run(args);   // device kit #10 io: version 1 -> the chunked version 2
+        if (args.Length >= 3 && args[0] == "--stress") return Repack.Stress(args[1], args[2], args.Length > 3 ? int.Parse(args[3]) : 120);
+        if (args.Length >= 2 && args[0] == "--verify") return Repack.VerifyCli(args[1], args.Length > 2 && args[2] == "deep");
+        // kit #10 io review: a shepherd.pk2 against a shepherd.pack (every chunk; stage-owner.sh STAGE_PK2) / a pack folder opened as the engine does
+        if (args.Length >= 3 && args[0] == "--made-from") return Repack.MadeFromCli(args[1], args[2]);
+        if (args.Length >= 2 && args[0] == "--open") return Repack.OpenCli(args[1]);
+        if (args.Length >= 2 && args[0] == "--read-all") return Repack.ReadAllCli(args);
+        if (args.Length >= 3 && args[0] == "--replay") return Repack.ReplayCli(args);
         for (int i = 0; i < args.Length; i++)
             switch (args[i])
             {
@@ -56,6 +66,7 @@ static class Program
                 case "-j": Jobs = int.Parse(args[++i]); break;
                 case "--language": Language = args[++i]; break;
                 case "--keep-joystick-maps": KeepJoystickMaps = true; break;
+                case "--no-payload-hash": NoPayloadHash = true; break;
                 case "--scan-key": ScanRoots.Add(args[++i]); break;
                 default: Console.Error.WriteLine($"unknown argument {args[i]}"); return 2;
             }
@@ -64,7 +75,7 @@ static class Program
             var r = KeyScan.Run(DataDir, ScanRoots); KeyScan.Report(r, ScanRoots);
             return r.Clean ? 0 : 1;
         }
-        if (DataDir == null || OutDir == null || Records.Count == 0) { Console.Error.WriteLine("usage: VitaPack --data <Data> --record <rec> [--record ..] --out <runtime/vitapack/name> [--language en] [--keep-joystick-maps] [--closure full|none] [--max 2048] [--no-verify] [-j N]"); return 2; }
+        if (DataDir == null || OutDir == null || Records.Count == 0) { Console.Error.WriteLine("usage: VitaPack --data <Data> --record <rec> [--record ..] --out <runtime/vitapack/name> [--language en] [--keep-joystick-maps] [--closure full|none] [--max 2048] [--no-verify] [--no-payload-hash] [-j N]"); return 2; }
         OutDir = Path.GetFullPath(OutDir);
         if (!OutDir.Replace('\\', '/').Contains("/runtime/vitapack/")) { Console.Error.WriteLine($"refusing to write derived game data outside runtime/vitapack/: {OutDir}"); return 2; }
         Directory.CreateDirectory(OutDir);

@@ -1,0 +1,4 @@
+# device kit #9 (track jit, vita/notes/kit9-jit.md section 8): the JIT A/B, arm B -- kit #9's JIT as shipped, its own learning list,
+# the profiler timing the game's logic over 100 Main Menu frames. The other apps ignore these lines.
+SHEPHERD_JIT_LEARN=ux0:data/shepherd/cache/jit-learn-k9.tsv
+SHEPHERD_K7_PROF=time,zones,win=m+300:m+399

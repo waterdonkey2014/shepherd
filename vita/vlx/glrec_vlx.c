@@ -235,7 +235,7 @@ void *shepgl_proc(const char *name)
 	return NULL;
 }
 void *shepgl_raw(const char *name) { return NULL; }
-static char g_status[512];
+static char g_status[768];   /* (kit #9 review: 512 -> 768, the PHYCONT + spill note) */
 static int g_state;
 const char *shepgl_status(void) { return g_status; }
 int shepgl_state(void) { return g_state; }
@@ -248,9 +248,24 @@ GLuint shepgl_display_fbo(void) { return 0; }
  * standing in for the device's swap (vitaGL returns when the GPU and the display are ready: ~15-20 ms at the idle menu), which the
  * recording stand-in otherwise returns at once. Timing only: the calls, the record and the frames are the same. Off unless set. */
 static unsigned g_swap_delay_us;
+/* kit #10 boot track: VLX_GL_DISPLAY=1 in the app's env file -- each swap also does what vitaGL's display callback does, a
+ * sceDisplaySetFrameBuf of the frame (a buffer whose first word is "GLRG": vlx's display record names it), through the host's
+ * --wrap=sceDisplaySetFrameBuf when the build has the boot screen (k10_boot.inc.c holds vitaGL's flips off the display while it shows).
+ * Not recorded in glrec.txt (display only); off by default (kit #9's display records). */
+#include <psp2/display.h>
+static int g_gl_display;
+static uint32_t g_gl_display_word[16] = { 0x47524c47u };
+static void gl_display_flip(void)
+{
+	SceDisplayFrameBuf f; memset(&f, 0, sizeof f);
+	f.size = sizeof f; f.base = g_gl_display_word; f.pitch = 960; f.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8; f.width = 960; f.height = 544;
+	sceDisplaySetFrameBuf(&f, SCE_DISPLAY_SETBUF_NEXTFRAME);
+}
 void shepgl_swap(void)
 {
 	call(100);
+	if (g_gl_display)
+		gl_display_flip();
 	if (g_swap_delay_us)
 		sceKernelDelayThread(g_swap_delay_us);
 	g_swaps++;
@@ -262,7 +277,7 @@ unsigned shepgl_swap_count(void) { return g_swaps; }
 /* kit #8 boot track (the clean boot screen's black frame, shepgl_vita.c): NOT recorded and not counted -- on the device it presents one
  * cleared frame before the engine starts and leaves no GL state changed, so the engine's record is the same with and without it */
 static unsigned g_boot_frames;
-int shepgl_boot_frame(void) { g_boot_frames++; return 1; }
+int shepgl_boot_frame(void) { g_boot_frames++; if (g_gl_display) gl_display_flip(); return 1; }
 /* kit #8 boot track (the engine's real video): VRAM stands in as the modelled CDRAM (not recorded: the host calls these on the main thread,
  * which makes no GL calls in the MT apps); shepgl_tex_data is a GL-thread call and is recorded (call 121) */
 static struct { void *p; SceUID uid; unsigned kib; } g_vram[8];
@@ -323,15 +338,45 @@ static void model_vitagl_usermem(const shepgl_config *c)
 	snprintf(g_usermem_note, sizeof g_usermem_note, "; VLX_GL_USERMEM=1: took %u KiB of user memory (block 0x%x) + a 1 MiB-stack gc thread stand-in (0x%x)",
 	         take / 1024, (unsigned)b, (unsigned)t);
 }
+/* kit #9 device track: vitaGL's init takes EVERY free PHYCONT page (its PHYCONT pool: the device's MEM after-gl line says phycont=0) -- the
+ * reason the engine's real video was refused on the owner's Vita (sceVideodecInitLibrary 0x80024302; vlx.c models the library's own 6,144
+ * KiB). Modelled as one memblock of all free PHYCONT; VLX_GL_PHYCONT=0 in the app's env file = kit #8's stand-in (no PHYCONT taken). */
+/* kit #9 review (finding 1): the VRAM it costs -- vitaGL's two per-frame circular pools took 21,846 KiB of its PHYCONT pool at frame 0 on every
+ * kit #8 device log ("phycont 4778/26624" free/total); a pool smaller than that puts one of them (10,923 KiB; both below 10,923) into its
+ * VRAM pool (CDRAM) for the whole run. The VRAM pool model below (VLX_VRAM_FREE_KIB=<KiB>) subtracts that spill, so the engine's preload
+ * (Runtime/K8Preload.cs: ShepGl.PoolKiB(0)) sees what a SANE reading would show; VLX_GL_SPILL=0 in the env file = no spill modelled.
+ * Review round 2 (finding 4): the owner's play apps (00097 / 00098 / 00095 / 00193 / 00194) do NOT read a sane figure -- from CP500 on every
+ * kit #8 log says "vram 1733632/98304" (more free than the total) and both preloads said "up to 16 MiB of video memory (1692 MiB free)", so
+ * on the device the preload's clamp never limits and it always takes its whole budget; VLX_VRAM_FREE_KIB=device models that reading (the
+ * gate of the device's configuration). Neither models the spill's own cost: this stand-in has no texture VRAM pool, so a scene running out
+ * of VRAM because of the ~10.7 MiB spill cannot show in any vlx run (the cost is an ESTIMATE, unverified until a device run). */
+static char g_phycont_note[200];
+static unsigned g_spill_kib;
+static void model_vitagl_phycont(void)
+{
+	const char *pc = getenv("VLX_GL_PHYCONT");
+	if (pc && pc[0] == '0') { snprintf(g_phycont_note, sizeof g_phycont_note, "; VLX_GL_PHYCONT=0: no PHYCONT taken (kit #8's stand-in)"); return; }
+	SceKernelFreeMemorySizeInfo fi; memset(&fi, 0, sizeof fi); fi.size = sizeof fi; sceKernelGetFreeMemorySize(&fi);
+	unsigned take = (unsigned)fi.size_phycont & ~0xfffffu;
+	SceUID b = take ? sceKernelAllocMemBlock("vlx-vitagl-phycont", SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW, take, NULL) : -1;
+	const char *sp = getenv("VLX_GL_SPILL");
+	unsigned tk = take / 1024u;
+	g_spill_kib = (sp && sp[0] == '0') ? 0 : tk >= 2u * 10923u ? 0 : tk >= 10923u ? 10923u : 2u * 10923u;
+	snprintf(g_phycont_note, sizeof g_phycont_note, "; vitaGL's PHYCONT pool modelled: took %u KiB (block 0x%x; VLX_GL_PHYCONT=0: none)%s", tk, (unsigned)b,
+	         g_spill_kib ? (g_spill_kib > 10923u ? "; both per-frame circular pools (21,846 KiB) spill to VRAM (VLX_GL_SPILL=0: none)" : "; one per-frame circular pool (10,923 KiB) spills to VRAM (VLX_GL_SPILL=0: none)") : "");
+}
 int shepgl_init(const shepgl_config *c)
 {
 	model_vitagl_usermem(c);
+	model_vitagl_phycont();
 	{
 		const char *sd = getenv("VLX_SWAP_DELAY_US");
 		g_swap_delay_us = sd && atoi(sd) > 0 ? (unsigned)atoi(sd) : 0;
+		const char *gd = getenv("VLX_GL_DISPLAY");   /* kit #10 */
+		g_gl_display = gd && gd[0] == '1';
 	}
-	snprintf(g_status, sizeof g_status, "vlx RECORDING stand-in for vitaGL (no GPU, no pools; every GL call hashed into runtime/logs/glrec.txt): %dx%d, ram_threshold %d MiB (not applied), gc thread affinity 0x%x (not applied)%s",
-	         c->width, c->height, c->ram_threshold >> 20, (unsigned)c->gc_affinity, g_usermem_note);
+	snprintf(g_status, sizeof g_status, "vlx RECORDING stand-in for vitaGL (no GPU, no pools; every GL call hashed into runtime/logs/glrec.txt): %dx%d, ram_threshold %d MiB (not applied), gc thread affinity 0x%x (not applied)%s%s",
+	         c->width, c->height, c->ram_threshold >> 20, (unsigned)c->gc_affinity, g_usermem_note, g_phycont_note);
 	{   /* kit #8 boot review (failure-path test only): VLX_GL_INIT_FAIL=1 in the app's env file = vitaGL did not come up (shepgl_init 0) */
 		const char *f = getenv("VLX_GL_INIT_FAIL");
 		if (f && !strcmp(f, "1")) { size_t l = strlen(g_status); snprintf(g_status + l, sizeof g_status - l, "; VLX_GL_INIT_FAIL=1: init failure modelled"); return 0; }
@@ -353,9 +398,11 @@ const char *shepgl_pool_name(int pool)
 unsigned shepgl_pool_kib(int pool, int total)
 {
 	const char *e = pool == 0 ? getenv("VLX_VRAM_FREE_KIB") : NULL;
+	if (e && !strcmp(e, "device")) return total ? 98304 : 1733632;   /* kit #9 review round 2 (finding 4): the play apps' reading on the owner's PCH-2000 */
 	unsigned f = e ? (unsigned)strtoul(e, NULL, 10) : 0;
 	if (!f) return 0;
 	if (total) return 98304;
+	f = f > g_spill_kib ? f - g_spill_kib : 0;   /* kit #9 review (finding 1): vitaGL's circular pool(s) that went to VRAM */
 	return f > g_vram_held_kib ? f - g_vram_held_kib : 0;
 }
 int shepgl_shader_binary_size(GLuint shader) { return -1; }

@@ -1,0 +1,311 @@
+diff -ruN a/src/mono/mono/sgen/sgen-marksweep.c b/src/mono/mono/sgen/sgen-marksweep.c
+--- a/src/mono/mono/sgen/sgen-marksweep.c
++++ b/src/mono/mono/sgen/sgen-marksweep.c
+@@ -2825,6 +2825,63 @@
+ 	mono_native_tls_set_value (worker_block_free_list_key, worker_free_blocks);
+ }
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #10, track memory (vita/notes/kit10-memory.md; mono-vita.h): extra slot sizes for the major heap's blocks. sgen's
++ * own table (26 sizes on the Vita's 16 KiB blocks: 8 ... 200, 256, 328, ... 8000) leaves an object just past a size in the next, up to 28 %
++ * bigger slot (a 208-byte object in a 256-byte slot); the host may add sizes before mono_jit_init* (the census's most-wasted object sizes).
++ * Only where objects of those sizes are placed changes; none set (default) = sgen's table exactly. */
++#define VITA_MAX_EXTRA_SIZES 32
++static int vita_extra_sizes [VITA_MAX_EXTRA_SIZES];
++static int vita_extra_size_n;
++void mono_vita_gc_set_size_classes (const int *sizes, int n);
++void
++mono_vita_gc_set_size_classes (const int *sizes, int n)
++{
++	vita_extra_size_n = 0;
++	for (int i = 0; i < n && vita_extra_size_n < VITA_MAX_EXTRA_SIZES; i++) {
++		int sz = sizes [i] & ~(SGEN_ALLOC_ALIGN - 1);
++		if (sz >= 16 && sz < SGEN_MAX_SMALL_OBJ_SIZE)
++			vita_extra_sizes [vita_extra_size_n++] = sz;
++	}
++}
++/* t holds the stock table (stock_n sizes, ascending) and room for the extras: merge, sort, drop duplicates; returns the new count */
++static int
++vita_merge_size_classes (int *t, int stock_n)
++{
++	int n = stock_n;
++	for (int i = 0; i < vita_extra_size_n; i++)
++		t [n++] = vita_extra_sizes [i];
++	for (int i = 1; i < n; i++) {   /* (insertion sort: at most 26 + 32 entries, once at start-up) */
++		int v = t [i], j = i - 1;
++		while (j >= 0 && t [j] > v) { t [j + 1] = t [j]; j--; }
++		t [j + 1] = v;
++	}
++	int m = 0;
++	for (int i = 0; i < n; i++)
++		if (!m || t [i] != t [m - 1])
++			t [m++] = t [i];
++	return m;
++}
++/* the slot an object of 'size' bytes takes in the major heap (0: a large object, or before sgen's init) -- for the host's census */
++int mono_vita_gc_slot_size (size_t size);
++int
++mono_vita_gc_slot_size (size_t size)
++{
++	if (!block_obj_sizes || size > SGEN_MAX_SMALL_OBJ_SIZE)
++		return 0;
++	return block_obj_sizes [ms_find_block_obj_size_index (size)];
++}
++/* the table itself (for the host's K10 line): up to 'max' sizes into 'out', returns how many sgen has */
++int mono_vita_gc_size_classes (int *out, int max);
++int
++mono_vita_gc_size_classes (int *out, int max)
++{
++	for (int i = 0; i < num_block_obj_sizes && i < max; i++)
++		out [i] = block_obj_sizes [i];
++	return num_block_obj_sizes;
++}
++#endif
++
+ static void
+ sgen_marksweep_init_internal (SgenMajorCollector *collector, gboolean is_concurrent, gboolean is_parallel)
+ {
+@@ -2846,8 +2903,20 @@
+ 		is_parallel = FALSE;
+ 
+ 	num_block_obj_sizes = ms_calculate_block_obj_sizes (MS_BLOCK_OBJ_SIZE_FACTOR, NULL);
++#ifdef HOST_VITA
++	/* kit #10 memory (the size-class audit): the host's extra slot sizes join sgen's own (mono_vita_gc_set_size_classes; none = kit #9) */
++	if (vita_extra_size_n) {
++		int stock_n = num_block_obj_sizes;
++		int *t = (int *)sgen_alloc_internal_dynamic (sizeof (int) * (stock_n + vita_extra_size_n), INTERNAL_MEM_MS_TABLES, TRUE);
++		ms_calculate_block_obj_sizes (MS_BLOCK_OBJ_SIZE_FACTOR, t);
++		num_block_obj_sizes = vita_merge_size_classes (t, stock_n);
++		block_obj_sizes = t;
++	} else
++#endif
++	{
+ 	block_obj_sizes = (int *)sgen_alloc_internal_dynamic (sizeof (int) * num_block_obj_sizes, INTERNAL_MEM_MS_TABLES, TRUE);
+ 	ms_calculate_block_obj_sizes (MS_BLOCK_OBJ_SIZE_FACTOR, block_obj_sizes);
++	}
+ 
+ 	evacuate_block_obj_sizes = (gboolean *)sgen_alloc_internal_dynamic (sizeof (gboolean) * num_block_obj_sizes, INTERNAL_MEM_MS_TABLES, TRUE);
+ 	for (i = 0; i < num_block_obj_sizes; ++i)
+diff -ruN a/src/mono/mono/sgen/sgen-memory-governor.c b/src/mono/mono/sgen/sgen-memory-governor.c
+--- a/src/mono/mono/sgen/sgen-memory-governor.c
++++ b/src/mono/mono/sgen/sgen-memory-governor.c
+@@ -565,6 +565,27 @@
+ 	return TRUE;
+ }
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #10, track memory (vita/notes/kit10-memory.md, mono-vita.h): the shared pool moves the GC heap's limits at run
++ * time as newlib grows into the pool (and gives room back). Plain stores: sgen reads both at its next check (the allocation paths and
++ * sgen_need_major_collection); sgen_memgov_available_free_space already clamps a cap below what is allocated to 0, so lowering it only makes
++ * the next allocation collect first (and, when even that does not fit, an OutOfMemoryException -- the memory guard's case, as at a fixed cap). */
++void mono_vita_gc_set_heap_limits (size_t max_heap, size_t soft_limit);
++void
++mono_vita_gc_set_heap_limits (size_t max_heap, size_t soft_limit)
++{
++	if (!max_heap)
++		return;
++	if (soft_limit > max_heap)
++		soft_limit = max_heap;
++	max_heap_size = max_heap;
++	if (soft_limit)
++		soft_heap_limit = soft_limit;
++	sgen_gc_info.total_available_memory_bytes = max_heap;
++	sgen_gc_info.high_memory_load_threshold_bytes = GDOUBLE_TO_UINT64 (.9 * sgen_gc_info.total_available_memory_bytes);
++}
++#endif
++
+ void
+ sgen_memgov_init (size_t max_heap, size_t soft_limit, gboolean debug_allowance, double allowance_ratio, double save_target)
+ {
+diff -ruN a/src/mono/mono/utils/mono-mmap-vita.c b/src/mono/mono/utils/mono-mmap-vita.c
+--- a/src/mono/mono/utils/mono-mmap-vita.c
++++ b/src/mono/mono/utils/mono-mmap-vita.c
+@@ -68,13 +68,23 @@
+ 		stats->free_extents, (unsigned)(stats->largest_free / 1024), (unsigned)(request / 1024), stats->exec_requests);
+ }
+ 
++static guint32 pool_floor_page;   /* kit #10 memory (the shared pool, policy 3): arena requests never start below this page */
++static gboolean pool_on;          /* kit #10 memory: policy 3 is set (newlib's pages [0, pool_taken_pages) belong to the host) */
++
+ static void
+ fill_stats_locked (MonoVitaArenaStats *s)
+ {
+ 	guint32 largest = 0;
+-	for (guint32 i = 0; i < n_extents; ++i)
+-		if (extents [i].count > largest)
+-			largest = extents [i].count;
++	for (guint32 i = 0; i < n_extents; ++i) {
++		guint32 c = extents [i].count;
++		/* kit #10 memory: in the shared pool only what lies at or above the floor is the arena's to use (below it: newlib's room) */
++		if (pool_on) {
++			guint32 e = extents [i].start + extents [i].count;
++			c = e <= pool_floor_page ? 0 : (extents [i].start >= pool_floor_page ? extents [i].count : e - pool_floor_page);
++		}
++		if (c > largest)
++			largest = c;
++	}
+ 	s->arena_size = (size_t)arena_pages * VITA_PAGE;
+ 	s->used = used_bytes;
+ 	s->peak = peak_bytes;
+@@ -277,7 +287,9 @@
+ 		gsize lo = (gsize)(arena_base + (size_t)extents [i].start * VITA_PAGE);
+ 		gsize hi = (gsize)(arena_base + ((size_t)extents [i].start + extents [i].count) * VITA_PAGE);
+ 		gsize at = (hi - (size_t)pages * VITA_PAGE) & ~(gsize)(align - 1);
+-		if (at < lo)
++		if (pool_on && lo < (gsize)(arena_base + (size_t)pool_floor_page * VITA_PAGE))
++			lo = (gsize)(arena_base + (size_t)pool_floor_page * VITA_PAGE);   /* kit #10 memory: never below the shared pool's floor */
++		if (hi < lo + (size_t)pages * VITA_PAGE || at < lo)
+ 			continue;
+ 		guint32 start = (guint32)((at - (gsize)arena_base) / VITA_PAGE);
+ 		return extent_carve (i, start, pages) ? start : VITA_ALLOC_TABLE_FULL;
+@@ -289,7 +301,8 @@
+ mono_vita_vm_arena_set_policy (int policy, size_t high_min)
+ {
+ 	pthread_mutex_lock (&arena_mutex);
+-	arena_policy = policy == MONO_VITA_ARENA_TWO_ENDED || policy == MONO_VITA_ARENA_TWO_ENDED_MAJOR_HIGH ? policy : MONO_VITA_ARENA_FIRST_FIT;
++	arena_policy = policy == MONO_VITA_ARENA_TWO_ENDED || policy == MONO_VITA_ARENA_TWO_ENDED_MAJOR_HIGH || policy == MONO_VITA_ARENA_POOL ? policy : MONO_VITA_ARENA_FIRST_FIT;
++	pool_on = arena_policy == MONO_VITA_ARENA_POOL;   /* (kit #10 memory: the shared pool -- mono_vita_vm_arena_pool_* below) */
+ 	arena_high_min = high_min;
+ 	pthread_mutex_unlock (&arena_mutex);
+ }
+@@ -307,6 +320,92 @@
+ 	pthread_mutex_unlock (&arena_mutex);
+ }
+ 
++/* ---- device kit #10, track memory: the SHARED POOL (vita/notes/kit10-memory.md; mono-vita.h mono_vita_vm_arena_pool_*) ----
++ * One block holds newlib's heap AND the Mono arena: the host hands the whole block to mono_vita_vm_arena_init, sets policy 3, and its
++ * _sbrk_r takes newlib's pages from the arena's LOW end upward (pool_take); every arena request is placed top-down from the HIGH end
++ * and never below the FLOOR (pool_set_floor) -- the pages between newlib's top and the floor are newlib's guaranteed room. newlib's pages
++ * are not counted in used / peak (the host reports them). Policy 0 / 1 / 2 (kit #9) never reach this code. */
++static guint32 pool_taken_pages;   /* newlib's pages: [0, pool_taken_pages) */
++
++/* the extent that holds page 'pg' (free), or -1 */
++static int
++extent_holding (guint32 pg)
++{
++	for (guint32 i = 0; i < n_extents && extents [i].start <= pg; ++i)
++		if (pg < extents [i].start + extents [i].count)
++			return (int)i;
++	return -1;
++}
++
++int
++mono_vita_vm_arena_pool_take (size_t new_top)
++{
++	int res = -1;
++	pthread_mutex_lock (&arena_mutex);
++	guint32 np = (guint32)((new_top + VITA_PAGE - 1) / VITA_PAGE);
++	if (pool_on && arena_base && np <= pool_floor_page) {
++		if (np <= pool_taken_pages) {
++			res = 0;   /* (already newlib's) */
++		} else {
++			int i = extent_holding (pool_taken_pages);
++			/* [taken, floor) is always free (the arena never allocates below the floor): one free extent starts at 'taken' */
++			if (i >= 0 && extents [i].start == pool_taken_pages && extents [i].start + extents [i].count >= np &&
++			    extent_carve ((guint32)i, pool_taken_pages, np - pool_taken_pages)) {
++				pool_taken_pages = np;
++				res = 0;
++			}
++		}
++	}
++	pthread_mutex_unlock (&arena_mutex);
++	return res;
++}
++
++int
++mono_vita_vm_arena_pool_set_floor (size_t floor)
++{
++	int res = -1;
++	pthread_mutex_lock (&arena_mutex);
++	guint32 fp = (guint32)((floor + VITA_PAGE - 1) / VITA_PAGE);
++	if (pool_on && arena_base && fp >= pool_taken_pages && fp <= arena_pages) {
++		if (fp <= pool_floor_page) {
++			pool_floor_page = fp;   /* lowered (or kept): newlib gives room back to the arena */
++			res = 0;
++		} else {
++			/* raised: only over free pages -- [old floor, new floor) inside one free extent (an arena allocation there keeps the floor) */
++			int i = extent_holding (pool_floor_page);
++			if (i >= 0 && extents [i].start + extents [i].count >= fp) {
++				pool_floor_page = fp;
++				res = 0;
++			}
++		}
++	}
++	pthread_mutex_unlock (&arena_mutex);
++	return res;
++}
++
++void
++mono_vita_vm_arena_pool_get (size_t *taken, size_t *floor, size_t *lowest_used)
++{
++	pthread_mutex_lock (&arena_mutex);
++	if (taken)
++		*taken = (size_t)pool_taken_pages * VITA_PAGE;
++	if (floor)
++		*floor = (size_t)pool_floor_page * VITA_PAGE;
++	if (lowest_used) {
++		/* the lowest page the arena uses above the floor: the end of the free extent holding the floor (the arena size when all free) */
++		int i = extent_holding (pool_floor_page);
++		*lowest_used = (size_t)(i >= 0 ? extents [i].start + extents [i].count : pool_floor_page) * VITA_PAGE;
++	}
++	pthread_mutex_unlock (&arena_mutex);
++}
++
++/* the arena's first allocatable page (newlib's region starts here in the shared pool) */
++void *
++mono_vita_vm_arena_pool_base (void)
++{
++	return arena_base;
++}
++
+ typedef enum {
+ 	VITA_FREE_OK,
+ 	VITA_FREE_OVERLAP,     /* double free: the range overlaps the free extent in *conflict */
+@@ -381,7 +480,12 @@
+ 		gboolean high = arena_policy != MONO_VITA_ARENA_FIRST_FIT && !addr && !(flags & MONO_MMAP_FIXED) &&
+ 			(arena_policy == MONO_VITA_ARENA_TWO_ENDED_MAJOR_HIGH ? type == MONO_MEM_ACCOUNT_SGEN_MARKSWEEP
+ 			 : (type == MONO_MEM_ACCOUNT_SGEN_LOS || (arena_high_min && bytes >= arena_high_min && type != MONO_MEM_ACCOUNT_SGEN_MARKSWEEP)));
+-		gint64 p = high ? arena_alloc_high_locked (np, alignment)
++		/* kit #10 memory, the shared pool (policy 3): EVERY request top-down above the floor -- an address hint is only a hint (ignored); a
++		 * fixed request is served only at or above the floor (below it lies newlib's room) */
++		gboolean pool_fixed_low = pool_on && (flags & MONO_MMAP_FIXED) && (!addr || (guint8 *)addr < arena_base + (size_t)pool_floor_page * VITA_PAGE);
++		if (pool_on && !(flags & MONO_MMAP_FIXED))
++			high = TRUE;
++		gint64 p = pool_fixed_low ? VITA_ALLOC_NO_SPACE : high ? arena_alloc_high_locked (np, alignment)
+ 			: arena_alloc_locked (np, alignment, (guint8 *)addr, (flags & MONO_MMAP_FIXED) != 0);
+ 		if (p >= 0 && arena_policy != MONO_VITA_ARENA_FIRST_FIT) {
+ 			if (high) {
+diff -ruN a/src/mono/mono/utils/mono-vita.h b/src/mono/mono/utils/mono-vita.h
+--- a/src/mono/mono/utils/mono-vita.h
++++ b/src/mono/mono/utils/mono-vita.h
+@@ -106,6 +106,30 @@
+ /* how many allocations were placed from the high end, and the lowest address the high end has reached (offset from the arena base;
+  * the arena size when none) -- the gap between the two ends is what the largest free extent can be */
+ MONO_VITA_API void mono_vita_vm_arena_get_ends (unsigned *high_allocs, size_t *low_top, size_t *high_bottom);
++/* ---- device kit #10, track memory (vita/notes/kit10-memory.md; vita/patches/k10-memory.patch). Every default is kit #9's behaviour. ----
++ * THE SHARED POOL: policy 3 (mono_vita_vm_arena_set_policy (MONO_VITA_ARENA_POOL, 0), before any arena request) -- one block for newlib's
++ * heap and the arena: EVERY arena request is placed top-down from the high end (address hints ignored) and never below the FLOOR; the
++ * host's newlib takes pages from the arena base upward with pool_take. Offsets are from mono_vita_vm_arena_pool_base (). newlib's pages
++ * are not in used / peak; largest_free counts only what lies at or above the floor. */
++#define MONO_VITA_ARENA_POOL 3
++/* newlib's top -> new_top (rounded up to a page): takes [old top, new_top) -- 0, or -1 when new_top is above the floor (raise it first) */
++MONO_VITA_API int mono_vita_vm_arena_pool_take (size_t new_top);
++/* moves the floor: down to newlib's top at the lowest; up only over free pages (-1, unchanged, when an arena allocation lies below the new
++ * floor) */
++MONO_VITA_API int mono_vita_vm_arena_pool_set_floor (size_t floor);
++/* newlib's top, the floor, and the lowest page the arena uses (the top of the free run that holds the floor) */
++MONO_VITA_API void mono_vita_vm_arena_pool_get (size_t *taken, size_t *floor, size_t *lowest_used);
++MONO_VITA_API void *mono_vita_vm_arena_pool_base (void);
++/* the GC heap's limits at run time (the shared pool moves them as newlib grows): max-heap-size and soft-heap-limit, in bytes (soft is
++ * clamped to max). Plain stores sgen reads at its next check; lowering the cap below what is allocated only makes the next allocation
++ * collect first. */
++MONO_VITA_API void mono_vita_gc_set_heap_limits (size_t max_heap, size_t soft_limit);
++/* THE SIZE-CLASS AUDIT: extra slot sizes for the major heap (multiples of 8 below 8000; at most 32), joined to sgen's own table at its init
++ * -- call before mono_jit_init*. None (default) = sgen's table exactly. */
++MONO_VITA_API void mono_vita_gc_set_size_classes (const int *sizes, int n);
++/* after init: the slot an object of 'size' bytes takes (0 = the large-object space), and sgen's table (returns its length) */
++MONO_VITA_API int mono_vita_gc_slot_size (size_t size);
++MONO_VITA_API int mono_vita_gc_size_classes (int *out, int max);
+ /* lever 32: called on every sgen worker thread (concurrent mark / sweep) as it starts, before it takes any work (pin it, name it, log it).
+  * Must not call into Mono. index = the worker's index in sgen's thread pool. */
+ typedef void (*MonoVitaGcThreadFn) (int index);

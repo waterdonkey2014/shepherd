@@ -43,6 +43,20 @@ struct K8Launch {
 	 * Called once, by the host's main thread, before the partition. Safe when there is no splash (returns 0 at once). */
 	int (*release) (void);
 	unsigned wait_ms_max;                   /* release's cap (default 15000: a decoder that hangs must not stop the boot) */
+	/* device kit #9, track device (appended: kit #8's fields keep their places; the launcher and the module are built together) */
+	int k9_delay;                           /* 1 = the splash tolerates the decoder's output delay (SHEPHERD_K9_AVC_DELAY=0: kit #8 -- no picture = stop) */
+	unsigned out_delay;                     /* access units the decoder took before its first picture (0 = a picture per access unit) */
+	unsigned fed, drained;                  /* access units given to the decoder; pictures returned by sceAvcdecDecodeStop after the last one */
+	/* device kit #10, track boot (appended): the drain (k8_avc.h "THE DRAIN") */
+	int k10_flush;                          /* K10_FLUSH_* the splash used (SHEPHERD_K10_AVC_FLUSH; 0 = kit #9's end-of-stream call) */
+	unsigned refed, flushed;                /* flush access units fed (the clip's own again), pictures the flush brought out (refeed + stop1) */
+	int flush_rc;                           /* the first refused flush call (0 = none) */
+	int k10_fallback;                       /* 1 = the refeed was refused and stop1 was tried; 2 = the refeed's guard was set (runtime/k10-avc-refeed.off: stop1) */
+	/* kit #10 review fixes (appended): the second copy's identity (finding 5) */
+	int k10_tag;                            /* 1 = the flush access units carried their own time stamp (SHEPHERD_K10_AVC_TAG=0: none) */
+	unsigned second;                        /* pictures of the clip's SECOND copy that came out (never shown: the splash ended there) */
+	/* kit #10 integration review (appended): the time-stamp check made provable (k8_avc.h K8Avc.pts_seen / pts_bad / flush_ok) */
+	unsigned pts_seen, pts_bad, flush_ok;
 };
 
 #endif
