@@ -12,6 +12,9 @@ findings back. Issues and pull requests are welcome, including failed experiment
    opt-in switch, off by default, and says so.
 4. **Label every number**: MEASURED (device, with model / firmware / clock), EMULATED (vlx / QEMU), DERIVED or ESTIMATE.
 5. **No private data**: no absolute paths from your machine, user names, IP addresses or tokens.
+6. **As low as possible, everywhere.** Frame time in every scene, boot, loads and transitions aim for the lowest the fidelity rule
+   allows; 60 / 30 fps targets are ceilings to meet, not goals to stop at, and small exact wins are welcome because they stack. Faster
+   frames and loads never mean the game itself runs faster: game time, timers and animation pace stay the original's.
 
 ## Good first contributions
 - The game-specific seams listed in [docs/PORTING-ANOTHER-GAME.md](docs/PORTING-ANOTHER-GAME.md): turn hard-wired first-game values
