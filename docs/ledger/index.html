@@ -138,6 +138,21 @@ td.k a { color:var(--fg); font-weight:600; text-decoration:none; white-space:now
 @media (prefers-reduced-motion: reduce) { .gdot { transition:none; } }
 .gslide .ph { display:grid; }
 .gtrack { max-width:760px; margin-left:auto; margin-right:auto; }
+/* one kit per view (owner 2026-11-01: "a panel should take up the whole area three or four of them take up on desktop view... on mobile
+   it can be smashed down to fit"): every card is the carousel's full width; wide screens put the numbers beside the items, items in columns */
+.track { grid-auto-columns:100%; gap:16px; }
+.track > .kit { height:min(78vh, 720px); }
+@media (min-width: 860px) {
+  .track > .kit { display:grid; grid-template-columns:minmax(260px, 32%) minmax(0, 1fr); grid-template-rows:auto auto minmax(0, 1fr); column-gap:28px; row-gap:10px; padding:20px 22px 10px; }
+  .track > .kit > header { grid-column:1 / -1; }
+  .track > .kit h2 { font-size:22px; }
+  .track > .kit > .stats { grid-column:1; grid-row:2 / 4; max-height:none; min-height:0; overflow-y:auto; align-content:start; font-size:13.5px; gap:6px; padding-right:6px; }
+  .track > .kit > h3 { grid-column:2; grid-row:2; }
+  .track > .kit > .scroll { grid-column:2; grid-row:3; }
+  .track > .kit:not(:has(> .stats)) { grid-template-columns:minmax(0, 1fr); }
+  .track > .kit:not(:has(> .stats)) > h3, .track > .kit:not(:has(> .stats)) > .scroll { grid-column:1; }
+  .track .items { grid-template-columns:repeat(auto-fill, minmax(min(100%, 300px), 1fr)); column-gap:24px; align-items:start; }
+}
 </style>
 <div class="wrap">
 <header>
@@ -211,7 +226,7 @@ td.k a { color:var(--fg); font-weight:600; text-decoration:none; white-space:now
   var track = document.getElementById('track');
   if (track) {
     var step = function(dir){
-      var card = track.querySelector('.kit'); var w = card ? card.getBoundingClientRect().width + 14 : 360;
+      var card = track.querySelector('.kit'); var w = card ? card.getBoundingClientRect().width + (parseFloat(getComputedStyle(track).columnGap) || 14) : 360;
       var n = Math.max(1, Math.floor(track.clientWidth / w));
       track.scrollBy({left: dir * n * w, behavior: reduce ? 'auto' : 'smooth'});
     };
