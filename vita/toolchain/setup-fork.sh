@@ -19,7 +19,10 @@ PATCH="$HERE/../patches/dotnet-runtime-v8.0.31-shepherd-vita.patch"
 cd "$R"
 [ "$(git rev-parse HEAD)" = "1219a42122cf5190c7f512850557e38c422430dc" ] || { echo "not v8.0.31 (1219a421)"; exit 1; }
 git apply --check "$PATCH"
-git apply --intent-to-add "$PATCH"
+# not `git apply --intent-to-add`: git 2.43 (Ubuntu 24.04's) drops every index entry the patch does not touch with it;
+# apply to the working tree, then mark the files the patch creates intent-to-add (the same result on every git)
+git apply "$PATCH"
+git apply --summary "$PATCH" | sed -n 's/^ create mode [0-7]* //p' | xargs git add -N
 # every file the patch creates must now be tracked (intent-to-add), none left as '??'
 if git status --porcelain | grep '^??'; then echo "untracked files after applying the patch (see above)"; exit 1; fi
 mkdir -p artifacts/obj

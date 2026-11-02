@@ -32,7 +32,9 @@ on the hardware; everything else is an estimate and says so.
 ## You need
 - **Your own copy of the game** you port. Shepherd never ships game files, and its build reads them only from your own install.
 - A PS Vita with HENkaku / Enso (taiHEN), and `libshacccg.suprx` extracted with ShaRKF00D (the runtime shader compiler).
-- macOS or Linux, [vitasdk](https://vitasdk.org) (with vitaGL from its package manager), the .NET 8 SDK, Python 3, CMake / Ninja.
+- A Mac with Apple silicon for the full build: the toolchain scripts, the Mac engine (Homebrew SDL3) and FmodBake assume macOS today.
+  On Linux the C# tools build; the rest still needs porting.
+- zsh (most scripts), [vitasdk](https://vitasdk.org) (with vitaGL from its package manager), the .NET 8 SDK, Python 3, CMake / Ninja.
 - Docker or OrbStack (only for the off-device harness).
 
 See [BUILD.md](BUILD.md) for the steps.
