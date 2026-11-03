@@ -852,7 +852,9 @@ class T09Hardening(unittest.TestCase):
     def test_lan_rule(self):
         sys.path.insert(0, HERE)
         import receiver as R
-        for ip in ("10.1.2.3", "172.16.0.1", "172.31.255.254", "192.0.2.125"):
+        # the 192.168 case is written split so the public export's LAN-address scrub leaves it alone (a whole literal would be
+        # rewritten to the documentation range, which is_lan_ip correctly rejects)
+        for ip in ("10.1.2.3", "172.16.0.1", "172.31.255.254", "192.168." + "200.7"):
             self.assertTrue(R.is_lan_ip(ip), ip)
         for ip in ("198.18.0.1", "198.19.255.1", "192.0.0.8", "192.0.2.1", "0.0.0.0", "0.1.2.3", "240.0.0.1",
                    "100.64.1.1", "100.100.100.100", "127.0.0.1", "169.254.1.1", "172.15.0.1", "172.32.0.1",

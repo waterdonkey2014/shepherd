@@ -1,0 +1,76 @@
+name: Linux checks
+
+# Builds and tests what needs no Mac, no PS Vita and no game files, on one Linux runner.
+# The work is done by .github/ci/linux-checks.sh (run it locally the same way); its header lists what is skipped and why:
+# the engine itself and every boot need the user's own game files, the VPK builds need vitasdk + the forked Mono runtime,
+# and some tests are macOS-only (CommonCrypto, afconvert, OpenGL on macOS, OrbStack / QEMU for vlx).
+# Kept lean for a private repository's minutes: one job, pushes that only touch docs are skipped, a newer push cancels the
+# run it replaces, and every step after the first still runs when an earlier one fails, so one run shows every result.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**/*.md", "LICENSE"]
+  pull_request:
+    paths-ignore: ["docs/**", "**/*.md", "LICENSE"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Leak checks (derived code; nothing .gitignore'd is tracked)
+        run: .github/ci/linux-checks.sh leaks
+
+      - name: Python files compile
+        if: ${{ !cancelled() }}
+        run: .github/ci/linux-checks.sh python
+
+      - name: Shell scripts parse
+        if: ${{ !cancelled() }}
+        run: |
+          command -v zsh > /dev/null || sudo apt-get install -y -qq --no-install-recommends zsh \
+            || { sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends zsh; }
+          .github/ci/linux-checks.sh shell
+
+      - name: C unit tests (Vita host helpers, System.Native shim, devlog client)
+        if: ${{ !cancelled() }}
+        run: |
+          # ASan on runners with high-entropy ASLR can fail at start-up; 28 bits is the usual value.
+          sudo sysctl -q -w vm.mmap_rnd_bits=28 || true
+          .github/ci/linux-checks.sh c-units
+
+      - name: Physics (Box2D + Unity layer) against the recorded goldens
+        if: ${{ !cancelled() }}
+        run: .github/ci/linux-checks.sh physics
+
+      - name: Audio engine builds (portable C library + tools)
+        if: ${{ !cancelled() }}
+        run: .github/ci/linux-checks.sh audio
+
+      - uses: actions/setup-dotnet@v4
+        if: ${{ !cancelled() }}
+        with:
+          dotnet-version: 8.0.x
+
+      - name: C# projects build + managed unit test
+        if: ${{ !cancelled() }}
+        run: .github/ci/linux-checks.sh dotnet
+
+      - name: devlog receiver unit tests
+        if: ${{ !cancelled() }}
+        run: .github/ci/linux-checks.sh receiver
