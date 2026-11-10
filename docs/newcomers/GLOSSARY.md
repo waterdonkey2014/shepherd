@@ -97,13 +97,14 @@ For example, the Mac engine against the Vita build under → vlx: the Vita must 
 **interpreter**: Mono's interpreter. It runs .NET code without compiling it: slow, but it runs anything. The game's own code runs
 here unless → game AOT or the → baseline JIT takes it.
 
-**kit (device kit #N)**: One round of changes to the first port, built, tested and measured on a real Vita. Kits 1 to 14 so far
-(see CHANGELOG and the → progress page). Many file and variable names carry their kit number (`k8_`, `K10Store`, ...).
+**kit (device kit #N)**: A numbered test build of a port, run on a real Vita. Many file, class and setting names still carry the
+number of the kit they arrived in (`k8_`, `K10Store`, `SHEPHERD_K13_...`); the number says when, not what. Renaming them by
+feature is planned.
 
 **launcher**: A tiny eboot (`vita/shepherd/launcher.c`). It shows the splash video through the hardware decoder while it loads
 the engine as a module (`shepherd.suprx`), so the screen is not black during the long load.
 
-**learning cache**: Kit 10's caches on the memory card (`Runtime/K10Store.cs`). They remember work from earlier boots to make later
+**learning cache**: The caches on the memory card (`Runtime/K10Store.cs`). They remember work from earlier boots to make later
 ones faster. The Settings menu has Cache Size / Clear Cache / Verify Files rows for them.
 
 **libshepphys**: Shepherd's physics library: → Box2D plus Unity's behaviours and a flat C API (`vita/physics/shim`). It is built for

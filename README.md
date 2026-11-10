@@ -13,13 +13,15 @@ exactly like the original; anything that deviates is opt-in.
 > and build scripts that grew on one machine.
 
 ## Where it stands
-Shepherd is for any Unity game; its first port is **Cult of the Lamb** (Unity, macOS build as the source), on one PS Vita (PCH-2000,
-firmware 3.65 + Enso). On the device today: boot, title, Main Menu (~25 fps idle at 444 MHz, from 2.3 fps at kit 1), Settings,
-Credits, New Game to the opening, touch and pad input, audio, video, sandboxed saves, 2D physics matching Unity on the tested scenes;
-boot to the Main Menu ~1.7 minutes. Not yet: gameplay on the device, gameplay frame rates, whole games. The tricks, gotchas and ideas
+Shepherd is for any Unity game. It has been brought up on one game so far (Cult of the Lamb, from its macOS build) on one PS Vita
+(PCH-2000, firmware 3.65 + Enso). Working on the device: boot, title, menus, settings, New Game to the opening, touch and pad input,
+audio, video, sandboxed saves, and 2D physics matching Unity on the tested scenes. Not yet: gameplay on the device, whole games.
+
+Frame rates and load times are not listed here on purpose: they depend on the game, the scene and how far its port has been tuned,
+and the first port is early. A number from one game's menu is not a limit of the engine or of the Vita. The tricks, gotchas and ideas
 behind it, for any game, are in the companion Claude plugin below.
 
-That port's kit-by-kit page, **Shepherd Progress**, lives in its own repository: [https://waterdonkey2014.github.io/shepherd-progress/](https://waterdonkey2014.github.io/shepherd-progress/).
+The first port's own progress page, **Shepherd Progress**, lives in its own repository: [https://waterdonkey2014.github.io/shepherd-progress/](https://waterdonkey2014.github.io/shepherd-progress/).
 
 ## You need
 - **Your own copy of the game** you port. Shepherd never ships game files, and its build reads them only from your own install.

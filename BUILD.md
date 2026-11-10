@@ -25,7 +25,7 @@ Paths must not contain spaces (CMake / the Vita toolchain).
   vita/toolchain/build-runtime-vita.sh                        # configure-vita.sh + libmonosgen-2.0.a for arm-vita-eabi
   vita/toolchain/gen-offsets.sh && vita/toolchain/build-cross.sh   # mono-aot-cross (host -> armv7-vita-eabihf)
   ```
-  The kit patches in `vita/patches/` (baseline JIT, interpreter cache, diagnostics) and `vita/llvm/` are applied by the scripts that
+  The patches in `vita/patches/` (baseline JIT, interpreter cache, diagnostics) and `vita/llvm/` are applied by the scripts that
   need them; their headers say which.
 - Optional LLVM AOT: `vita/llvm/fetch-llvm.sh` (downloads the official Mono LLVM 16 packages, sha256-pinned), then
   `vita/llvm/build-cross-llvm-armhf.sh`.
