@@ -204,7 +204,7 @@ static const entry k_entries[] = {
 #include "shepgl_entries.h"
 };
 #undef SHEPGL_E
-_Static_assert(sizeof k_entries / sizeof k_entries[0] == SHEPGL_COUNT, "Gl.cs has 51 entry points");
+_Static_assert(sizeof k_entries / sizeof k_entries[0] == SHEPGL_COUNT, "Gl.cs has SHEPGL_COUNT entry points");
 
 int shepgl_count(void) { return SHEPGL_COUNT; }
 const char *shepgl_name(int i) { return i >= 0 && i < SHEPGL_COUNT ? k_entries[i].name : NULL; }

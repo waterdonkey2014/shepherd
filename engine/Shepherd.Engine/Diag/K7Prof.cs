@@ -40,7 +40,9 @@ public static unsafe class K7Prof
     public const int ZFrame = 1, ZInput = 2, ZStarts = 3, ZFixed = 4, ZFixedUpd = 5, ZTriggers = 6, ZCoFixed = 7, ZUpdate = 8, ZCoNext = 9, ZSync = 10,
         ZInvokes = 11, ZVideo = 12, ZAnimator = 13, ZLate = 14, ZDestroy = 15, ZAsync = 16, ZRender = 17, ZRLayout = 18, ZRWorld = 19, ZRPost = 20,
         ZRUi = 21, ZREnd = 22, ZCoEnd = 23, ZEngEnd = 24, ZDiag = 25, ZPresent = 26, ZThrottle = 27, ZOverlay = 28, ZRWaitRt = 29, ZSort = 30, ZGc = 31,
-        ZRtJob = 40;
+        ZRtJob = 40,
+        // kit #13 speed: the layout zone split (nested in ZRLayout: its self time is then only what none of the three covers)
+        ZRLRoots = 32, ZRLRects = 33, ZRLWill = 34;
     const int FirstType = 64, MaxIds = 64 + 4096, Depth = 64;
     // (everything below is made by Init, at the first zone with the profiler on: off, this class holds only its switches)
     static string[] Names;
@@ -59,6 +61,7 @@ public static unsafe class K7Prof
             "k7 overlay", "render: wait for the render thread", "Active list sort (kit #8 zone)", "GC (the world stopped)" };
         for (int i = 0; i < z.Length; i++) Names[i] = z[i];
         Names[ZRtJob] = "render thread: frame job";
+        Names[ZRLRoots] = "render: layout: root canvases placed"; Names[ZRLRects] = "render: layout: rect size messages"; Names[ZRLWill] = "render: layout: willRenderCanvases (uGUI + game)";
         for (int i = 0; i < FirstType; i++) Names[i] ??= "zone " + i;
     }
 

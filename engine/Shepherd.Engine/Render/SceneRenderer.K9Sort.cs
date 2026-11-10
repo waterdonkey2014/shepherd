@@ -135,6 +135,7 @@ public static partial class SceneRenderer
         int c = FCmp(a.Layer, b.Layer); if (c != 0) return c;
         c = FCmp(a.Order, b.Order); if (c != 0) return c;
         c = FCmp(b.Dist, a.Dist); if (c != 0) return c;   // descending
+        if (K11World.Tie && _k11Cre[x] != _k11Cre[y]) return _k11Cre[x] < _k11Cre[y] ? -1 : 1;   // kit #11 gpu1 (WCmp's; the keys in their own array)
         return a.Seq < b.Seq ? -1 : a.Seq > b.Seq ? 1 : 0;
     }
 

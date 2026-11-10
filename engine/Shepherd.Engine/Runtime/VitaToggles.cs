@@ -35,7 +35,7 @@ namespace Shepherd.Engine.Runtime;
 /// log text by concatenation, not interpolation (each interpolated string inlines its handler), and reaches the game's types through a few
 /// reflection helpers.</summary>
 [ProfileOnly]   // log text and switch names only: no property-bag key is read here (Assets/Diet.cs)
-public static class VitaToggles
+public static partial class VitaToggles
 {
     /// <summary>The track's switch (on by default under the Vita profile).</summary>
     public static readonly bool On = Profile.Vita && Environment.GetEnvironmentVariable("SHEPHERD_K6_TOGGLES") != "0";
@@ -162,10 +162,14 @@ public static class VitaToggles
         if (RearRow || (K8Play.Rear && !_rear)) Impl.VitaPad.RearOn = _rear;   // kit #8: the saved rear touch / frame pacing choices from the first frame
         if (K8Play.Pacing) K8Play.PacingChoice = _pacing;   // (review fix: also without their rows -- SHEPHERD_K8_ROWS=0 -- while the feature is on; VitaPad
                                                             // touched here only as before or for a saved Off)
+        if (K8Play.Pacing && Render.K13Speed.PacingAb != 0) { K8Play.PacingChoice = Render.K13Speed.PacingAb > 0; Log.Info("[k13] Frame Pacing forced " + (K8Play.PacingChoice ? "ON" : "off") + " for this start by SHEPHERD_K13_PACING (the A/B arm; the saved Settings row is not changed)"); }
         _state = Host(0, 0);   // (kit #9 review: read before the restore's Save below -- op 0 only answers, so the order changes nothing else)
         if (!_mhzSaved && K9Default500) _mhz = 500;   // kit #9: 500 MHz by default in the play apps (the bit: host.c; the owner's saved choice wins)
         if (BakRow && _restore != null) { K8Play.RestoreBackup(_restore); _restore = null; Save(); }   // kit #8: a restore chosen last session, before the game reads its saves
         if (K10Cache.On) K10Cache.Configure(_cacheMb);   // kit #10: the learning cache's cap (the saved Cache Size; also without its row)
+#if !SHEPHERD_NO_K12MENUSB
+        K12View.Apply();                                   // kit #12: the saved Camera / Cutscene bars choices from the first frame
+#endif
         Log.Info("[k6] Settings > Graphics > PS Vita Settings rows ON (SHEPHERD_K6_TOGGLES=0: off): " + (text == null ? "no " + FileName + " yet, the defaults" : FileName) +
                  ": " + Choices() + (K9Default500 ? (_mhzSaved ? " (kit #9: 500 MHz is this app's default; the saved choice wins)" : " (kit #9: 500 MHz by default in the play apps; SHEPHERD_K9_ARM500_DEFAULT=0 = 444)") : "") +
                  (_mhzLegacy ? " (kit #9: the file's cpu_mhz=444 was written by kit #6-#8 with every row change, not chosen -- the default applies; a choice in the CPU Speed row is kept)" : "") +
@@ -200,6 +204,9 @@ public static class VitaToggles
             else if (key == "pacing" && (val == "on" || val == "off")) { _pacing = val == "on"; if (!PaceRow) _k8Kept += line + "\n"; }
             else if (key == "restore") { if (BakRow) _restore = val == "no" || val.Length == 0 ? null : val; else _k8Kept += line + "\n"; }
             else if (key == "cache_mb" && int.TryParse(val, out var cmb) && Array.IndexOf(K10Cache.SizesMb, cmb) >= 0) { _cacheMb = cmb; if (!K10Rows) _k10Kept += line + "\n"; }   // kit #10
+#if !SHEPHERD_NO_K12MENUSB
+            else if (K12Parse(key, val, line)) { }   // kit #12: camera= / camera_fights= / bars=
+#endif
             else Log.Warn("[k6] " + FileName + ": '" + line + "' ignored (core3=on|off, cpu_mhz=444|500)");
         }
         // kit #9 review (finding 5): a 500 is always a choice; a 444 only with the kit #9 mark (else kit #6-#8 wrote it with any row change)
@@ -216,7 +223,11 @@ public static class VitaToggles
                 "# Shepherd (PS Vita): Settings > Graphics > PS Vita Settings -- written by the app when a row changes; delete it for the defaults\ncore3=" +
                 (_core3 ? "on" : "off") + "\n" + (!K9Rules ? "cpu_mhz=" + _mhz + "\n" : _mhzSaved ? "cpu_mhz=" + _mhz + "\n" + K9Chosen + "\n" : "") + (OvlRow ? "overlay=" + (_overlay ? "on" : "off") + "\n" : _ovlKept != null ? "overlay=" + _ovlKept + "\n" : "") +
                 (RearRow ? "rear=" + (_rear ? "on" : "off") + "\n" : "") + (PaceRow ? "pacing=" + (_pacing ? "on" : "off") + "\n" : "") +
-                (BakRow ? "restore=" + (_restore ?? "no") + "\n" : "") + _k8Kept + (K10Rows ? "cache_mb=" + _cacheMb.ToString() + "\n" : _k10Kept)));
+                (BakRow ? "restore=" + (_restore ?? "no") + "\n" : "") + _k8Kept + (K10Rows ? "cache_mb=" + _cacheMb.ToString() + "\n" : _k10Kept)
+#if !SHEPHERD_NO_K12MENUSB
+                + K12SaveLines()   // kit #12
+#endif
+                ));
             if (err != null) { Log.Warn("[k6] " + FileName + ": not written (" + err + ")"); return; }
             Log.Info("[k6] saved " + FileName + ": " + Choices());
         }
@@ -246,16 +257,26 @@ public static class VitaToggles
 
     /// <summary>Lifecycle.For (once per type): the Settings menu's controller (its Start: the menu is open, the Reset-All watch begins) and
     /// the Graphics tab (its Start builds the rows).</summary>
+#if SHEPHERD_NO_K12MENUSB
     public static bool Watches(Type t) => (On || FsFixed) && (t.FullName == GfxType || t.FullName == MenuType);
+#else
+    public static bool Watches(Type t) => ((On || FsFixed) && (t.FullName == GfxType || t.FullName == MenuType)) || K12View.Watches(t);
+#endif
 
     /// <summary>Lifecycle's Start pass, right after the Start of a watched type: UISettingsMenuController (the Settings menu opened) or
     /// GraphicsSettings (the Graphics tab shown for the first time in this Settings menu: the rows). A failure leaves the tab as the game
     /// made it (one WRN line).</summary>
     public static void AfterStart(object o)
     {
+#if !SHEPHERD_NO_K12MENUSB
+        if (K12View.Watches(o.GetType())) { K12View.AfterStart(o); return; }   // kit #12: LetterBox (the Cutscene bars row)
+#endif
         if (o.GetType().FullName == MenuType) { MenuStart((Component)o); return; }
         if (FsFixed) FixFullscreenRow((MonoBehaviour)o);
         if (!On) return;
+#if !SHEPHERD_NO_K12MENUSB
+        if (K12Layout && _k12Panel != null) return;   // kit #12: the rows live in the PS Vita tab (built at its first show: K12TabShow)
+#endif
         try { Build((MonoBehaviour)o); }
         catch (Exception e)
         {
@@ -279,6 +300,9 @@ public static class VitaToggles
         _gfxData = GraphicsData();
         _next = Time.Realtime + 1.0;
         Live = true;
+#if !SHEPHERD_NO_K12MENUSB
+        if (K12Layout) K12MenuStart(menu);   // kit #12 (menusb): the PS Vita tab, the per-tab PS Vita sections, the description strip
+#endif
     }
 
     /// <summary>The game's Reset All (UISettingsMenuController.ResetAll: every tab's Reset, then SaveAndApply; GraphicsSettings.Reset puts a
@@ -301,11 +325,21 @@ public static class VitaToggles
         if (PaceRow) { _pacing = false; K8Play.PacingChoice = false; }
         if (BakRow) { if (_restore != null) K8Play.Unpin(); _restore = null; }   // (integration review: and the chosen backup's pin)
         if (K10Rows && _cacheMb != K10Cache.DefaultMb) { _cacheMb = K10Cache.DefaultMb; K10Cache.SetCap(_cacheMb); }   // kit #10: Cache Size back to 1 GB
+#if !SHEPHERD_NO_K12MENUSB
+        K12Reset();                                                                                                     // kit #12: Camera, fights, Cutscene bars
+#endif
         Save();
         return true;
     }
 
+#if SHEPHERD_NO_K12MENUSB
     static void Build(MonoBehaviour gs)
+#else
+    static void Build(MonoBehaviour gs) => Build(gs, false);
+    /// <summary><paramref name="k12"/> (kit #12 layout): <paramref name="gs"/> is the PS Vita tab (a clone of the Graphics tab whose own rows
+    /// are kept switched off as the templates): the same rows, in the PS Vita tab's sections (K12Sections), no 'PS Vita Settings' header.</summary>
+    static void Build(MonoBehaviour gs, bool k12)
+#endif
     {
         var content = (Get(gs, "_scrollRect") as ScrollRect)?.content;
         var fps = Get(gs, "_targetFpsSelector") as Component;     // MMHorizontalSelector (Target Frame Rate)
@@ -323,11 +357,19 @@ public static class VitaToggles
         holder.transform.SetParent(gs.transform, false);
         try
         {
+#if SHEPHERD_NO_K12MENUSB
             _made[0] = Clone(head, holder, "-- PS Vita Settings --", "PS Vita Settings");
+#else
+            if (!k12) _made[0] = Clone(head, holder, "-- PS Vita Settings --", "PS Vita Settings");
+#endif
             _made[1] = Clone(togRow, holder, "4th CPU Core", "4th CPU Core");
             _made[2] = Clone(selRow, holder, "CPU Speed", "CPU Speed");
             _made[3] = Clone(selRow, holder, "CPU Clock", "CPU Clock");
+#if SHEPHERD_NO_K12MENUSB
             _made[3].GetComponent<Selectable>().enabled = false;   // a readout: never selected, never navigated to, no pointer events
+#else
+            if (!k12) _made[3].GetComponent<Selectable>().enabled = false;   // a readout: never selected, never navigated to, no pointer events (kit #12: selectable, for its description)
+#endif
             if (OvlRow) _made[4] = Clone(togRow, holder, "Performance Overlay", "Performance Overlay");   // kit #7
             if (RearRow) _made[5] = Clone(togRow, holder, "Rear Touch", "Rear Touch (L2 R2 L3 R3)");                   // kit #8
             if (PaceRow) _made[6] = Clone(togRow, holder, "Frame Pacing", "Frame Pacing (30 / 20 / 15)");
@@ -340,7 +382,12 @@ public static class VitaToggles
                 _made[10] = Clone(selRow, holder, "Clear Cache", "Clear Cache");
                 _made[11] = Clone(selRow, holder, "Verify Files", "Verify Files");
             }
+#if SHEPHERD_NO_K12MENUSB
             foreach (var r in _made) r?.SetParent(content, false);
+#else
+            if (k12) K12Sections(holder, head, togRow, selRow, content);   // kit #12: section headers + the new rows, the PS Vita tab's order
+            else foreach (var r in _made) r?.SetParent(content, false);
+#endif
         }
         finally { UObject.Destroy(holder); }
 
@@ -352,6 +399,9 @@ public static class VitaToggles
         if (PaceRow) { _paceTog = _made[6].GetComponentInChildren(vsync.GetType(), true); _paceRow = _made[6].GetComponent<Selectable>(); }
         if (BakRow) { _bakSel = _made[7].GetComponentInChildren(fps.GetType(), true); _bakRow = _made[7].GetComponent<Selectable>(); }
         if (K10Rows) K10Build(fps.GetType());   // kit #10
+#if !SHEPHERD_NO_K12MENUSB
+        if (k12) K12AfterBuild(fps.GetType());  // kit #12: the new rows' values, the strip's texts
+#endif
         _clockText = Get(_clock, "_text"); _clockHelper = Get(_clock, "_textHelper");
         var cs = _made[3].GetComponent<Selectable>();
         Call(cs, "SetNormalTransitionState", null, null);   // the label in the rows' normal colour
@@ -440,6 +490,9 @@ public static class VitaToggles
     {
         var go = UObject.Instantiate(src.gameObject, holder.transform, false);
         go.name = name;
+#if !SHEPHERD_NO_K12MENUSB
+        if (!go.activeSelf) go.SetActive(true);   // kit #12: the PS Vita tab's templates are switched off (the holder is inactive: nothing wakes)
+#endif
         foreach (var c in go.GetComponentsInChildren<Component>(true))
             if (c != null && (c.GetType().FullName == "I2.Loc.Localize" || c.GetType().FullName == "disablePerPlatform")) UObject.DestroyImmediate(c);
         _tmpText.SetValue(FindTmp(go.transform), label);
@@ -685,7 +738,32 @@ public static class VitaToggles
     static void VerifyDone(string result)
     {
         Log.Info("[k10] Verify Files: " + result);
-        PushConfirm("Verify Files", result, true);
+        var shown = VerifyShort(K10Cache.Verify.ResultObj, result);
+        if (!ReferenceEquals(shown, result)) Log.Info("[k11] Verify Files window: \"" + shown + "\" (the full result: the line above; SHEPHERD_K11_VERIFY_SHORT=0 = kit #10's full text in the window)");
+        PushConfirm("Verify Files", shown, true);
+    }
+
+    /// <summary>Device kit #11 (track device; the owner's photo of kit #10: the result text too long for the window, shrunk and crammed): the window
+    /// shows one short line -- "OK -- 38.7 MiB checked at 5.7 MiB/s", "Stopped -- 12.0 MiB checked", "Problem found -- 2 of 3111 pieces failed
+    /// their check (see the log)" -- and the full result goes to the log (the [k10] line). SHEPHERD_K11_VERIFY_SHORT=0 or SHEPHERD_K11_DEVICE=0 =
+    /// kit #10's full text. Read from the io core's result object (PackVerify.Result) by name; anything missing = the full text, unchanged.</summary>
+    static string VerifyShort(object r, string full)
+    {
+        if (r == null || Environment.GetEnvironmentVariable("SHEPHERD_K11_VERIFY_SHORT") == "0" || Environment.GetEnvironmentVariable("SHEPHERD_K11_DEVICE") == "0") return full;
+        try
+        {
+            var t = r.GetType();
+            object F(string n) => t.GetField(n)?.GetValue(r);
+            if (F("Ok") is not bool ok || F("Stopped") is not bool stopped || F("StoredBytes") is not long bytes || F("Ms") is not double ms) return full;
+            int chunks = F("Chunks") is int c ? c : 0, blocks = F("Blocks") is int bl ? bl : 0, bad = F("Bad") is int b ? b : 0;
+            string mib = (bytes / 1048576.0).ToString("F1", System.Globalization.CultureInfo.InvariantCulture);
+            if (F("Error") is string err && err.Length > 0) return "Could not finish the check -- see the log";
+            if (ok) return "OK -- " + mib + " MiB checked at " + (ms > 0 ? (bytes / 1048576.0 / (ms / 1000)).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) : "?") + " MiB/s";
+            if (stopped) return "Stopped -- " + mib + " MiB checked";
+            int n = chunks > 0 ? chunks : blocks;
+            return "Problem found -- " + (n > 0 ? bad + " of " + n + " pieces failed their check" : "the pack's index failed its check") + " (see the log)";
+        }
+        catch (Exception) { return full; }
     }
 
     /// <summary>The game's confirmation window, pushed by the open Settings menu (UIMenuBase.Push&lt;T&gt;(UIManager.Instance.ConfirmationWindowTemplate)
@@ -749,6 +827,15 @@ public static class VitaToggles
         // row of the tab, and the once-a-second pass alone left this one selectable for up to a second (OnFsChanged guards the value even
         // then). One property read a frame while the Settings menu is open; it only ever greys.
         if (_fsRow != null && _fsRow.interactable) SetInteractable(_fsRow, false);
+#if !SHEPHERD_NO_K12MENUSB
+#if !SHEPHERD_EBOOT
+        if (K12Dump.Dir != null) K12Dump.Tick(_menu);   // kit #12 (Mac / tools only): the Settings menu's tree at the listed frames
+#endif
+        if (_k12Strip != null) K12Strip();   // kit #12: the description strip follows the highlighted row (every frame while the menu is open)
+        // kit #12 (review fix, finding 9): Original Camera in Fights greyed again every frame while Camera is Original -- the same rule and
+        // the same reason as FullScreen Mode above (a pushed dialog's release lights every row of the tab); it only ever greys
+        if (_fightRow != null && K12View.Cam == 0 && _fightRow.interactable) SetInteractable(_fightRow, false);
+#endif
         double now = Time.Realtime;
         if (now < _next) return;
         _next = now + 1.0;
@@ -759,6 +846,9 @@ public static class VitaToggles
             _rearTog = _paceTog = _bakSel = null; _rearRow = _paceRow = _bakRow = null;   // kit #8
             K10Forget();                                                                   // kit #10
             _fsSel = null; _fsRow = null;
+#if !SHEPHERD_NO_K12MENUSB
+            K12ForgetRows(false);                                                          // kit #12
+#endif
             if (K10Cache.On) K10Cache.SetWindow(false, false);   // kit #10: the Settings menu's idle window closes
             return;
         }
@@ -767,6 +857,9 @@ public static class VitaToggles
         if (_useSel != null) K10Refresh();   // kit #10: the readout, Clear Cache's / Verify Files' state
         if (reset) Configure(false);
         Grey(false);
+#if !SHEPHERD_NO_K12MENUSB
+        if (_plugSel != null) K12PlugRefresh();   // kit #12: the Recommended Plugins row follows the measured clock (review fix, finding 1)
+#endif
         int fps = (int)Math.Round((Time.FrameCount - _f0) / Math.Max(1e-6, now - _t0));
         _t0 = now; _f0 = Time.FrameCount;
         int mhzNow = Host(3, 0);

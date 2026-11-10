@@ -33,7 +33,12 @@ public static class UnityRandom
 {
     public static readonly bool On = Runtime.K9Fidelity.UnityRandom;   // (kit #9: on by default; SHEPHERD_UNITY_RANDOM=0 = kit #8)
     static uint _s0, _s1, _s2, _s3;
-    static UnityRandom() { InitState(1234); }   // (the engine's deterministic default seed, as AppIcalls' System.Random(1234))
+    static UnityRandom() { InitState(StartSeed()); }   // (the engine's deterministic default seed 1234, as AppIcalls' System.Random(1234))
+    /// <summary>Device kit #11 (track device), TOOLS ONLY: SHEPHERD_UNITY_RANDOM_SEED=&lt;int&gt; starts the generator from that seed instead of 1234 --
+    /// Unity seeds from the clock at every launch, so any seed is one of the original's possible starts; vita/tools/bootscreen_record.sh uses it
+    /// to let the game draw each of its loading-screen emblems itself (MMTransition's Random.Range) for the boot screen's emblem set. Unset =
+    /// 1234 (every record). Never set by any app's defaults.</summary>
+    static int StartSeed() => int.TryParse(Environment.GetEnvironmentVariable("SHEPHERD_UNITY_RANDOM_SEED"), out var s) ? s : 1234;
     /// <summary>Random.seed's getter in Unity: the first state word (kit #9 fidelity, second review: the oracle's k9-seed-mpb probe).</summary>
     public static int Seed => (int)_s0;
     public static void InitState(int seed) { _s0 = (uint)seed; _s1 = _s0 * 1812433253u + 1u; _s2 = _s1 * 1812433253u + 1u; _s3 = _s2 * 1812433253u + 1u; }

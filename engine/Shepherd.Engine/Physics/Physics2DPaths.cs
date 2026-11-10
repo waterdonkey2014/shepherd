@@ -60,6 +60,18 @@ static class Physics2DPaths
     [Icall("UnityEngine.CompositeCollider2D::get_vertexDistance", Phys = 4)] static object CompGetVertexDistance(object[] a) => I.CompGetDistance(a, true);
     [Icall("UnityEngine.CompositeCollider2D::set_vertexDistance", Phys = 4)] static object CompSetVertexDistance(object[] a) => I.CompSetDistance(a, true);
 
+    /// <summary>Kit #13 basec (SHEPHERD_K13_POLYPATHS, Runtime/K13Basec.cs): the PolygonCollider2D / EdgeCollider2D hooks above, for IcallRegistry to
+    /// bind below level 4 too. They read and write the typed records (made at level 0 and above). At level 0 (no core: the default's only level)
+    /// that is all they do. With a core (levels 1-3, only with SHEPHERD_K13_POLYPATHS=all) Changed also queues the collider (PhysWorld.Changed:
+    /// Sim), so a path set rebuilds its shapes at the next flush, as at level 4; composites regenerate only at level 4 and above (Sim4).</summary>
+    internal static IEnumerable<(System.Reflection.MethodInfo m, string key)> BelowLevel4()
+    {
+        foreach (var m in typeof(Physics2DPaths).GetMethods(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic))
+            foreach (var a in System.Reflection.CustomAttributeExtensions.GetCustomAttributes<IcallAttribute>(m))
+                if (a.Key.StartsWith("UnityEngine.PolygonCollider2D::", StringComparison.Ordinal) || a.Key.StartsWith("UnityEngine.EdgeCollider2D::", StringComparison.Ordinal))
+                    yield return (m, a.Key);
+    }
+
     sealed class Impl
     {
         static NCollider2D C(object o, PhysRecords.Kind2D k) => Objects.Get(o) is NCollider2D c && c.Kind == k ? c : null;

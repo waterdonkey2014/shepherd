@@ -333,12 +333,29 @@ public sealed partial class PackReader : IDisposable
         return FileAt(i);
     }
 
+#if !SHEPHERD_K11_TOC
+    /// <summary>The pack's one <see cref="SerializedType"/> per class id (made on first use; kit #11 made it as each file opened).</summary>
+    SerializedType TypeOfClass(int cls)
+    {
+        lock (_typeOf)
+        {
+            if (!_typeOf.TryGetValue(cls, out var st)) _typeOf[cls] = st = new SerializedType { ClassId = cls };
+            return st;
+        }
+    }
+
+#endif
     SerializedFile FileAt(int i)
     {
         var fr = _files[i];
         lock (_lock)
         {
             if (fr.File != null) return fr.File;
+#if !SHEPHERD_K11_TOC
+            // kit #12 walkb (the TOC view): the file's object table IS its slice of the pack's TOC (_objToc, kept whole by this reader) --
+            // kit #11 made one ObjectInfo object per entry here (with ObjectTable.View off, SHEPHERD_K12_TOC=0, the table still does)
+            var objs = ObjectTable.FromPackToc(_objToc, fr.First, fr.Count, PayloadOffset, TypeOfClass);
+#else
             var objs = new List<ObjectInfo>(fr.Count);
             for (int k = 0; k < fr.Count; k++)
             {
@@ -348,9 +365,13 @@ public sealed partial class PackReader : IDisposable
                 objs.Add(new ObjectInfo
                 {
                     PathId = BinaryPrimitives.ReadInt64LittleEndian(e), ByteStart = PayloadOffset + BinaryPrimitives.ReadInt64LittleEndian(e[8..]),
-                    ByteSize = BinaryPrimitives.ReadUInt32LittleEndian(e[16..]), ClassId = cls, Type = st, TypeIndex = BinaryPrimitives.ReadUInt16LittleEndian(e[26..]),
+                    ByteSize = BinaryPrimitives.ReadUInt32LittleEndian(e[16..]), Type = st /* ClassId = st.ClassId = cls */, TypeIndex = BinaryPrimitives.ReadUInt16LittleEndian(e[26..]),
+#if SHEPHERD_K10_RECORDS
+                    ClassId = cls,
+#endif
                 });
             }
+#endif
             var ext = fr.Externals.Select(p => new FileIdentifier { PathName = p }).ToList();
             return fr.File = SerializedFile.FromPack(fr.Name, this, i, ext, objs, fr.SourceClasses);
         }

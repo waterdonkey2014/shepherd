@@ -33,8 +33,13 @@ public static class PhysSettings
         var gm = Assets.Loader.Db?.GetFile("globalgamemanagers");
         try
         {
+#if !SHEPHERD_K11_TOC
+            var o = gm != null ? gm.ObjectsOfClass(5).FirstOrDefault() : default;   // (kit #12 walkb: an index entry is a view -- IsNull, kit #11's null)
+            if (o.IsNull) TimeSource = "no TimeManager record";
+#else
             var o = gm?.ObjectsOfClass(5).FirstOrDefault();
             if (o == null) TimeSource = "no TimeManager record";
+#endif
             else
             {
                 var b = gm.GetObjectBytes(o);
@@ -49,8 +54,13 @@ public static class PhysSettings
         catch (Exception e) { TimeSource = "unreadable: " + e.Message; }
         try
         {
+#if !SHEPHERD_K11_TOC
+            var o = gm != null ? gm.ObjectsOfClass(55).FirstOrDefault() : default;
+            if (o.IsNull) Manager3DSource = "no PhysicsManager record";
+#else
             var o = gm?.ObjectsOfClass(55).FirstOrDefault();
             if (o == null) Manager3DSource = "no PhysicsManager record";
+#endif
             else
             {
                 var b = gm.GetObjectBytes(o);

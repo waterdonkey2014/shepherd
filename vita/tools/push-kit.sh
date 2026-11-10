@@ -1,9 +1,29 @@
 #!/bin/zsh
-# SHEPHERD DEVICE KIT #10 (2026-10-29: k10-integ = the kit #10 integration (memory, aot, io, load, cache, boot, fidelity) + its review fixes
-# + VERSION 0.10; merged to main after the kit build) -- copies this kit onto the Vita's memory card.
+# (kit #14: the README's env folder is extras/card-env/kit14-env/ -> ux0:data/shepherd/kit14-env/ (the zip delivery leaves it there unpacked); the zip carries the
+#  walk's pack (pack/shepherd.pack, the intro room recorded) + the bake's data/StreamingAssets/aa/catalog.json and the re-made IL bundle: the README asks the owner to delete
+#  pack/shepherd.pk2 and pack/shepherd.pack.xxh (the menu pack's companions); this script never deletes anything, so after a USB push do that in VitaShell too)
+# SHEPHERD DEVICE KIT #13 (2026-11-05: k13-integ = the kit #13 integration (bootc, walkc, basec, looks, speed) + the kit #13 defaults table
+# + the fix + kit stage (the integration review's fixes, Press X on the play eboot apps) + VERSION 0.13; merged to main after the kit build)
+# -- copies this kit onto the Vita's memory card. Kit #13 is delivered as ONE zip (vita/tools/make-kit-zip.py: the coordinator copies
+# shepherd-kit13.zip to ux0:data/ over FTP, the owner pastes its 'shepherd' folder over ux0:data/shepherd/ in VitaShell -- README-KIT13.txt,
+# INSTALL); this script is the USB way to the same card.
 # (Template: vita/tools/push-kit.sh in the repo = this script: device kit #5's (the memory-card check that refuses a game card
-#  (cartridge), a card without the shepherd folder, never deletes anything) with kit #10's file list; copy it into each new kit and update
+#  (cartridge), a card without the shepherd folder, never deletes anything) with the kit's file list; copy it into each new kit and update
 #  its kit lines, the file count and step 7's owner-folder path.)
+# (Kit #13 additions: the Derived DLL REPLACED again (render api 6: the looks track's Main Menu programs); data/video/boot/ and boot-seq/
+#  gain the emblem CROSSFADE files (XFADE.txt + xf-<emblem>.shx + xf-check.bin, made by vita/tools/bootscreen_xfade.py from the same
+#  recordings): step 1 re-checks them with bootscreen_xfade.py check when the kit carries them; kit13-env-files.zip. Kit fix (audit): the
+#  README's env folder extras/card-env/kit13-env/ is copied UNPACKED to ux0:data/shepherd/kit13-env/ (steps 1 / 3 / 4 / 5), as the zip
+#  delivery unpacks it -- before, the USB way put only the zip on the card and every README 'ENV: paste' line named a missing folder.)
+# (Kit #12 additions: the Derived DLL REPLACED again (boot's loading-screen looks); data/video/boot/ = the 6-emblem set, rings drawn,
+#  'default on' (the owner's yes: the boot screen on by default); NEW data/video/boot-seq/ (the boot sequence's loading screen: the same
+#  recordings with the controller icon in the corner) + data/video/MassiveMonster.shv (the boot sequence's clip, launcher apps); step 1 checks
+#  both sets and the clip; kit12-env-files.zip (the README's env files; the zip delivery unpacks them into ux0:data/shepherd/kit12-env/).)
+# (Kit #11 additions: the Derived DLL REPLACED again (render contract api 5: the GPU track's new programs); NEW data/video/boot/ (the boot
+#  loading screen's EMBLEM SET: SET.txt + one recording per emblem; each start that shows the boot screen draws one at random -- still
+#  opt-in, its SET.txt says 'rings white'); step 1 checks the set (every file SET.txt names is in the kit) and step 5d reports it on the card;
+#  kit11-env-files.zip (the README's env files, extracted once on the Vita). Nothing is removed: kit #10's BootLoading.shb stays (the
+#  switch back: SHEPHERD_K11_EMBLEMS=0).)
 # (Kit #10 additions: NEW owner files -- managed-ilz/ (the game's DLLs with their unused code compressed: 116 DLLs + ILZ-MANIFEST.txt; the
 #  apps check each one against its original once, then use it), pack/shepherd.pk2 + pack/shepherd.pack.xxh (the chunked pack, read instead
 #  of shepherd.pack, which STAYS on the card: SHEPHERD_K10_PACK=0 goes back to it), managed/boot.ilb (the game's DLLs in one file, read in one
@@ -24,15 +44,13 @@
 #  profile the apps write at every start and the measurement app's storage results.)
 #
 # On the Vita: VitaShell -> START -> USB ("Mount ux0:"), cable in. Then on the Mac:
-#     ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit10/kit/push-kit.sh           (waits up to 30 min for the card; "push-kit.sh 60" waits 60)
-# Kit #10 holds the 7 VPKs (vpk/k10-1 .. k10-7: the same seven apps / title ids as kit #9), managed/Shepherd.Engine.Derived.dll (REPLACE: the
-# new apps were compiled with this exact file), NEW: managed-ilz/ (117 files), pack/shepherd.pk2 + pack/shepherd.pack.xxh, managed/boot.ilb,
-# data/video/BootLoading.shb, kit10-env-files.zip; and "same" (already on the card since kit #7 / #8 / #9, carried so the kit can be checked
-# whole): the typed v2 managed/UnityEngine.CoreModule.dll / InputLegacyModule.dll / UIModule.dll, managed/spine-unity.dll,
-# data/video-lengths.tsv, data/physics2d-settings.bin, the two clips data/video/*.shv and cache/json/catalog.jbake. The pack
-# (shepherd.pack: keep it -- the switch back), the other game DLLs, data, audio bake, pad script and sandbox saves stay as they are. The
-# card's old copy of every replaced file is saved on the Mac first (see below): with it and kit #9's VPKs the card goes back to kit #9 (kit #9's
-# apps ignore every new kit #10 file).
+#     ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit14/kit/push-kit.sh           (waits up to 30 min for the card; "push-kit.sh 60" waits 60)
+# Kit #13 holds the 7 VPKs (vpk/k13-1 .. k13-7: the same seven apps / title ids as kit #12; each VPK also carries managed-ilz/, its own DLLs
+# in compressed-IL form), managed/Shepherd.Engine.Derived.dll (REPLACE: the new apps were compiled with this exact file, render api 6),
+# data/video/boot/ + boot-seq/ (kit #12's sets + the NEW crossfade files), kit13-env-files.zip; and "same" (already on the card, carried so
+# step 1 can check the kit whole): data/video-lengths.tsv, data/physics2d-settings.bin, the launcher clips data/video/*.shv and
+# MassiveMonster.shv. Everything else on the card stays as it is (managed-ilz/, boot.ilb, pack, cache, saves). The card's old copy of every
+# replaced file is saved on the Mac first (see below).
 #
 # What it does:
 #   - waits for the MEMORY CARD: a volume under /Volumes with VitaShell/, app/ and data/ at its root and no gc/ (exactly one; two such
@@ -43,7 +61,9 @@
 #   - checks this kit against SHA256SUMS.txt first (a damaged kit is never copied)
 #   - checks the free space on the card
 #   - copies data/shepherd/ of this kit to ux0:data/shepherd/ with `rsync -rt` (new files are added, a kit file with the same name
-#     replaces the card's copy -- the card's old copy of any replaced file is saved on the Mac first, in push-logs/replaced-<time>/)
+#     replaces the card's copy -- the card's old copy of any replaced file is saved on the Mac first, in push-logs/replaced-<time>/),
+#     and (kit #13 kit fix) the README's env folder extras/card-env/kit13-env/ to ux0:data/shepherd/kit13-env/ the same way (unpacked, as
+#     the zip delivery leaves it; its files sit in subfolders, never at the top where the apps read env files)
 #   - checks every copied file on the card against SHA256SUMS.txt (sha256)
 #   - LISTS the macOS "._" side files (AppleDouble, magic 00051607) under ux0:data/shepherd/, if any (harmless junk; it never removes them)
 #   - checks that the rest of ux0:data/shepherd/ (game DLLs, data, audio bake, pad.txt, the pack) is what the apps need: sizes, and for
@@ -59,6 +79,7 @@ set -u
 K=${0:a:h}
 SRC=$K/data/shepherd
 SUMS=$K/SHA256SUMS.txt
+ENVREL=extras/card-env/kit14-env   # (kit #13 kit fix) the README's env folder: copied unpacked to ux0:data/shepherd/kit14-env/ (= the zip delivery)
 WAIT_MIN=30
 for a in "$@"; do
   case $a in
@@ -113,14 +134,14 @@ print(f"{fr} frames {w}x{h}, {n:,} B"); sys.exit(0)
 PYEOF
 }
 
-echo "push-kit.sh (Shepherd device kit #10) started $(date '+%Y-%m-%d %H:%M:%S'); log: $LOG"
+echo "push-kit.sh (Shepherd device kit #13) started $(date '+%Y-%m-%d %H:%M:%S'); log: $LOG"
 [[ -d $SRC && -f $SUMS ]] || { echo "FAIL: $SRC or $SUMS missing -- is this the kit folder?"; exit 1; }
 
-# 1. the kit itself must match SHA256SUMS.txt (only the data/ lines are copied to the card)
+# 1. the kit itself must match SHA256SUMS.txt (only the data/ lines and the env folder's are copied to the card)
 echo "== 1. checking the kit against SHA256SUMS.txt"
 bad=0; n=0
 while read -r sum rel; do
-  [[ $rel == data/* ]] || continue
+  [[ $rel == data/* || $rel == $ENVREL/* ]] || continue
   n=$((n + 1))
   [[ -f $K/$rel ]] || { echo "FAIL kit file missing: $rel"; bad=$((bad + 1)); continue; }
   [[ $(shasum -a 256 "$K/$rel" | cut -c1-64) == $sum ]] || { echo "FAIL kit file damaged: $rel"; bad=$((bad + 1)); }
@@ -152,9 +173,33 @@ if (( ${#launchers} )); then
   done
   echo "   ok: the kit carries the launcher apps' two video clips (data/video/*.shv)"
 fi
+# (kit #11) the boot screen's emblem set: when the kit carries data/video/boot/, every file its SET.txt names must be in the kit (a set
+# whose recording is missing would fall back to black on every start) -- a kit stage that forgot one is stopped here
+for BSD in data/shepherd/data/video/boot data/shepherd/data/video/boot-seq; do   # (kit #12: + the boot sequence's set)
+if [[ -d $K/$BSD ]]; then
+  [[ -f $K/$BSD/SET.txt ]] || { echo "STOP: the kit has $BSD/ but no SET.txt in it; nothing was copied"; exit 1; }
+  nb=0; while read -r w f rest; do [[ $w == emblem ]] || continue; nb=$((nb + 1)); [[ -f $K/$BSD/$f ]] || { echo "STOP: $BSD/SET.txt names $f, which the kit does not carry; nothing was copied"; exit 1; }; done < "$K/$BSD/SET.txt"
+  (( nb )) || { echo "STOP: $BSD/SET.txt names no recording; nothing was copied"; exit 1; }
+  echo "   ok: the kit carries ${BSD#data/shepherd/} ($nb recording(s), SET.txt rings: $(awk '$1=="rings"{print $2}' "$K/$BSD/SET.txt")$(grep -q '^default on' "$K/$BSD/SET.txt" && echo ', default on' || echo ', opt-in'))"
+fi
+done
+# (kit #13) the emblem crossfade: when a set folder carries XFADE.txt, bootscreen_xfade.py check re-reads it (every still = its recording's box,
+# the check file = the stream's) -- a damaged or half-copied set is stopped here (the host would fall back to kit #12's one emblem a start)
+for BSD in data/shepherd/data/video/boot data/shepherd/data/video/boot-seq; do
+  [[ -f $K/$BSD/XFADE.txt ]] || continue
+  XT=${0:a:h}/bootscreen_xfade.py; [[ -f $XT ]] || XT=${0:a:h}/../vita/tools/bootscreen_xfade.py
+  if [[ ! -f $XT ]]; then echo "   note: ${BSD#data/shepherd/}/XFADE.txt not re-checked here (bootscreen_xfade.py not next to this script; check-kit.sh checked it)"; continue; fi
+  r=$(python3 -I "$XT" check "$K/$BSD" 2>&1 | tail -1); [[ $r == *"CHECK OK"* ]] || { echo "STOP: the kit's ${BSD#data/shepherd/} crossfade files do not check ($r); nothing was copied"; exit 1; }
+  echo "   ok: the kit's ${BSD#data/shepherd/} crossfade files check ($r)"
+done
+MMC=data/shepherd/data/video/MassiveMonster.shv   # (kit #12) the boot sequence's clip: whole when the kit carries it
+if [[ -f $K/$MMC ]]; then r=$(shv_check "$K/$MMC") || { echo "STOP: the kit's $MMC is not a whole .shv clip ($r); nothing was copied"; exit 1; }; echo "   ok: the kit carries the boot sequence's clip ($r)"; fi
 typeset -A listed; while read -r sum rel; do listed[$rel]=1; done < "$SUMS"
 extra=$(cd "$K" && find data -type f ! -name '._*' ! -name '.DS_Store' | sort | while read -r f; do (( ${+listed[$f]} )) || echo "$f"; done)
 [[ -z $extra ]] || { echo "STOP: files in data/ that SHA256SUMS.txt does not list (not copied):"; echo "$extra"; exit 1; }
+[[ -d $K/$ENVREL ]] || { echo "STOP: the kit has no $ENVREL/ (the README's env files); nothing was copied"; exit 1; }
+extra=$(cd "$K" && find $ENVREL -type f ! -name '._*' ! -name '.DS_Store' | sort | while read -r f; do (( ${+listed[$f]} )) || echo "$f"; done)
+[[ -z $extra ]] || { echo "STOP: files in $ENVREL/ that SHA256SUMS.txt does not list (not copied):"; echo "$extra"; exit 1; }
 echo "   ok: $n kit files, all match"
 
 # 2. wait for the MEMORY CARD (ux0:). Only a volume with VitaShell/ + app/ + data/ and no gc/ is the card. A game card (gro0:, the
@@ -186,26 +231,27 @@ done
 echo "   card at $V"
 df -h "$V" | tail -1 | awk '{print "   card: " $2 " size, " $4 " free"}'
 D=$V/data/shepherd
-[[ -d $D/managed && -d $D/pack ]] || { echo "STOP: $V has no data/shepherd folder with managed/ and pack/ (kit #5's). This kit only updates the folder kits #5-#9 made: see README-KIT10.txt, IF STEP 7 WARNS. Nothing was copied."; exit 1; }
+[[ -d $D/managed && -d $D/pack ]] || { echo "STOP: $V has no data/shepherd folder with managed/ and pack/ (kit #5's). This kit only updates the folder kits #5-#12 made (the whole owner folder: ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit13/integ-work/owner/shepherd -- ask Claude). Nothing was copied."; exit 1; }
 
 # 3. plan: what is new, what replaces a different file, what is already there
 echo "== 3. comparing the kit with ux0:data/shepherd/"
-need_kb=0; todo=(); zs=0; zr=0; zn=0
+need_kb=0; todo=(); zs=0; zr=0; zn=0; es=0; er=0; en=0
 while read -r sum rel; do
-  [[ $rel == data/shepherd/* ]] || continue
-  sub=${rel#data/shepherd/}; dst=$D/$sub; q=0; [[ $sub == managed-ilz/* ]] && q=1   # (kit #10: managed-ilz/'s 117 files summed up in one line)
+  case $rel in data/shepherd/*) sub=${rel#data/shepherd/};; $ENVREL/*) sub=kit14-env/${rel#$ENVREL/};; *) continue;; esac
+  dst=$D/$sub; q=0; [[ $sub == managed-ilz/* ]] && q=1; [[ $sub == kit14-env/* ]] && q=2   # (kit #10: managed-ilz/'s 117 files summed up in one line; kit #13: the env folder's too)
   if [[ -f $dst ]]; then
     if [[ $(stat -f %z "$dst") == $(stat -f %z "$K/$rel") && $(shasum -a 256 "$dst" | cut -c1-64) == $sum ]]; then
-      (( q )) && zs=$((zs + 1)) || echo "   same     $sub (already on the card)"; continue
+      case $q in 1) zs=$((zs + 1));; 2) es=$((es + 1));; *) echo "   same     $sub (already on the card)";; esac; continue
     fi
-    (( q )) && zr=$((zr + 1)) || echo "   REPLACE  $sub (card: $(stat -f %z "$dst") bytes -> kit: $(stat -f %z "$K/$rel") bytes)"
+    case $q in 1) zr=$((zr + 1));; 2) er=$((er + 1));; *) echo "   REPLACE  $sub (card: $(stat -f %z "$dst") bytes -> kit: $(stat -f %z "$K/$rel") bytes)";; esac
     mkdir -p "$LOGDIR/replaced-$TS/${sub:h}"; cp -p "$dst" "$LOGDIR/replaced-$TS/$sub" && { (( q )) || echo "            the card's old copy saved to push-logs/replaced-$TS/$sub"; }
   else
-    (( q )) && zn=$((zn + 1)) || echo "   NEW      $sub ($(stat -f %z "$K/$rel") bytes)"
+    case $q in 1) zn=$((zn + 1));; 2) en=$((en + 1));; *) echo "   NEW      $sub ($(stat -f %z "$K/$rel") bytes)";; esac
   fi
   todo+=("$sub"); need_kb=$(( need_kb + $(stat -f %z "$K/$rel") / 1024 + 1 ))
 done < "$SUMS"
 (( zs + zr + zn )) && echo "   managed-ilz/ (kit #10, the compressed-IL DLLs): $zn NEW, $zr REPLACE$( (( zr )) && echo " (the old copies saved to push-logs/replaced-$TS/managed-ilz/)"), $zs same"
+(( es + er + en )) && echo "   kit14-env/ (the README's env files, unpacked): $en NEW, $er REPLACE$( (( er )) && echo " (the old copies saved to push-logs/replaced-$TS/kit14-env/)"), $es same"
 free_kb=$(df -k "$V" | tail -1 | awk '{print $4}')
 echo "   to copy: ${#todo} file(s), $(( need_kb / 1024 )) MiB; card free: $(( free_kb / 1024 )) MiB"
 (( free_kb > need_kb + 512 * 1024 )) || { echo "STOP: not enough free space on the card (need the kit + 512 MiB for installing); nothing copied"; exit 1; }
@@ -215,6 +261,7 @@ if (( ${#todo} )); then
   echo "== 4. copying data/shepherd/ -> ux0:data/shepherd/ (rsync -rt, nothing deleted)"
   t0=$(date +%s)
   rsync -rt --exclude='.*' "$SRC/" "$D/" || { echo "FAIL: rsync reported an error (see above); run push-kit.sh again"; exit 1; }
+  mkdir -p "$D/kit14-env" && rsync -rt --exclude='.*' "$K/$ENVREL/" "$D/kit14-env/" || { echo "FAIL: rsync reported an error copying the env folder (see above); run push-kit.sh again"; exit 1; }
   sync
   echo "   copied in $(( $(date +%s) - t0 )) s"
 else
@@ -225,9 +272,8 @@ fi
 echo "== 5. verifying on the card (sha256)"
 okc=0; badc=0
 while read -r sum rel; do
-  [[ $rel == data/shepherd/* ]] || continue
-  sub=${rel#data/shepherd/}
-  if [[ -f $D/$sub && $(shasum -a 256 "$D/$sub" | cut -c1-64) == $sum ]]; then okc=$((okc + 1)); [[ $sub == managed-ilz/* ]] || echo "   ok   $sub  ${sum:0:16}"
+  case $rel in data/shepherd/*) sub=${rel#data/shepherd/};; $ENVREL/*) sub=kit14-env/${rel#$ENVREL/};; *) continue;; esac
+  if [[ -f $D/$sub && $(shasum -a 256 "$D/$sub" | cut -c1-64) == $sum ]]; then okc=$((okc + 1)); [[ $sub == (managed-ilz|kit14-env)/* ]] || echo "   ok   $sub  ${sum:0:16}"
   else
     echo "   retry $sub (checksum differs on the card)"
     mkdir -p "$D/${sub:h}"; cp "$K/$rel" "$D/$sub" && sync
@@ -263,15 +309,20 @@ fi
 
 # 5d. (kit #10) the new owner files on the CARD: managed-ilz/ (count), the chunked pack beside the card's shepherd.pack (kept: the switch
 #     back), the IL bundle, the boot screen's recording, the env-files zip. Step 5 checked their bytes; this says what they are for. Report only.
-echo "== 5d. kit #10's new files on the card (step 5 checked their bytes)"
+echo "== 5d. kit #10's, #11's and #12's new files on the card (step 5 checked their bytes)"
 nz=$(find "$D/managed-ilz" -name '*.dll' ! -name '._*' -type f 2>/dev/null | wc -l | tr -d ' ')
 echo "   managed-ilz/: $nz compressed-IL DLL(s) (the first start checks each against managed/'s original once: cache/k10-ilz-verified.tsv)"
 if [[ -f $D/pack/shepherd.pk2 ]]; then
   if [[ -f $D/pack/shepherd.pack ]]; then echo "   pack/shepherd.pk2 ($(stat -f %z "$D/pack/shepherd.pk2") B) next to pack/shepherd.pack ($(stat -f %z "$D/pack/shepherd.pack") B: keep it -- SHEPHERD_K10_PACK=0 reads it again; the apps check at every open that the .pk2 was made from it)"
-  else badc=$((badc + 1)); echo "   PROBLEM: pack/shepherd.pack is NOT on the card: the .pk2 can only be used next to the pack it was made from (copy it back: IF STEP 7 WARNS)"; fi
+  else badc=$((badc + 1)); echo "   PROBLEM: pack/shepherd.pack is NOT on the card: the .pk2 can only be used next to the pack it was made from (copy it back from the owner folder that step 7 names)"; fi
 fi
 [[ -f $D/managed/boot.ilb ]] && echo "   managed/boot.ilb ($(stat -f %z "$D/managed/boot.ilb") B): the first start compares it with the loose DLLs and writes cache/il/k10-ilb.ok, the next starts read it$( [[ -f $D/cache/il/k10-ilb.ok ]] && echo " (an .ok from an earlier start is on the card: the managed/ listing decides whether it still counts)")"
 [[ -f $D/data/video/BootLoading.shb ]] && echo "   data/video/BootLoading.shb ($(stat -f %z "$D/data/video/BootLoading.shb") B): the boot loading screen's pictures (shown only with SHEPHERD_K10_BOOTSCREEN=1: the README's STEP 1 file)"
+if [[ -f $D/data/video/boot/SET.txt ]]; then
+  echo "   data/video/boot/ (kit #11): the boot screen's emblem set -- $(grep -c '^emblem' "$D/data/video/boot/SET.txt") recording(s), rings $(awk '$1=="rings"{print $2}' "$D/data/video/boot/SET.txt")$(grep -q '^default on' "$D/data/video/boot/SET.txt" && echo ', default on' || echo ': shown only with SHEPHERD_K10_BOOTSCREEN=1 (the README'"'"'s STEP 1 / 2 file), one drawn at random per start')"
+fi
+if [[ -d $D/kit14-env ]]; then echo "   ux0:data/shepherd/kit14-env/: the README's env files, unpacked ($(find "$D/kit14-env" -type f ! -name '._*' | wc -l | tr -d ' ') file(s); kit14-env-files.zip next to it is a spare copy -- nothing to extract)"
+else badc=$((badc + 1)); echo "   PROBLEM: ux0:data/shepherd/kit14-env/ is NOT on the card: every README 'ENV: paste' line points there (run push-kit.sh again)"; fi
 [[ -f $D/kit10-env-files.zip ]] && echo "   kit10-env-files.zip: the README's ready-made env files -- on the Vita, extract it ONCE in ux0:data/shepherd/ (README-KIT10.txt, INSTALL)$( [[ -d $D/kit10-env ]] && echo "; ux0:data/shepherd/kit10-env/ is already there")"
 
 # 6. macOS ._ side files (AppleDouble) under ux0:data/shepherd/: the Mac writes them next to files it copies (this script's own copy does
@@ -305,7 +356,7 @@ done < "$K/owner-manifest.txt"
 if (( miss + diffs == 0 )); then echo "   ok: all $seen owner files are on the card with the expected sizes ($hashed in managed/ + managed-ilz/ also by sha256)"
 else
   echo "   WARNING: $miss missing, $diffs different (another size, or in managed/ / managed-ilz/ other contents) (of $seen). The apps need the whole folder: copy"
-  echo "   ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit10/integ-work/kit-build/owner/shepherd/{managed,managed-ilz,pack,data,audiobake,cache} and pad.txt to ux0:data/shepherd/ (README-KIT10.txt, IF STEP 7 WARNS)"
+  echo "   ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit13/integ-work/owner/shepherd/{managed,managed-ilz,pack,data,audiobake,cache} and pad.txt to ux0:data/shepherd/ (ask Claude)"
 fi
 
 # 8. the env / args files in ux0:data/shepherd/: each app reads its own (the play apps 00097 / 00098 / 00095 and the launcher apps 00193 /
@@ -318,8 +369,8 @@ if (( ${#envs} )); then
     [[ ${f:t} == ._* ]] && continue
     echo "   FOUND ${f:t} ($(stat -f %z "$f") bytes): $(grep -v '^#' "$f" | tr -d '\r' | tr '\n' ' ' | cut -c1-160)"
   done
-  [[ -f $D/env_play.txt ]] && echo "   NOTE: env_play.txt is on the card: the five play apps (00097 / 00098 / 00095 / 00193 / 00194) read it at every start. Kit #10 starts with NONE there: delete it before STEP 1 (README-KIT10.txt: STEP 1 copies the kit's own file from kit10-env/step1/)."
-  [[ -f $D/env_gl_measure.txt ]] && echo "   NOTE: env_gl_measure.txt is on the card: the Measure app reads it. For kit #10's main steps it must not be there before STEP 8 (README-KIT10.txt)."
+  [[ -f $D/env_play.txt ]] && echo "   NOTE: env_play.txt is on the card: the five play apps (00097 / 00098 / 00095 / 00193 / 00194) read it at every start. Kit #13 starts with NONE there: delete it before STEP 1 (README-KIT13.txt: every step copies its own file from kit14-env/<folder>/)."
+  [[ -f $D/env_gl_measure.txt ]] && echo "   NOTE: env_gl_measure.txt is on the card: the Measure app reads it. Kit #13 starts with NONE there: delete it before STEP 1 (README-KIT13.txt: STEPS 4-7 copy their own files from kit14-env/m-a1/ ... m-b2/)."
 else
   echo "   none (every app starts with its own defaults)"
 fi
@@ -368,8 +419,9 @@ else echo "   none (the drain has never failed on this card)"; fi
 echo
 if (( badc == 0 )); then
   echo "DONE: $okc file(s) on the card match the kit. The card is still MOUNTED: eject it in Finder, unplug,"
-  echo "      then install the seven k10 VPKs in VitaShell from ux0:data/shepherd/vpk/, k10-1 first and k10-7 last, and extract"
-  echo "      kit10-env-files.zip once (README-KIT10.txt, INSTALL)."
+  echo "      then delete env_play.txt / env_gl_measure.txt at the top of ux0:data/shepherd/ if step 8 found one, and install the seven k13"
+  echo "      VPKs in VitaShell from ux0:data/shepherd/vpk/, k13-1 first and k13-7 last (README-KIT13.txt, INSTALL steps 3-4; the env files"
+  echo "      are already unpacked in ux0:data/shepherd/kit14-env/)."
 else
   echo "PROBLEM: $badc file(s) do not match on the card (listed above). Run push-kit.sh again; if it repeats, send this log."
 fi

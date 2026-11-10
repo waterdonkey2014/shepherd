@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- device kit #12, track walkb (vita/notes/kit12-walkb.md): checks of the assets' index entries as a view over the object table -->
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../../engine/Shepherd.Assets/Shepherd.Assets/Shepherd.Assets.csproj" /></ItemGroup>
+</Project>

@@ -346,6 +346,7 @@ static void k7_bb_event (const char *why);
 static void k7_gc_note (SceUInt64 start, unsigned us);
 static void k7_calls_write (const char *tag);
 static void k10a_ilz_path (const char *name, char *path, size_t cap, unsigned *size);   /* device kit #10 aot (k10_aot.inc.c): the preload hook */
+static void k12_vpk_ilz_path (const char *name, char *path, size_t cap, unsigned *size);   /* kit #12 walkb (k12_walkb.inc.c): the VPK's DLLs in ILZ form */
 static int k10a_ilz_on_now (void);   /* kit #10 integration (boot x aot): compressed IL on this start? (k10_aot.inc.c; k10_ilb.inc.c asks) */
 
 static void log_line_ex (const char *line, int activity)
@@ -459,9 +460,19 @@ typedef struct {
  * POOL is opt-in since the review (R1/R2: every play app is a GL app, and vitaGL registers only the newlib block of its malloc (1) at vglInit --
  * k10_vglmem.c makes the split heap safe, but no gate models vitaGL: the VLX stand-in has no pools; SHEPHERD_K10_POOL=1 + a device run decide).
  * Evacuation and the IL pool in video memory are opt-in. SHEPHERD_K10_LADDER=0 / SHEPHERD_K10_SIZES=0 / SHEPHERD_K10_MEM=0 (env file) = kit #9. */
+/* device kit #11, track walk -- DEFAULTS (vita/notes/kit11-walk.md): in the PLAY apps the SHARED POOL is ON by default (the owner's device run
+ * of kit #10's X2: PASS END, 0 OOM, vitaGL's range + GPU mapping ok, the GC heap's cap +13 MiB at its tightest; boot +2.8 s in that run, to
+ * watch). SHEPHERD_K11_WALK=0 (env file; read before main too, like the pool) = kit #10's defaults for every kit #11 walk switch;
+ * SHEPHERD_K10_POOL=0 alone = the split. Review fix: sgen's major-block EVACUATION at 90 % (the walk's arena peak -5 MiB, VLX) is OPT-IN
+ * (SHEPHERD_K10_EVAC=90) until the owner's device A/B of its pauses (the roadmap's condition); the default is kit #10's: sgen's own 66 %. */
+#ifdef SHP_PLAY_APP
+#ifndef SHP_K11_POOL_DEFAULT
+#define SHP_K11_POOL_DEFAULT 1
+#endif
+#endif
 #ifdef SHP_PLAY_APP
 #ifndef SHP_K10_POOL_DEFAULT
-#define SHP_K10_POOL_DEFAULT 0   /* (k10b: 1 -- review fix R1/R2: off until the owner's device run of SHEPHERD_K10_POOL=1) */
+#define SHP_K10_POOL_DEFAULT 0   /* (k10b: 1 -- review fix R1/R2: off until the owner's device run of SHEPHERD_K10_POOL=1) -- kit #11: SHP_K11_POOL_DEFAULT */
 #endif
 #ifndef SHP_K10_LADDER_DEFAULT
 #define SHP_K10_LADDER_DEFAULT 1
@@ -545,6 +556,13 @@ static inline int k9_gc_base_update (int major, int kind, long long heap, volati
 static void k9_gc_scene_note (int frame, const char *note, int64_t alloc_main);   /* kit #9 gc: checkpoint kind 8 (k9_gc.inc.c) */
 static void k9_gc_census_walk (void);   /* kit #9 gc: the object-header census (research; SHEPHERD_GC_CENSUS=1) */
 static void k10_mem_major_walk (void);   /* kit #10 memory (k10_mem.inc.c): the size-class census (test only; SHEPHERD_K10_CENSUS=1) */
+static void k12_hdr_walk (void);   /* kit #12 walkb (k12_walkb.inc.c): the object-header census (test only; SHEPHERD_K12_HDRCENSUS=1) */
+static unsigned k13_il_vram_type (void);   /* kit #13 walkc (k13_walkc.inc.c): the IL pool's video-memory type (SHEPHERD_K13_IL_CACHED) */
+static unsigned k14_cap_over (void);       /* kit #14 newlib (k14_newlib.inc.c): the MiB the GC heap's cap leaves for the arena's other tenants */
+static int k14_refusals_named (void);      /* kit #14 integration (k14_newlib.inc.c): the runtime names the refusals sgen halves */
+static int k14_pool_more (void);           /* kit #14 newlib: the MiB the stack reserve in force moves the device pools by */
+static void k13_il_vram_used (int t);
+static int k13_il_coherence (void *base);
 static void k10_mem_after_major (int conc);  /* kit #10 memory: the memory timeline's sample after a major (test only; SHEPHERD_K10_MEMLOG); the pool's cap-drop flag (R3) */
 static int k10_guard_spare (void);       /* kit #10 memory review fix R3: a heap-cap refusal right after the shared pool lowered the cap (no major since) */
 static void k10_mem_heartbeat (int frame, const MemSnap *m);   /* kit #10 memory: the pressure ladder's level, the memory timeline */
@@ -621,6 +639,7 @@ static void gc_event_cb (MonoProfiler *prof, MonoProfilerGCEvent ev, uint32_t ge
 		if (gcs.gen) {
 			k9_gc_census_walk ();   /* kit #9 gc (research, test only): nothing unless SHEPHERD_GC_CENSUS=1 */
 			k10_mem_major_walk ();  /* kit #10 memory (test only): nothing unless SHEPHERD_K10_CENSUS=1 */
+			k12_hdr_walk ();        /* kit #12 walkb (test only): nothing unless SHEPHERD_K12_HDRCENSUS=1 */
 		}
 		break;
 	case MONO_GC_EVENT_POST_START_WORLD: {
@@ -865,6 +884,8 @@ static void mono_log_cb (const char *domain, const char *level, const char *mess
 		 * instead of the abort's crash dialog. Any other fatal error keeps the abort and its core dump (a bug to look at). */
 		if (g_oom_count > 0)
 			end_run_now ("a runtime fatal error after OutOfMemoryExceptions (the GC heap was full) ended the run");
+		if (message && strstr (message, "K14 interpreter stack refused"))   /* kit #14 integration: the same fullness, seen by a new thread first (vita/patches/k14-stack-refused.patch) */
+			end_run_now ("the shared pool has no interpreter stack for a new thread (the memory is full) ended the run");
 		if (g_screen)
 			sceKernelDelayThread (10 * 1000 * 1000);
 		abort ();   /* newlib's abort traps: system error dialog + core dump. Not a handler. */
@@ -898,8 +919,15 @@ static void arena_log (const char *event, const MonoVitaArenaStats *s, size_t re
 	LOG ("ARENA %s: used=%u KiB peak=%u KiB of %u KiB, %u extents (largest %u KiB), request=%u KiB",
 	     event, (unsigned) (s->used / 1024), (unsigned) (s->peak / 1024), (unsigned) (s->arena_size / 1024),
 	     s->free_extents, (unsigned) (s->largest_free / 1024), (unsigned) (request / 1024));
-	if (!strncmp (event, "FAIL", 4))
-		LOG ("FAIL Mono arena exhausted (%u KiB requested): raise SHEPHERD_ARENA_MB or lower max-heap-size in env.txt; sgen exits next", (unsigned) (request / 1024));
+	/* (kit #14 newlib: above one 16-KiB block sgen asks for half as many blocks, down to one, so that refusal is not the end. Kit #14 integration: the runtime names those requests
+	 * ("FAIL blocks"), and any other refusal over a block keeps a FAIL line: an interpreter stack is the same size as a halved request, and a large object section ends the same way.
+	 * SHEPHERD_K14_OFF=0x400 = by size alone; the track off = kit #13's line) */
+	if (!strncmp (event, "FAIL", 4) && strcmp (event, "FAIL blocks")) {
+		if (request <= 16384u || k14_cap_over () == 22u)
+			LOG ("FAIL Mono arena exhausted (%u KiB requested): raise SHEPHERD_ARENA_MB or lower max-heap-size in env.txt; sgen exits next", (unsigned) (request / 1024));
+		else if (k14_refusals_named ())
+			LOG ("FAIL Mono arena refused %u KiB, not a block request sgen halves: the shared pool is full", (unsigned) (request / 1024));
+	}
 }
 
 /* ---------------------------------------------------------------- files */
@@ -1601,6 +1629,7 @@ static MonoAssembly *preload_hook (MonoAssemblyName *aname, char **assemblies_pa
 	if (!ilz_done) {   /* (kit #10 integration: a bundle entry's path / size / Location were settled above) */
 	snprintf (rooted, sizeof (rooted), "/%s", path);   /* Assembly.Location, as managed code would spell it */
 	k10a_ilz_path (name, path, sizeof (path), &size);   /* device kit #10 aot: read the ILZ form from managed-ilz/ when there is one (Location stays managed/; SHEPHERD_K10_ILZ=0: never) */
+	k12_vpk_ilz_path (name, path, sizeof (path), &size);   /* kit #12 walkb: a VPK DLL from app0:managed-ilz/ when the VPK has one and SHEPHERD_K12_VPKILZ=1 (each pair CRC-checked; Location stays app0:managed/) */
 	}
 
 	{
@@ -1672,6 +1701,7 @@ static volatile int g_last_frame = -1;   /* the frame of the engine's last check
 static char g_end_note [700];
 static int g_end_frame = -1;
 
+static void k11_cheap_line (const char *tag);   /* kit #11 walk (k11_walk.inc.c): the C heap's census after the mono: line */
 static void mono_counters_line (const char *tag)
 {
 	MonoVitaRuntimeStats rs;
@@ -1680,6 +1710,7 @@ static void mono_counters_line (const char *tag)
 	     tag, (unsigned) (rs.mempool_bytes / 1024), rs.interp_methods, (long long) rs.interp_transforms, rs.interp_inlined, rs.interp_emitted_instructions,
 	     rs.aot_methods, rs.methods, rs.initialized_classes, rs.used_classes, rs.generic_classes, rs.inflated_types, rs.inflated_methods,
 	     (unsigned) rs.vtable_bytes / 1024, (unsigned) rs.static_data_bytes / 1024, (unsigned) rs.imt_bytes / 1024, rs.delegates_created);
+	k11_cheap_line (tag);   /* kit #11 walk: the C heap's census (SHEPHERD_K11_CHEAP=0: none) */
 	/* V6 stage 2: managed Thread.Yield's back-off (mono-vita-yield.c): the game's Dispatch Thread polls with it */
 	uint64_t yc = 0, yd = 0, yb = 0, yn = 0;
 	mono_vita_get_yield_stats (&yc, &yd, &yb, &yn);
@@ -2631,6 +2662,11 @@ static void engine_env (void)
 
 #include "k9_gc.inc.c"   /* kit #9 track gc: lever 32, M6, per-scene nursery sizing, the used-size fix, M8 (vita/notes/kit9-gc.md) */
 #include "k10_mem.inc.c"  /* kit #10 track memory: the shared pool's partition + GC limits, evacuation, size classes, the pressure ladder, MemReport */
+#include "k11_walk.inc.c"  /* kit #11 track walk: the C heap's census (MemReport); the walk defaults are the DEFAULTS block -- vita/notes/kit11-walk.md */
+#include "k12_walka.inc.c"  /* kit #12 track walka: the walk, GC side (a refused evacuation copy marked in place, ...) -- vita/notes/kit12-walka.md */
+#include "k12_walkb.inc.c"  /* kit #12 track walkb: interpreter tiering, the VPK's DLLs in ILZ form, the object-header census -- vita/notes/kit12-walkb.md */
+#include "k13_walkc.inc.c"  /* kit #13 track walkc: the IL pool in cached video memory, the "MiB short" meter -- vita/notes/kit13-walkc.md */
+#include "k14_newlib.inc.c" /* kit #14 track newlib: the runtime's rows off the C heap (interface bitmaps on first read, ...) -- vita/notes/kit14-newlib.md */
 
 static void *mono_thread_body (void *arg)
 {
@@ -2671,6 +2707,8 @@ static void *mono_thread_body (void *arg)
 	LOG ("H4 MONO_GC_PARAMS=%s (heap cap %u MiB)", getenv ("MONO_GC_PARAMS"), g_max_heap_mb);
 	k10_gc_params_in_force (gcp);   /* kit #10 memory review fix R7: in the shared pool an env-file MONO_GC_PARAMS max-heap-size stays the cap's ceiling (a WARN line); else nothing */
 	k9_gc_line ();   /* kit #9 gc: the K9 GC line (the switches in force) */
+	k12_walka_before_runtime ();   /* kit #12 walka: the K12 WALKA line; the runtime's flags (SHEPHERD_K12_WALKA=0: kit #11) */
+	k12_walka_scrub (gcp, sizeof (gcp));   /* kit #12 walka: the GC parameters' text off the Mono thread's stack (a conservative false pin; SHEPHERD_K12_SCRUB=0: kept) */
 #if !defined (SHEPHERD_MAC_CHECK)
 	gcgov_config ();   /* M2: the GCG line (the GC.Collect governor's sites) */
 #endif
@@ -2778,6 +2816,8 @@ static void *mono_thread_body (void *arg)
 	k9_fp_profiler ();           /* kit #9 fidelity, second review: every Mono thread's FPSCR at its start / stop (SHEPHERD_K9_FP=0: no hook) */
 	k10_fp_profiler ();          /* kit #10 fidelity: SHEPHERD_K10_FPSCR's rules on every Mono thread at its start (created after kit #9's: runs first) */
 
+	k12_walkb_pre_init ();       /* kit #12 walkb: the interpreter's options (SHEPHERD_K12_TIERING) before mini_init reads them; its K12 WALKB line */
+	k14_newlib_pre_init ();      /* kit #14 newlib: the runtime's rows, before any class is set up */
 	MonoDomain *domain = mono_jit_init_version ("shepherd", "v4.0.30319");
 	if (!domain) {
 		LOG ("FAIL H8 mono_jit_init_version returned NULL");
@@ -2856,6 +2896,11 @@ static void stall_check (void)
 
 /* device kit #8 (track boot): the hardware model + real firmware, the clean boot screen, the launcher handshake (vita/notes/kit8-boot.md) */
 #include "k8_boot.inc.c"
+/* device kit #11 (track device): kit #10's device results as defaults, the player build, the boot screen's emblem set (vita/notes/kit11-device.md) */
+#include "k11_device.inc.c"
+#include "k12_defaults.inc.c"   /* device kit #12 integration: the kit #12 defaults table (the owner's 2026-11-04 answer) -- vita/notes/kit12-integration.md section 6b */
+#include "k13_defaults.inc.c"   /* device kit #13 integration: the kit #13 defaults table (FloatPc + looks' rows; speed's own table folded in) -- vita/notes/kit13-integration.md section 6 */
+#include "k12_boot.inc.c"   /* device kit #12, track boot: the owner's boot sequence (host half), the recommended plugins on the loading screen -- vita/notes/kit12-boot.md */
 /* device kit #10 (track boot): the boot that always shows something -- the game's own loading screen during the engine's boot (vita/notes/kit10-boot.md) */
 #include "k10_boot.inc.c"
 /* device kit #7 (track probes): the clocks kept / logged / measured, the device profile, P3 suspend / resume (vita/notes/kit7-probes.md) */
@@ -2866,6 +2911,7 @@ static void stall_check (void)
 #include "k10_io.inc.c"   /* device kit #10, track io: the chunked pack's LZ4 (+ zstd) decoders, the DMA copy (vita/notes/kit10-io.md) */
 /* device kit #10 (track cache): the card's free space for the learning cache's free-space margin (vita/notes/kit10-cache.md) */
 #include "k10_cache.inc.c"
+#include "k13_bootc.inc.c"   /* device kit #13, track bootc: Verify Files over the compressed code files (vita/notes/kit13-bootc.md) */
 #ifdef SHP_TEST_CLOCK
 #include "k7_probes.inc.c"   /* the measurement app's device probes (memory, big pages, storage, NGS, GPU transfer) */
 #endif
@@ -3289,6 +3335,11 @@ int main (int argc, char *argv [])
 	k8_launcher_lines ();   /* kit #8: a launcher build's own lines (K8 L ...); nothing in a kit #7-style eboot */
 
 	apply_env_file ();
+	k11_device_config ();   /* kit #11 device: the defaults table (the logging diet, DMA copies, the player build) -- env file lines win */
+	k12_defaults_config (); /* kit #12 integration: the kit #12 defaults table (k12_defaults.inc.c; SHEPHERD_K12_DEFAULTS=0 = the c2 defaults) -- env file lines win */
+	k13_defaults_config ();  /* kit #13 integration: the kit #13 defaults table (k13_defaults.inc.c: FloatPc + looks' rows; SHEPHERD_K13_DEFAULTS=0 = none) -- before any kit #13 row and k10_fp_config read their switches */
+	k14_newlib_config ();   /* kit #14 newlib: the GC heap's cap's overhead (k14_newlib.inc.c), before the partition reads it */
+	k12_boot_config ();     /* kit #12 boot: the boot sequence / plugin names switches (k12_boot.inc.c; SHEPHERD_K12_BOOT=0 = kit #11) */
 	k7_config ();          /* kit #7: SHEPHERD_K7_CLK / _PROFILE / _SUSPEND (k7_host.inc.c) */
 	k8_play_config ();     /* kit #8 play: SHEPHERD_K8_PLAY / _CLK_MEASURED (k8_play.inc.c) */
 	k8_boot_config ();     /* kit #8 boot: SHEPHERD_K8_MODEL / ... (k8_boot.inc.c) -- kit #8 integration: the tracks' two k8_config () renamed */
@@ -3523,6 +3574,7 @@ k10_repartition:;
 	} else if (k10_il_vram_alloc (&g_il_pool, &g_il_pool_size) == 0) {
 		/* kit #10 memory (STRETCH): the IL pool in video memory (k10_mem.inc.c; SHEPHERD_K10_IL_VRAM_MB) */
 	}
+	k13_walkc_line ();   /* kit #13 walkc: the K13 WALKC line (the IL pool's video-memory type) */
 	log_mem ("arena");
 #ifdef SHEPHERD_AUDIO
 	if (g_audio_bake) {
@@ -3554,6 +3606,9 @@ k10_repartition:;
 		return 1;
 	}
 	k10_bootscreen_start ();   /* kit #10 boot track: the game's own loading screen until its first content (k10_boot.inc.c; SHEPHERD_K10_BOOTSCREEN=0: kit #9) */
+#ifdef SHEPHERD_GL
+	k12_deccheck ();          /* kit #12 boot: the decoder checks' device side (SHEPHERD_K12_DECCHECK=video, test-only; off: nothing) -- before the Mono thread */
+#endif
 #endif
 	/* kit #10 integration review (finding: the IL bundle x FloatPc): SHEPHERD_K9_FLOATPC -- and the strict original switch, which asks for it since
 	 * kit #10 -- is decided HERE, before the bundle's reader starts, not in the Mono thread: k10_ilb_start turns the bundle off when another
@@ -3607,6 +3662,9 @@ k10_repartition:;
 	gcgov_end_line ();     /* M2: how many GC.Collect calls the governor turned into nursery collections */
 	k9_gc_end_line ();     /* kit #9 gc: pauses by kind, the worst pause, the GC heap's peak, the arena's ends, the used-size counts */
 	k10_mem_end_line ();   /* kit #10 memory: the shared pool, the holes (test), the ladder, the size-class census (test) */
+	k12_walka_end_line ();   /* kit #12 walka: objects marked in place after a refused evacuation copy */
+	k12_walkb_end ();      /* kit #12 walkb: the VPK's compressed IL, the object-header census (test) */
+	k13_short_line ();     /* kit #13 walkc: the "MiB short" meter (the GC side's peak against the device partitions' room) */
 	io_readahead_line ();  /* B-3: the shim's read-ahead for small sequential reads */
 
 	/* the final line: the selected menu button, and the verdict */

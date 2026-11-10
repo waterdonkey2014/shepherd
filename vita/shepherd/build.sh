@@ -464,10 +464,127 @@ echo "   engine: $([ "$EBOOT_PROP" = -p:ShepherdEboot=1 ] && echo "SHEPHERD_EBOO
 PHYSCODE_PROP=(); [ "$PHYS_CODE" = 0 ] && { PHYSCODE_PROP=(-p:ShepherdPhysCode=0); echo "   engine: SHEPHERD_PHYS_CODE=0 -- the physics runtime compiled out (PhysicsOff/PhysOff.cs: kit #7's engine paths)"; }
 K8_PROP=; [ "$K8_ENGINE" = 1 ] || K8_PROP=-p:ShepherdK8=0   # kit #8 boot track (SHEPHERD_K8_ENGINE, above)
 echo "   engine: kit #8 boot rows' engine code $([ "$K8_ENGINE" = 1 ] && echo "compiled in (real video, preload; SHEPHERD_K8_ENGINE=1)" || echo "left out (SHEPHERD_NO_K8: kit #7's engine code; SHEPHERD_K8_ENGINE=1 adds it)")"
-dotnet build "$ENGINE_SRC/Shepherd.Engine/Shepherd.Engine.csproj" -c Release -p:DisableTransitiveFrameworkReferenceDownloads=true $EBOOT_PROP $PHYSCODE_PROP $K8_PROP \
+# device kit #11, track walk (review fix): SHEPHERD_K11_RECORDS=0 = the engine records in kit #10's layouts (-p:ShepherdK11Records=0, compile
+# symbol SHEPHERD_K10_RECORDS: the records diet's build switch back -- a field layout has no env-file switch). Unset / 1 = kit #11's layouts.
+K11REC_PROP=; [ "${SHEPHERD_K11_RECORDS:-1}" = 0 ] && K11REC_PROP=-p:ShepherdK11Records=0
+echo "   engine: records $([ -n "$K11REC_PROP" ] && echo "in kit #10's layouts (SHEPHERD_K11_RECORDS=0: SHEPHERD_K10_RECORDS)" || echo "in kit #11's layouts (the records diet; SHEPHERD_K11_RECORDS=0 = kit #10's)")"
+# kit #12 walkb (review fix, vita/notes/kit12-walkb.md): SHEPHERD_K12_TOC_CODE=0 = the assets' index entries compiled as kit #11's (compile
+# symbol SHEPHERD_K11_TOC: ObjectInfo a class again, one object per entry, kit #11's Shepherd.Assets / Shepherd.Engine code) -- the view's
+# struct costs AOT code (its generic instantiations) whatever the env file says, so the env switch SHEPHERD_K12_TOC=0 gives back kit #11's
+# GC heap but not its eboot span; this build switch gives back both. Unset / 1 = the view's code (the env file then picks view / objects).
+K12TOC_PROP=; [ "${SHEPHERD_K12_TOC_CODE:-1}" = 0 ] && K12TOC_PROP=-p:ShepherdK12TocCode=0
+echo "   engine: the assets' index entries $([ -n "$K12TOC_PROP" ] && echo "compiled as kit #11's (SHEPHERD_K12_TOC_CODE=0: SHEPHERD_K11_TOC -- kit #11's eboot span)" || echo "as a view over the object table (kit #12 walkb; env SHEPHERD_K12_TOC=0 = one object per entry; build SHEPHERD_K12_TOC_CODE=0 = kit #11's code)")"
+# device kit #12, track menusb (review fix 2): SHEPHERD_K12_MENUSB_CODE=0 = the track's engine code left out (-p:ShepherdK12Menusb=0, compile
+# symbol SHEPHERD_NO_K12MENUSB) and no version-history.txt in the VPK: kit #11's engine image, eboot span and AOT compile levels (the env
+# switch SHEPHERD_K12_MENUSB=0 only turns the rows off). Unset / 1 = compiled in.
+K12MB_PROP=; [ "${SHEPHERD_K12_MENUSB_CODE:-1}" = 0 ] && K12MB_PROP=-p:ShepherdK12Menusb=0
+echo "   engine: kit #12 menusb code $([ -n "$K12MB_PROP" ] && echo "left out (SHEPHERD_K12_MENUSB_CODE=0: kit #11's engine image)" || echo "compiled in (SHEPHERD_K12_MENUSB_CODE=0 = kit #11's engine image)")"
+# kit #12 fix + kit (review finding): ONE list of the engine's build-switch properties, used by the main engine build and by the nok8 remap
+# source below (which swaps only the kit #8 property), so a build switch can never be missing from one of them again
+# device kit #13, track walkc (vita/notes/kit13-walkc.md): SHEPHERD_K13_WALKC_CODE=0 = the track's engine code left out (-p:ShepherdK13Walkc=0,
+# compile symbol SHEPHERD_NO_K13WALKC): kit #12's engine image, eboot span and AOT compile levels (the env switch SHEPHERD_K13_WALKC=0 only turns
+# the rows off). Unset / 1 = compiled in.
+K13WC_PROP=; [ "${SHEPHERD_K13_WALKC_CODE:-1}" = 0 ] && K13WC_PROP=-p:ShepherdK13Walkc=0
+echo "   engine: kit #13 walkc code $([ -n "$K13WC_PROP" ] && echo "left out (SHEPHERD_K13_WALKC_CODE=0: kit #12's engine image)" || echo "compiled in (SHEPHERD_K13_WALKC_CODE=0 = kit #12's engine image)")"
+# device kit #14, track small (vita/notes/kit14-small.md): SHEPHERD_K14_SMALL_CODE=0 = the track's engine code left out (-p:ShepherdK14Small=0:
+# Runtime/K14Catalog.cs and Shepherd.Hooks' AddrLazy.cs) = kit #13's engine image and eboot span (the env switch SHEPHERD_K14_SMALL=0 keeps the code)
+K14S_PROP=; [ "${SHEPHERD_K14_SMALL_CODE:-1}" = 0 ] && K14S_PROP=-p:ShepherdK14Small=0
+echo "   engine: kit #14 small code $([ -n "$K14S_PROP" ] && echo "left out (SHEPHERD_K14_SMALL_CODE=0: kit #13's engine image)" || echo "compiled in (SHEPHERD_K14_SMALL_CODE=0 = kit #13's engine image)")"
+ENGINE_SWITCH_PROPS="$EBOOT_PROP $PHYSCODE_PROP $K11REC_PROP $K12TOC_PROP $K12MB_PROP $K13WC_PROP $K14S_PROP"
+dotnet build "$ENGINE_SRC/Shepherd.Engine/Shepherd.Engine.csproj" -c Release -p:DisableTransitiveFrameworkReferenceDownloads=true $=ENGINE_SWITCH_PROPS $K8_PROP \
   -p:PathMap="$W/engine-art=/shepherd-art" \
   --source ~/.nuget/packages --artifacts-path "$W/engine-art" -o "$W/engine" -nologo -v q > "$W/obj/engine-build.log" 2>&1 \
   || { grep -E " error " "$W/obj/engine-build.log" | head -20; exit 1; }
+# device kit #12, track boot (vita/notes/kit12-boot.md section 5): THE COLD RECIPE'S RAN LIST ON THIS BUILD'S ENGINE. The ran list names methods
+# by token ("<image><TAB><token>"), and the engine's tokens move whenever the engine gains a method or a type -- every kit, and between the eboot
+# and the launcher builds (the launchers compile the kit #8 boot code in: SHEPHERD_K8_ENGINE=1). So the list marked other engine methods hot and
+# cold than the ones it was made for: in kit #11 1,120 engine methods differed between 00095 and 00194 (diagnostic methods compiled without the
+# cold inline cap, ~162 KB of text: 00194's eboot span 305..306, and hot ones capped), and any kit's new engine code moves them again. Now the
+# list's Shepherd.Engine lines are moved to THIS build's tokens -- the same method = the same type, name and signature (AsmSize remaptok) -- from
+#   SHEPHERD_K12_COLD_FROM=<Shepherd.Engine.dll the list's engine tokens name> (the kit #12 boot track's recipe k12L passes kit #11's eboot
+#     engine: every app then compiles each kit #11 method exactly as kit #11's eboots did, and the methods kit #11 did not have as cold); or
+#   SHEPHERD_K12_COLD_FROM=nok8 (launcher builds only): from the same engine compiled without the kit #8 code (the eboot builds' layout of this
+#     source -- not the engine the list was traced on, so only a launcher = eboot mapping, not kit #11's).
+# Codegen / inlining choices only: the same results. OFF unless SHEPHERD_K12_COLD_FROM is given (review fix: it ran by default on every launcher
+# build, while its device time effect waits on kit #11's run -- the integration picks the recipe); SHEPHERD_K12_COLD_REMAP=0 = off even with it.
+# Off = the list as given = kit #11's build.
+# kit #12 integration: a compiler-generated method (lambda, closure class, local function) whose exact identity moved only because its name
+# carries the enclosing method's ordinal gets a second chance by its name without the ordinal, when unique in both builds (AsmSize; 29 of the
+# merged tree's 35 dropped hot lambdas); SHEPHERD_K12_COLD_REMAP_LAMBDA=0 = exact identities only (the boot track's mapping).
+K12_COLD_REMAP_NOTE=
+if [ -n "${SHEPHERD_K10_COLD:-}" ] && [ "${SHEPHERD_K12_COLD_REMAP:-1}" != 0 ] && [ -n "${SHEPHERD_K12_COLD_FROM:-}" ] && { [ "$SHEPHERD_K12_COLD_FROM" != nok8 ] || [ "$K8_ENGINE" = 1 ]; }; then
+  K12_FROM=${SHEPHERD_K12_COLD_FROM:-}
+  if [ "$K12_FROM" = nok8 ]; then
+    dotnet build "$ENGINE_SRC/Shepherd.Engine/Shepherd.Engine.csproj" -c Release -p:DisableTransitiveFrameworkReferenceDownloads=true $=ENGINE_SWITCH_PROPS -p:ShepherdK8=0 \
+      -p:PathMap="$W/engine-nok8-art=/shepherd-art" --source ~/.nuget/packages --artifacts-path "$W/engine-nok8-art" -o "$W/engine-nok8" -nologo -v q > "$W/obj/engine-nok8-build.log" 2>&1 \
+      || { grep -E " error " "$W/obj/engine-nok8-build.log" | head -20; exit 1; }
+    K12_FROM="$W/engine-nok8/Shepherd.Engine.dll"
+  fi
+  [ -f "$K12_FROM" ] || { echo "SHEPHERD_K12_COLD_FROM=$K12_FROM: no such file"; exit 1; }
+  dotnet build "$V/v6/tools/AsmSize/AsmSize.csproj" -c Release -o "$W/asmsize" --artifacts-path "$W/asmsize-art" -p:DisableTransitiveFrameworkReferenceDownloads=true -nologo -v q > "$W/obj/asmsize.log" 2>&1 \
+    || { tail -20 "$W/obj/asmsize.log"; exit 1; }
+  dotnet "$W/asmsize/AsmSize.dll" remaptok "$K12_FROM" "$W/engine/Shepherd.Engine.dll" Shepherd.Engine "$SHEPHERD_K10_COLD" "$W/obj/k12-cold-remapped.tsv" > "$W/obj/k12-cold-remap.txt" 2>&1 \
+    || { cat "$W/obj/k12-cold-remap.txt"; exit 1; }
+  # kit #12 fix + kit (review finding): the ran lists also key Shepherd.Assets (117 lines) and Shepherd.Engine.Derived (42 lines) by token, and
+  # both images are compiled with the same cold list -- walkb's index view took Shepherd.Assets from 810 to 858 methods and boot's Derived export
+  # Derived from 332 to 350, so ~99 Assets lines and 4 Derived lines named other methods. They move by method identity too, chained after the
+  # engine's: SHEPHERD_K12_COLD_FROM_ASSETS=<the Shepherd.Assets.dll the list's tokens name> here, SHEPHERD_K12_COLD_FROM_DERIVED=<the
+  # Shepherd.Engine.Derived.dll> after step 1b builds this build's Derived. Recipe k12L passes kit #11's eboot DLLs (304b1892fa900347 /
+  # 59133c6296cd000e). Unset = that image's lines as given (the integration's c2 build). Codegen only: the same results.
+  if [ -n "${SHEPHERD_K12_COLD_FROM_ASSETS:-}" ]; then
+    [ -f "$SHEPHERD_K12_COLD_FROM_ASSETS" ] || { echo "SHEPHERD_K12_COLD_FROM_ASSETS=$SHEPHERD_K12_COLD_FROM_ASSETS: no such file"; exit 1; }
+    mv "$W/obj/k12-cold-remapped.tsv" "$W/obj/k12-cold-remapped-engine.tsv"
+    dotnet "$W/asmsize/AsmSize.dll" remaptok "$SHEPHERD_K12_COLD_FROM_ASSETS" "$W/engine/Shepherd.Assets.dll" Shepherd.Assets "$W/obj/k12-cold-remapped-engine.tsv" "$W/obj/k12-cold-remapped.tsv" > "$W/obj/k12-cold-remap-assets.txt" 2>&1 \
+      || { cat "$W/obj/k12-cold-remap-assets.txt"; exit 1; }
+    echo "   engine: kit #12 the ran list's Shepherd.Assets lines moved to this build's tokens from SHEPHERD_K12_COLD_FROM_ASSETS ($(shasum -a 256 "$SHEPHERD_K12_COLD_FROM_ASSETS" | cut -c1-16)): $(tail -1 "$W/obj/k12-cold-remap-assets.txt")"
+  fi
+  echo "   engine: kit #12 the cold recipe's ran list moved to this build's engine tokens from $([ "$SHEPHERD_K12_COLD_FROM" != nok8 ] && echo "SHEPHERD_K12_COLD_FROM ($(shasum -a 256 "$K12_FROM" | cut -c1-16))" || echo "this source compiled without the kit #8 code (SHEPHERD_K12_COLD_FROM=nok8)"): $(tail -1 "$W/obj/k12-cold-remap.txt") (SHEPHERD_K12_COLD_REMAP=0 or no SHEPHERD_K12_COLD_FROM = the list as given)"
+  K12_COLD_REMAP_NOTE="kit #12 cold list remapped to this build's engine tokens from $([ "$SHEPHERD_K12_COLD_FROM" != nok8 ] && echo "$(basename "$K12_FROM") $(shasum -a 256 "$K12_FROM" | cut -c1-16)" || echo "the engine without the kit #8 code") ($(tail -1 "$W/obj/k12-cold-remap.txt" | cut -c1-110)); list $SHEPHERD_K10_COLD"
+  export SHEPHERD_K10_COLD="$W/obj/k12-cold-remapped.tsv"
+  # kit #12 integration: the learned-AOT list's Shepherd.Engine records (k10_learn.py safe v3, made on kit #10's engine) are token-keyed too --
+  # in kit #11's engine its four records named four other methods than the accessors k10_learn.py safe checked. Each moves to THIS build's
+  # token of the method its own name column names (AsmSize remapname; absent or overloaded = dropped: interpreted, as before kit #10).
+  # SHEPHERD_K12_LEARNED_BYNAME=0 = the learned list as given (kit #11's build). Codegen only: the same results.
+  if [ -n "${SHEPHERD_K10_AOTLEARNED:-}" ] && [ "${SHEPHERD_K12_LEARNED_BYNAME:-1}" != 0 ]; then
+    K12_LN=(); K12_LI=0
+    for f in ${(s.:.)SHEPHERD_K10_AOTLEARNED}; do
+      K12_LI=$((K12_LI + 1)); [ -f "$f" ] || { echo "SHEPHERD_K10_AOTLEARNED=$f: no such file"; exit 1; }
+      dotnet "$W/asmsize/AsmSize.dll" remapname "$W/engine/Shepherd.Engine.dll" Shepherd.Engine "$f" "$W/obj/k12-learned-$K12_LI.tsv" > "$W/obj/k12-learned-$K12_LI.txt" 2>&1 \
+        || { cat "$W/obj/k12-learned-$K12_LI.txt"; exit 1; }
+      echo "   engine: kit #12 the learned list's engine records moved to this build's tokens by the names they carry ($(basename "$f")): $(tail -1 "$W/obj/k12-learned-$K12_LI.txt") (SHEPHERD_K12_LEARNED_BYNAME=0 = the list as given)"
+      K12_LN+=("$W/obj/k12-learned-$K12_LI.tsv")
+    done
+    K12_COLD_REMAP_NOTE="$K12_COLD_REMAP_NOTE; kit #12 learned list's engine records by name ($(tail -1 "$W/obj/k12-learned-1.txt" | cut -c1-110))"
+    export SHEPHERD_K10_AOTLEARNED="${(j.:.)K12_LN}"
+  fi
+fi
+# device kit #13, track speed (vita/notes/kit13-speed.md): HOT BY NAME. The cold recipe compiles every method its ran list does not name for
+# size, inlining only callees under SHEPHERD_K10_COLD_INLINE bytes of IL -- and the list names methods by token, so a per-draw engine method
+# added after the traces is cold by chance (kit #11's X1: K11World.NoSample cold by token position, MathF.Max / Min out of line and run in the
+# interpreter). vita/shepherd/k13-hot-engine.txt (our own engine's method names only: "Namespace.Type:Method", every overload) names the
+# engine's per-frame methods that must be hot whatever the tokens did; AsmSize addhot adds each one's token in THIS build's engine to the ran
+# list. SHEPHERD_K13_HOT_NAMES=<file> another list (e.g. AsmSize tok2id's identities from first-call traces: an owner-local file passed by
+# path -- lists made from the game's runs never go in git, derived_leaks.py); =0 = off (kit #12's lists).
+# Codegen / inlining choices only: the same results. Runs only with SHEPHERD_K10_COLD (the cold recipe).
+K13_HOT_NOTE=
+if [ -n "${SHEPHERD_K10_COLD:-}" ] && [ "${SHEPHERD_K13_HOT_NAMES:-}" != 0 ]; then
+  K13_HN=${SHEPHERD_K13_HOT_NAMES:-$HERE/k13-hot-engine.txt}   # (a colon list: each file's Shepherd.Engine and Shepherd.Assets lines)
+  [ -f "$W/asmsize/AsmSize.dll" ] || dotnet build "$V/v6/tools/AsmSize/AsmSize.csproj" -c Release -o "$W/asmsize" --artifacts-path "$W/asmsize-art" -p:DisableTransitiveFrameworkReferenceDownloads=true -nologo -v q > "$W/obj/asmsize.log" 2>&1 \
+    || { tail -20 "$W/obj/asmsize.log"; exit 1; }
+  cp "$SHEPHERD_K10_COLD" "$W/obj/k13-cold-hot.tsv"; : > "$W/obj/k13-hot-names.txt"; K13_HOT_NOTE="kit #13 hot by name:"
+  for f in ${(s.:.)K13_HN}; do
+    [ -f "$f" ] || { echo "SHEPHERD_K13_HOT_NAMES=$f: no such file"; exit 1; }
+    for img in Shepherd.Engine Shepherd.Assets; do
+      dotnet "$W/asmsize/AsmSize.dll" addhot "$W/engine/$img.dll" $img "$f" "$W/obj/k13-cold-hot.tsv" "$W/obj/k13-cold-hot.next" > "$W/obj/k13-hot-one.txt" 2>&1 \
+        || { cat "$W/obj/k13-hot-one.txt"; exit 1; }
+      mv "$W/obj/k13-cold-hot.next" "$W/obj/k13-cold-hot.tsv"; cat "$W/obj/k13-hot-one.txt" >> "$W/obj/k13-hot-names.txt"
+      echo "   engine: kit #13 hot by name ($(basename "$f") $(shasum -a 256 "$f" | cut -c1-16)): $(tail -1 "$W/obj/k13-hot-one.txt") (SHEPHERD_K13_HOT_NAMES=0 = off)"
+      K13_HOT_NOTE="$K13_HOT_NOTE $(basename "$f") $(tail -1 "$W/obj/k13-hot-one.txt" | cut -c1-90);"
+    done
+  done
+  # (the chain's later step -- the Derived lines' remap -- rewrites the remapped list in place: the result goes back under that name)
+  if [ "$SHEPHERD_K10_COLD" = "$W/obj/k12-cold-remapped.tsv" ]; then mv "$W/obj/k13-cold-hot.tsv" "$W/obj/k12-cold-remapped.tsv"; else export SHEPHERD_K10_COLD="$W/obj/k13-cold-hot.tsv"; fi
+fi
 rm -rf "$W/bcl"; mkdir -p "$W/bcl"                  # the packaged managed set; recreated every run (the GUID gate reads it)
 cp "$PACK"/lib/net8.0/*.dll "$W/bcl/"
 cp "$PACK/native/System.Private.CoreLib.dll" "$W/bcl/"
@@ -479,6 +596,15 @@ if [ "$DERIVED_AOT" = 1 ]; then
     zsh "$HERE/build-derived.sh" > "$W/obj/derived-build.txt" 2>&1 || { cat "$W/obj/derived-build.txt"; exit 1; }
   [ -f "$W/derived/Shepherd.Engine.Derived.dll" ] || { cat "$W/obj/derived-build.txt"; exit 1; }
   mkdir -p "$OUT/owner-managed"; cp "$W/derived/Shepherd.Engine.Derived.dll" "$OUT/owner-managed/"
+  # kit #12 fix + kit: the ran list's Shepherd.Engine.Derived lines to this build's Derived tokens (the chain's last step; see the engine's above)
+  if [ -n "${SHEPHERD_K12_COLD_FROM_DERIVED:-}" ] && [ "${SHEPHERD_K10_COLD:-}" = "$W/obj/k12-cold-remapped.tsv" ]; then
+    [ -f "$SHEPHERD_K12_COLD_FROM_DERIVED" ] || { echo "SHEPHERD_K12_COLD_FROM_DERIVED=$SHEPHERD_K12_COLD_FROM_DERIVED: no such file"; exit 1; }
+    mv "$W/obj/k12-cold-remapped.tsv" "$W/obj/k12-cold-remapped-assets.tsv"
+    dotnet "$W/asmsize/AsmSize.dll" remaptok "$SHEPHERD_K12_COLD_FROM_DERIVED" "$W/derived/Shepherd.Engine.Derived.dll" Shepherd.Engine.Derived "$W/obj/k12-cold-remapped-assets.tsv" "$W/obj/k12-cold-remapped.tsv" > "$W/obj/k12-cold-remap-derived.txt" 2>&1 \
+      || { cat "$W/obj/k12-cold-remap-derived.txt"; exit 1; }
+    echo "   engine: kit #12 the ran list's Shepherd.Engine.Derived lines moved to this build's Derived tokens from SHEPHERD_K12_COLD_FROM_DERIVED ($(shasum -a 256 "$SHEPHERD_K12_COLD_FROM_DERIVED" | cut -c1-16)): $(tail -1 "$W/obj/k12-cold-remap-derived.txt")"
+    K12_COLD_REMAP_NOTE="$K12_COLD_REMAP_NOTE; Derived lines remapped ($(tail -1 "$W/obj/k12-cold-remap-derived.txt" | cut -c1-90))"
+  fi
 fi
 
 echo "== 2. static AOT (full + interp entry wrappers, direct P/Invokes and icalls, no debug info)"
@@ -567,7 +693,7 @@ for f in "$W"/aot/*.dll.s(N) "$W"/aot-owner/*.dll.s(N); do a=${${f:t}%.dll.s}; (
 #     Review fix (kit #9 runtime review of b23b56a): every fast path also checks the runtime's switch word (vita/patches/k9-divfast-flag.patch,
 #     in the compiler AND the runtime) -- the ENV-FILE switch back: SHEPHERD_K9_DIVFAST=0 = every division is the wrapper call (kit #8's code
 #     path), SHEPHERD_K9_DIVMOD=0 = the 64-bit fast path off too (E2 off). A compiler or runtime without that patch is refused below.
-unset SHEPHERD_AOT_ORDER SHEPHERD_AOT_SKIP_INSTANCES SHEPHERD_AOT_INSTANCES_OUT SHEPHERD_AOT_KEEP SHEPHERD_AOT_DIVFAST   # (only set below, per image)
+unset SHEPHERD_AOT_ORDER SHEPHERD_AOT_SKIP_INSTANCES SHEPHERD_AOT_INSTANCES_OUT SHEPHERD_AOT_KEEP SHEPHERD_AOT_DIVFAST SHEPHERD_AOT_DEDUP_SHARED SHEPHERD_AOT_KEEP_GENERIC   # (only set below, per image)
 # device kit #10 (track aot, vita/notes/kit10-aot.md): the kit #10 compiler's build-time rows (vita/patches/k10-aot-compiler.patch; build it with
 # SHEPHERD_K10_COMPILER=1 vita/toolchain/build-cross-k9.sh llvm|gameaot and point SHEPHERD_CROSS_LLVM_OBJ / SHEPHERD_CROSS_OBJ at it). Each is off
 # unless asked for (unset = the kit #9 images byte for byte); compiled code, so the switch back is a build without it. Every list is owner-local
@@ -620,6 +746,18 @@ if [ "$K9_DIVFAST" = 1 ]; then
 fi
 # SHEPHERD_K9_DEDUP: unset / 0 = off (kit #8's output; the kit recipe passes 1), 1 = on (the compiler must be the kit #9 one), auto = on when it is
 if [ "$K9_DEDUP" = auto ]; then K9_DEDUP=0; strings "$X" | grep SHEPHERD_AOT_SKIP_INSTANCES > /dev/null && K9_DEDUP=1 || true; fi
+if [ "${SHEPHERD_K14_DEDUP_SHARED:-0}" = 1 ]; then
+  strings "$X" | grep SHEPHERD_AOT_DEDUP_SHARED > /dev/null || { echo "SHEPHERD_K14_DEDUP_SHARED=1 needs a kit #14 compiler (build-cross-k9.sh with SHEPHERD_K14_COMPILER=1): $X lacks it"; exit 1; }
+  [ "$K9_DEDUP" = 1 ] || { echo "SHEPHERD_K14_DEDUP_SHARED=1 needs SHEPHERD_K9_DEDUP=1 (or auto with a kit #9 compiler): it extends R3, which is off here, so the row would do nothing"; exit 1; }
+fi
+# device kit #14 (track small, vita/notes/kit14-small.md): a half-applied trim is refused, never built silently. An older compiler ignores SHEPHERD_AOT_KEEP_GENERIC (only
+# the non-generic rule would run), no keep list = nothing trimmed (the stamp would not even say so), and generic struct methods missing from every image need the runtime's
+# first-branch fallback (vita/patches/k14-unbox-first.patch: without it ldvirtftn over one stops the app, and repeated lookups empty the arbitrary trampoline pool).
+if [ "${SHEPHERD_K14_LIBTRIM:-0}" = 1 ]; then
+  strings "$X" | grep SHEPHERD_AOT_KEEP_GENERIC > /dev/null || { echo "SHEPHERD_K14_LIBTRIM=1 needs a kit #14 compiler (build-cross-k9.sh with SHEPHERD_K14_COMPILER=1): $X lacks it"; exit 1; }
+  [ -n "$K9_KEEP" ] || { echo "SHEPHERD_K14_LIBTRIM=1 needs a keep list (SHEPHERD_K9_CORELIB_KEEP=<list>, vita/tools/k14_keep.py): without one the row trims nothing"; exit 1; }
+  strings "$RT/mono/mini/libmonosgen-2.0.a" | grep SHEPHERD_K14_UNBOX_FIRST > /dev/null || { echo "SHEPHERD_K14_LIBTRIM=1: the runtime $RT lacks vita/patches/k14-unbox-first.patch (SHEPHERD_K10_PATCHES of build-runtime-k9.sh)"; exit 1; }
+fi
 if [ "$K9_DEDUP" = 1 ] || [ -n "$K9_ORDER" ] || [ -n "$K9_KEEP" ]; then
   strings "$X" | grep SHEPHERD_AOT_SKIP_INSTANCES > /dev/null || { echo "SHEPHERD_K9_DEDUP / _ORDER / _CORELIB_KEEP need the kit #9 compiler (vita/toolchain/build-cross-k9.sh): $X lacks it"; exit 1; }
   [ -z "$K9_ORDER" ] || [ -f "$K9_ORDER" ] || { echo "SHEPHERD_K9_ORDER=$K9_ORDER: no such file"; exit 1; }
@@ -645,7 +783,11 @@ for a in $AOT; do
   fi
   [ -n "$K9_ORDER" ] && { K9ENV+=(SHEPHERD_AOT_ORDER=$K9_ORDER); K9S+=" k9order=$(shasum -a 256 "$K9_ORDER" | cut -c1-16)"; }
   [ -n "$K9_KEEP" ] && [ "$a" = System.Private.CoreLib ] && { K9ENV+=(SHEPHERD_AOT_KEEP=$K9_KEEP); K9S+=" k9keep=$(shasum -a 256 "$K9_KEEP" | cut -c1-16)"; }
+  # device kit #14 (track small): SHEPHERD_K14_LIBTRIM=1 = the keep list reaches every image and rules generic instances too (the kit #14 compiler)
+  [ -n "$K9_KEEP" ] && [ "${SHEPHERD_K14_LIBTRIM:-0}" = 1 ] && { K9ENV+=(SHEPHERD_AOT_KEEP=$K9_KEEP SHEPHERD_AOT_KEEP_GENERIC=1); K9S+=" k14trim=$(shasum -a 256 "$K9_KEEP" | cut -c1-16)"; }
   [ "$K9_DIVFAST" = 1 ] && { K9ENV+=(SHEPHERD_AOT_DIVFAST=1); K9S+=" k9divfast=1"; }
+  # device kit #14 (track small, vita/notes/kit14-small.md): one copy of shared generic code (with SHEPHERD_K9_DEDUP=1 and a kit #14 compiler)
+  [ "${SHEPHERD_K14_DEDUP_SHARED:-0}" = 1 ] && [ "$K9_DEDUP" = 1 ] && { K9ENV+=(SHEPHERD_AOT_DEDUP_SHARED=1); K9S+=" k14dedup=1"; }
   # device kit #10 (track aot): the kit #10 compiler rows (above)
   [ -n "$K10_LEARNED" ] && { K9ENV+=(SHEPHERD_AOT_LEARNED=$K10_LEARNED ${K10_LIMG:+SHEPHERD_AOT_LEARNED_IMAGE=$K10_LIMG}); K9S+=" k10learned=$(cat ${(s.:.)K10_LEARNED} | shasum -a 256 | cut -c1-16):$K10_LIMG"; }
   [ -n "$K10_COLD" ] && { K9ENV+=(SHEPHERD_AOT_COLD=$K10_COLD SHEPHERD_AOT_COLD_MODE=$K10_COLD_MODE SHEPHERD_AOT_COLD_HOT=$K10_COLD_HOT ${K10_COLD_INLINE:+SHEPHERD_AOT_COLD_INLINE=$K10_COLD_INLINE}); K9S+=" k10cold=$(shasum -a 256 "$K10_COLD" | cut -c1-16):$K10_COLD_MODE:$K10_COLD_HOT:${K10_COLD_INLINE:-}"; }   # (optsize: LLVM images; the inline cap: every backend)
@@ -871,17 +1013,19 @@ HOST_EXPORTS+=(shepherd_vita_engine_mem)   # kit #10 memory: the memory-pressure
 [ "$DIAG" = 1 ] && HOST_EXPORTS+=(shepherd_vita_diag_phase)   # DIAG: the engine's boot-phase marker (Diag/BootPhase.cs)
 [ "$GL" = 1 ] && HOST_EXPORTS+=(shepherd_vita_pad_read shepherd_vita_touch_read shepaudio_proc shepherd_vita_k8_pad shepphys_proc)   # shepaudio_proc: the audio app's table, a NULL stub in the silent GL app; touch_read: kit #5 front touch (Icalls/VitaTouch.cs); shepherd_vita_k8_pad: kit #8 play (the right stick + rear touch); shepphys_proc: physics' binding (Physics/ShepPhys.cs) -- libshepphys's table when the eboot links it (kit #8, SHEPHERD_PHYS_LINK), else a NULL stub
 [ "$GL" = 1 ] && HOST_EXPORTS+=(shepherd_vita_k10_api shepherd_vita_k10_bootscreen_end shepherd_vita_k10_bootscreen_info)   # kit #10 boot track: the boot screen (Runtime/K10Boot.cs; host.c k10_boot.inc.c)
+[ "$GL" = 1 ] && HOST_EXPORTS+=(shepherd_vita_k12_api shepherd_vita_k12_plugins)   # kit #12 boot track: the owner's boot sequence (Runtime/K12BootSeq.cs), the recommended plugins' detection (Runtime/K12PluginDetect.cs; host.c k12_boot.inc.c)
+[ "$GL" = 1 ] && HOST_EXPORTS+=(shepherd_vita_k13_bootc)   # device kit #13 bootc: Verify Files over the compressed code files (Runtime/K10Io.cs; host.c k13_bootc.inc.c)
 [ "$GL" = 1 ] && [ "$K8_ENGINE" = 1 ] && HOST_EXPORTS+=(shepherd_vita_video_api shepherd_vita_video_open shepherd_vita_video_decode shepherd_vita_video_close)   # kit #8 boot track: the engine's real video (Runtime/K8Video.cs; host.c k8_boot.inc.c)
 { arm-vita-eabi-nm -g --defined-only "$W/obj/libSystem.Native.vita.a" $GL_OBJS | awk 'NF==3 && $2=="T" {print $3}'; printf '%s\n' $HOST_EXPORTS; } | sort -u > "$W/obj/static-candidates.txt"
 # the GL app: every shepgl_* export (the engine binds shepgl_proc, _state, _status, _attach, _swap, _has_extension,
 # _display_fbo, _pool_kib; the rest are harmless) and the pad reader
-grep -E '^(SystemNative_|CryptoNative_|CompressionNative_|Brotli(Decoder|Encoder)|NetSecurityNative_|GlobalizationNative_|corehost_|shepherd_vita_engine_|shepherd_vita_pin$|shepherd_vita_worker_mask$|shepherd_vita_k6$|shepherd_vita_gc_pause_us$|shepherd_vita_k7$|shepherd_vita_k7_ptr$|shepherd_vita_video_(api|open|decode|close)$|shepherd_vita_k10_(api|bootscreen_end|bootscreen_info)$|shepherd_spine_clip_(api|start|tris)$|shepherd_vita_pad_read$|shepherd_vita_touch_read$|shepherd_vita_k8$|shepherd_vita_k10$|shepherd_vita_k10_cache$|shepherd_vita_k8_pad$|shepgl_|shepaudio_proc$|shepphys_proc$|shepherd_vita_diag_phase$)' "$W/obj/static-candidates.txt" > "$W/obj/static-symbols.txt"
+grep -E '^(SystemNative_|CryptoNative_|CompressionNative_|Brotli(Decoder|Encoder)|NetSecurityNative_|GlobalizationNative_|corehost_|shepherd_vita_engine_|shepherd_vita_pin$|shepherd_vita_worker_mask$|shepherd_vita_k6$|shepherd_vita_gc_pause_us$|shepherd_vita_k7$|shepherd_vita_k7_ptr$|shepherd_vita_video_(api|open|decode|close)$|shepherd_vita_k10_(api|bootscreen_end|bootscreen_info)$|shepherd_vita_k12_(api|plugins)$|shepherd_vita_k13_bootc$|shepherd_spine_clip_(api|start|tris)$|shepherd_vita_pad_read$|shepherd_vita_touch_read$|shepherd_vita_k8$|shepherd_vita_k10$|shepherd_vita_k10_cache$|shepherd_vita_k8_pad$|shepgl_|shepaudio_proc$|shepphys_proc$|shepherd_vita_diag_phase$)' "$W/obj/static-candidates.txt" > "$W/obj/static-symbols.txt"
 # every entry point the packaged BCL declares must be answerable (shim or stub)
 # (the BCL's native libraries + "__Internal"; the engine's own Mac-only imports -- SDL3, libc, libSystem.B, CoreFoundation --
 #  are deliberately unanswered: never bound under the Vita profile + null renderer, see checks.txt)
 # (the headless build: the GL app's own __Internal imports -- shepgl_* and the pad reader, Render/ShepGl.cs and Icalls/VitaPad.cs --
 #  are unanswered too: they are bound only under SHEPHERD_GL_HOST=shepgl / SHEPHERD_VITA_PAD=1, which only the GL host sets)
-GLONLY='^(shepgl_|shepherd_vita_pad_read$|shepherd_vita_touch_read$|shepaudio_proc$|shepherd_vita_k8_pad$|shepphys_proc$|shepherd_vita_video_|shepherd_vita_k10_)'; [ "$GL" = 1 ] && GLONLY='^$'   # (Stage C: shepaudio_proc, Audio/ShepAudio.cs; kit #5: the touch reader, Icalls/VitaTouch.cs; kit #8 play: the rear touch reader; physics: shepphys_proc, Physics/ShepPhys.cs; kit #8 boot: the real video, Runtime/K8Video.cs)
+GLONLY='^(shepgl_|shepherd_vita_pad_read$|shepherd_vita_touch_read$|shepaudio_proc$|shepherd_vita_k8_pad$|shepphys_proc$|shepherd_vita_video_|shepherd_vita_k10_|shepherd_vita_k12_|shepherd_vita_k13_)'; [ "$GL" = 1 ] && GLONLY='^$'   # (Stage C: shepaudio_proc, Audio/ShepAudio.cs; kit #5: the touch reader, Icalls/VitaTouch.cs; kit #8 play: the rear touch reader; physics: shepphys_proc, Physics/ShepPhys.cs; kit #8 boot: the real video, Runtime/K8Video.cs)
 awk -F'\t' -v g="$GLONLY" 'NR>1 && $2 ~ /^(libSystem\.(Native|Security\.Cryptography\.Native\.OpenSsl|IO\.Compression\.Native|Globalization\.Native|Net\.Security\.Native)|libhostpolicy|__Internal)$/ && !($2 == "__Internal" && $3 ~ g) {print $3}' "$W/obj/pinvokes.tsv" | sort -u > "$W/obj/declared.txt"
 awk -F'\t' -v g="$GLONLY" 'NR>1 && ($2 !~ /^(libSystem\.(Native|Security\.Cryptography\.Native\.OpenSsl|IO\.Compression\.Native|Globalization\.Native|Net\.Security\.Native)|libhostpolicy|__Internal)$/ || ($2 == "__Internal" && $3 ~ g)) {print $1" -> "$2"!"$3}' "$W/obj/pinvokes.tsv" | sort -u > "$OUT/unanswered-imports.txt"
 comm -23 "$W/obj/declared.txt" "$W/obj/static-symbols.txt" > "$W/obj/unanswered.txt"
@@ -1076,6 +1220,19 @@ echo "   param.sfo: $TITLE_ID APP_VER $APP_VER"
 mkdir -p "$HERE/sce_sys"
 [ -f "$HERE/sce_sys/icon0.png" ] || python3 "$V/hello/make_icon.py" "$HERE/sce_sys/icon0.png"
 PACKED=(); for f in "$W"/bcl/*.dll; do PACKED+=(-a "$f=managed/${f:t}"); done
+# kit #12 walkb (vita/notes/kit12-walkb.md): SHEPHERD_K12_VPKILZ=1 -- the VPK's own DLLs' IL bodies ALSO in kit #10's compressed-IL form, in
+# managed-ilz/ beside the originals (vita/tools/k10_ilz.py stagevpk: every body, the metadata, field data, resources and the MVID verified
+# against the original; the files with nothing to cut are not staged). The host reads app0:managed-ilz/<name>.dll for app0:managed/<name>.dll
+# and the runtime (k10-ilz.patch) unpacks a body on first use -- with the env line SHEPHERD_K12_VPKILZ=1 (review fix: the host's default is the
+# originals until the kit #11 run's boot numbers + a device A/B decide). Unset here = kit #11's VPK.
+VPKILZ=()
+rm -rf "$W/bcl-ilz"   # (review fix: every run, as work/bcl -- a build without SHEPHERD_K12_VPKILZ=1 in the same work dir left an older build's forms for vlx's stage.sh)
+if [ "${SHEPHERD_K12_VPKILZ:-0}" = 1 ]; then
+  python3 -I "$V/tools/k10_ilz.py" stagevpk "$W/bcl" "$W/bcl-ilz" > "$W/obj/vpk-ilz.log" 2>&1 || { cat "$W/obj/vpk-ilz.log"; echo "kit #12 vpkilz: k10_ilz.py stagevpk failed"; exit 1; }
+  for f in "$W"/bcl-ilz/*.dll; do PACKED+=(-a "$f=managed-ilz/${f:t}"); done
+  VPKILZ=(--vpk-ilz)
+  echo "   kit #12 vpkilz: $(ls "$W"/bcl-ilz/*.dll | wc -l | tr -d ' ') DLLs in managed-ilz/ ($(tail -1 "$W/bcl-ilz/ILZ-MANIFEST.txt" | cut -c1-120))"
+fi
 # every VPK carries the LiveArea set (8-bit indexed PNGs; vita/probe's known-good template/bg/startup) -- the diag apps had it first
 # (devfail1); since the integration branch every recipe does, and step 8's VPK gate checks it
 LA=$V/probe/sce_sys/livearea/contents
@@ -1087,7 +1244,11 @@ ICON=$HERE/sce_sys/icon0.png
 cp "$W/obj/eboot.bin" "$OUT/eboot.bin"
 rm -f "$OUT/$VPK"
 MODPACK=(); [ "$LAUNCHER" = 1 ] && { MODPACK=(-a "$W/obj/shepherd.suprx=module/shepherd.suprx"); cp "$W/obj/shepherd.suprx" "$OUT/shepherd.suprx"; }   # kit #8: the engine module
-vita-pack-vpk -s "$W/obj/param.sfo" -b "$W/obj/eboot.bin" $PACKED $MODPACK -a "$ICON=sce_sys/icon0.png" $LIVEAREA "$OUT/$VPK" > /dev/null
+# kit #12 (menusb): Settings > PS Vita > Version History's text (made by vita/tools/k12_history.py; English; the engine reads
+# app0:version-history.txt -- Runtime/K12View.cs K12History). SHEPHERD_K12_HISTORY_PACK=0 = kit #11's VPK (the section is then left out).
+# SHEPHERD_K12_MENUSB_CODE=0 (the code left out) packs none either.
+HISTPACK=(); [ "${SHEPHERD_K12_HISTORY_PACK:-1}" != 0 ] && [ -z "$K12MB_PROP" ] && [ -f "$HERE/version-history.txt" ] && HISTPACK=(-a "$HERE/version-history.txt=version-history.txt")
+vita-pack-vpk -s "$W/obj/param.sfo" -b "$W/obj/eboot.bin" $PACKED $MODPACK $HISTPACK -a "$ICON=sce_sys/icon0.png" $LIVEAREA "$OUT/$VPK" > /dev/null
 
 echo "== 8. checks: param.sfo, imports, VPK contents"
 # the import allow-list: exactly the libraries each build is meant to import (anything else fails the build)
@@ -1107,7 +1268,7 @@ GL_CHECK=()
   --module-load-libs "$HERE/module-load-libs.txt" \
   --launcher-allow-libs SceLibKernel,SceThreadmgr,SceSysmem,SceIofilemgr,SceProcessmgr,SceDisplayUser,SceDisplay,SceCtrl,SceSysmodule,SceVideodecUser,SceAudio,SceModulemgr,SceThreadmgrCoredumpTime)
 python3 "$HERE/check_vpk.py" --allow-livearea --vpk "$OUT/$VPK" --sfo "$W/obj/param.sfo" --elf "$W/obj/shepherd_menu.elf" --map "$W/obj/shepherd_menu.map" \
-  --bcl "$W/bcl" --pack "$PACK" --engine "$W/engine" --unanswered "$OUT/unanswered-imports.txt" --title-id "$TITLE_ID" --allow-libs "$ALLOW" $GL_CHECK \
+  --bcl "$W/bcl" --pack "$PACK" --engine "$W/engine" --unanswered "$OUT/unanswered-imports.txt" --title-id "$TITLE_ID" --allow-libs "$ALLOW" $GL_CHECK $VPKILZ \
   --forbid "$REPO/runtime/ManagedVita" --forbid "${SHEPHERD_GAME_DATA}/Managed" \
   --forbid "$REPO/runtime/vitapack/menu" --forbid "$REPO/runtime/audiobake" --forbid "$REPO/runtime/derived" --derived-src "$REPO/engine" \
   > "$OUT/checks.txt" || { cat "$OUT/checks.txt"; exit 1; }
@@ -1131,6 +1292,8 @@ IL=0; for f in "$W"/bcl/*.dll; do IL=$((IL + $(stat -f %z "$f"))); done
   echo "static P/Invoke table: $(wc -l < "$W/obj/static-symbols.txt" | tr -d ' ') symbols; packaged BCL declares $(wc -l < "$W/obj/declared.txt" | tr -d ' ') entry points, all answered"
   echo "newlib heap: $NEWLIB_MB MiB"
   echo "kit #8 engine code (real video, preload): $([ "$K8_ENGINE" = 1 ] && echo "compiled in (SHEPHERD_K8_ENGINE=1)" || echo "left out (SHEPHERD_K8_ENGINE=0: kit #7's engine code)")"
+  [ -n "${K12_COLD_REMAP_NOTE:-}" ] && echo "$K12_COLD_REMAP_NOTE"
+  [ -n "${K13_HOT_NOTE:-}" ] && echo "$K13_HOT_NOTE"
   echo "spine clipping (kit #7): $SPCLIP_STATE"
   echo "$BCL_TRIM_NOTE"
   echo "physics (kit #8): $PHYS_STATE"

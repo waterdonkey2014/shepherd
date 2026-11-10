@@ -19,6 +19,9 @@
 # kinds): AOT that learns from play (SHEPHERD_AOT_LEARNED / _LEARNED_IMAGE), cold code for size (SHEPHERD_AOT_COLD / _COLD_MODE / _COLD_HOT),
 # the hot methods' inline limit and census (SHEPHERD_AOT_HOT_INLINE / _HOT_INLINE_LIMIT / SHEPHERD_AOT_INLINE_CENSUS) -- with none of those set
 # the compiler writes what the kit #9 compiler writes (check-cross-k9.sh against compilers3). Unset = the kit #9 compiler.
+# DEVICE KIT #14 (track small, vita/notes/kit14-small.md): SHEPHERD_K14_COMPILER=1 also applies vita/patches/k14-aot-dedup.patch + k14-aot-trim.patch (last,
+# both kinds, after kit #10's): one copy of shared generic code (SHEPHERD_AOT_DEDUP_SHARED=1), the keep list ruling generic instances too
+# (SHEPHERD_AOT_KEEP_GENERIC=1) -- with both unset the compiler writes what the kit #10 compiler writes.
 # env: SHEPHERD_RUNTIME (default ${SHEPHERD_WORK:-$HOME/shepherd-work}/runtime), SHEPHERD_GAMEAOT_RUNTIME (default ${SHEPHERD_WORK:-$HOME/shepherd-work}/gameaot/proto/runtime),
 #      RECOPY=1 refreshes the private copy.
 set -euo pipefail
@@ -33,6 +36,8 @@ K9P=$V/patches/k9-aot-compiler.patch
 K9D=$V/patches/k9-divfast-compiler.patch   # (session 2) E2 divfast: SHEPHERD_AOT_DIVFAST
 K9F=$V/patches/k9-divfast-flag.patch       # (review fix) divfast's run-time switch word (needed by K9D's guards)
 K10C=$V/patches/k10-aot-compiler.patch     # (device kit #10, track aot) SHEPHERD_K10_COMPILER=1
+K14C=$V/patches/k14-aot-dedup.patch        # (device kit #14, track small) SHEPHERD_K14_COMPILER=1
+K14T=$V/patches/k14-aot-trim.patch         # (device kit #14, track small) SHEPHERD_K14_COMPILER=1
 apply () {   # apply <patch> <marker string> <file with the marker>
   local p=$1 mark=$2 mf=$3
   grep -q "$mark" "$D/runtime/$mf" && return 0
@@ -50,6 +55,8 @@ case $KIND in
     apply $K9F "k9-divfast-flag.patch" $M/mini-runtime.c
     apply $K9D "SHEPHERD-VITA device kit #9, track runtime: E2 divfast" $M/decompose.c
     [[ ${SHEPHERD_K10_COMPILER:-0} == 1 ]] && apply $K10C "SHEPHERD-VITA device kit #10, track aot (vita/patches/k10-aot-compiler.patch" $M/aot-compiler.c
+    [[ ${SHEPHERD_K14_COMPILER:-0} == 1 ]] && apply $K14C "SHEPHERD-VITA device kit #14, track small (vita/patches/k14-aot-dedup.patch" $M/aot-compiler.c
+    [[ ${SHEPHERD_K14_COMPILER:-0} == 1 ]] && apply $K14T "SHEPHERD-VITA device kit #14, track small (vita/patches/k14-aot-trim.patch" $M/aot-compiler.c
     SHEPHERD_RUNTIME=$D/runtime SHEPHERD_CROSS_LLVM_OBJ=$D/obj/cross-llvm-armhf nice -n 10 sh $V/llvm/build-cross-llvm.sh > $D/build.log 2>&1 || { tail -30 $D/build.log; exit 1; }
     X=$D/obj/cross-llvm-armhf/out/bin/mono-aot-cross ;;
   gameaot)
@@ -59,6 +66,8 @@ case $KIND in
     apply $K9F "k9-divfast-flag.patch" $M/mini-runtime.c
     apply $K9D "SHEPHERD-VITA device kit #9, track runtime: E2 divfast" $M/decompose.c
     [[ ${SHEPHERD_K10_COMPILER:-0} == 1 ]] && apply $K10C "SHEPHERD-VITA device kit #10, track aot (vita/patches/k10-aot-compiler.patch" $M/aot-compiler.c
+    [[ ${SHEPHERD_K14_COMPILER:-0} == 1 ]] && apply $K14C "SHEPHERD-VITA device kit #14, track small (vita/patches/k14-aot-dedup.patch" $M/aot-compiler.c
+    [[ ${SHEPHERD_K14_COMPILER:-0} == 1 ]] && apply $K14T "SHEPHERD-VITA device kit #14, track small (vita/patches/k14-aot-trim.patch" $M/aot-compiler.c
     O=$D/obj/cross-vita; mkdir -p $O
     cp $B/obj/cross-vita/offsets-arm-vita.h $O/offsets-arm-vita.h
     if [[ ! -f $O/build.ninja ]]; then
@@ -76,6 +85,8 @@ n=$(strings $X | grep -c "SHEPHERD_AOT_ORDER" || true)
   echo "k9 patch: ${K9P:t} sha256 $(shasum -a 256 $K9P | cut -c1-16); SHEPHERD_AOT_ORDER strings in the compiler: $n"
   echo "k9 patch: ${K9D:t} sha256 $(shasum -a 256 $K9D | cut -c1-16) ($(grep -c 'E2 divfast' $D/runtime/$M/decompose.c) marker lines in decompose.c); SHEPHERD_AOT_DIVFAST strings in the compiler: $(strings $X | grep -c SHEPHERD_AOT_DIVFAST || true)"
   echo "k9 patch: ${K9F:t} sha256 $(shasum -a 256 $K9F | cut -c1-16); mono_shepherd_k9_divfast_flags strings in the compiler: $(strings $X | grep -c mono_shepherd_k9_divfast_flags || true)"
+  [[ ${SHEPHERD_K14_COMPILER:-0} == 1 ]] && echo "k14 patch: ${K14C:t} sha256 $(shasum -a 256 $K14C | cut -c1-16); SHEPHERD_AOT_DEDUP_SHARED strings in the compiler: $(strings $X | grep -c SHEPHERD_AOT_DEDUP_SHARED || true)"
+  [[ ${SHEPHERD_K14_COMPILER:-0} == 1 ]] && echo "k14 patch: ${K14T:t} sha256 $(shasum -a 256 $K14T | cut -c1-16); SHEPHERD_AOT_KEEP_GENERIC strings in the compiler: $(strings $X | grep -c SHEPHERD_AOT_KEEP_GENERIC || true)"
   [[ ${SHEPHERD_K10_COMPILER:-0} == 1 ]] && echo "k10 patch: ${K10C:t} sha256 $(shasum -a 256 $K10C | cut -c1-16); SHEPHERD_AOT_LEARNED strings in the compiler: $(strings $X | grep -c SHEPHERD_AOT_LEARNED || true); SHEPHERD_AOT_COLD strings: $(strings $X | grep -c SHEPHERD_AOT_COLD || true)"
   echo "mono-aot-cross sha256 $(shasum -a 256 $X | cut -c1-16)"; } > $D/K9-CROSS.txt
 cat $D/K9-CROSS.txt

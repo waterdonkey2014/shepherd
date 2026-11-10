@@ -18,6 +18,7 @@ static class AppIcalls
         if (type == 0 || type == 4) Log.Errors++;
         Log.Write(tag, ctx != null ? $"{msg}  [ctx:{ctx.Name}]" : msg, !LogDiet.RingOnly(type));   // kit #8: SHEPHERD_K8_LOG_DIET=ring keeps Log / Warning out of engine.log
         SceneStop.OnGameLog(msg);   // kit #4: the New Game scope ends at the intro's announcement (Runtime/SceneStop.cs)
+        Diag.MenuClock.OnGameLog(msg);   // kit #13 bootc: the screens the game announces, for the pad scripts' @Screen waits (nothing unless a script has one)
 #if !SHEPHERD_EBOOT
         if (Diag.TestSpine.On) Diag.TestSpine.OnGameLog(msg);   // kit #7 tests review fix: SHEPHERD_TEST_SPINE binds only after the game created its DispatchThread
 #endif
@@ -162,8 +163,8 @@ static class AppIcalls
     static void Counted() { }
 #else
     internal static long RngCalls; internal static int RngSeed => _seed;
-    static System.Random R { get { RngCalls++; return _rng; } }
-    static void Counted() => RngCalls++;
+    static System.Random R { get { RngCalls++; if (Diag.K11Counters.RngSites) Diag.K11Counters.RngSite(); return _rng; } }
+    static void Counted() { RngCalls++; if (Diag.K11Counters.RngSites) Diag.K11Counters.RngSite(); }   // (kit #11 measure: SHEPHERD_K11_COUNTERS=...,rngsites -- the calling method)
 #endif
     static readonly bool UR = UnityRandom.On;
     [Icall("UnityEngine.Random::InitState")] static object Init(object[] a) { _seed = (int)a[0]; if (UR) UnityRandom.InitState(_seed); else _rng = new System.Random(_seed); return null; }

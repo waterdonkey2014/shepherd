@@ -314,6 +314,7 @@ static class RenderIcalls
         {
             if (K9Fidelity.FixMesh && !m.BoundsSet) { m.Recalc(); m.BoundsSet = true; }   // (the bounds as of now stay what bounds reads)
             m.Pos = Array.Empty<Vector3>(); m.Col = null; m.Uv0 = null; m.Normals = null; m.Tan = null; m.Sub = new() { Array.Empty<int>() }; m.SubTopology = new() { 0 }; m.Version++;
+            if (Render.K13Looks.Sdf) Render.K13Looks.SetMeshUv1(m, null);   // kit #13 looks: the kept uv2 goes with the other channels (off: no call)
         }
         return null;
     }
@@ -353,7 +354,7 @@ static class RenderIcalls
     static T[] Owned<T>(T[] cur, int count) => cur != null && cur.Length == count && count > 0 ? cur : new T[count];
     static void CopyChannel(NMesh m, VertexAttribute ch, Array src, int start, int count)
     {
-        if (src == null) { if (ch == VertexAttribute.Color) m.Col = null; else if (ch == VertexAttribute.TexCoord0) m.Uv0 = null; else if (ch == VertexAttribute.Tangent) m.Tan = null; return; }
+        if (src == null) { if (ch == VertexAttribute.Color) m.Col = null; else if (ch == VertexAttribute.TexCoord0) m.Uv0 = null; else if (ch == VertexAttribute.Tangent) m.Tan = null; else if (ch == VertexAttribute.TexCoord1 && Render.K13Looks.Sdf) Render.K13Looks.SetMeshUv1(m, null); return; }   // (kit #13 looks: uv2 cleared too; off: as before)
         count = Math.Max(0, Math.Min(count, src.Length - start));
         // typed copies where the old element loop (src.GetValue(i) boxed every element) gives the same values; start >= 0 keeps the
         // old loop's exception for a negative start
@@ -393,6 +394,15 @@ static class RenderIcalls
                 else if (start >= 0 && src is Vector4[] a4) Array.Copy(a4, start, r, 0, count);
                 else for (int i = 0; i < count; i++) r[i] = src.GetValue(start + i) switch { Vector2 v2 => new Vector4(v2.x, v2.y, 0, 0), Vector3 v3 => new Vector4(v3.x, v3.y, v3.z, 0), Vector4 v4 => v4, _ => default };
                 m.Uv0 = r; break;
+            }
+            case VertexAttribute.TexCoord1 when Render.K13Looks.Sdf:
+            {   // kit #13 looks (SHEPHERD_K13_SDF=1): TMP's per-glyph scale rides in uv2 (x: the face / outline uv pack, y: the scale, < 0 = bold);
+                // the mesh's own array is reused when the length matches (as Owned does for the other channels: readers get copies; written out
+                // here, not Owned<Vector2>: no new generic instance over a value type in the eboot's AOT code)
+                var cur1 = Render.K13Looks.MeshUv1(m); var r = cur1 != null && cur1.Length == count && count > 0 ? cur1 : new Vector2[count];
+                if (start >= 0 && src is Vector2[] b2) Array.Copy(b2, start, r, 0, count);
+                else for (int i = 0; i < count; i++) r[i] = src.GetValue(start + i) switch { Vector2 v2 => v2, Vector3 v3 => new Vector2(v3.x, v3.y), Vector4 v4 => new Vector2(v4.x, v4.y), _ => default };
+                Render.K13Looks.SetMeshUv1(m, r); break;
             }
             case VertexAttribute.Tangent:
             {
@@ -497,7 +507,31 @@ static class RenderIcalls
     {
         var c = CR(a[0]); var m = Me(a[1]); if (c == null) return null;
         if (m == null) { c.Pos = Array.Empty<Vector3>(); c.Idx = Array.Empty<int>(); return null; }
-        c.Pos = (Vector3[])m.Pos.Clone(); c.Col = (Color32[])m.Col?.Clone(); c.Uv0 = (Vector4[])m.Uv0?.Clone(); c.Tan = (Vector4[])m.Tan?.Clone(); c.Idx = Flatten(m.Sub); return null;
+        if (Render.K12Ui.TextCache) { SetMeshKept(c, m); if (Render.K13Looks.Sdf) Render.K13Looks.CopyCrUv1(c, Render.K13Looks.MeshUv1(m)); return null; }   // kit #12 menusa (off: kit #11's clones below); kit #13 looks: + uv2
+        c.Pos = (Vector3[])m.Pos.Clone(); c.Col = (Color32[])m.Col?.Clone(); c.Uv0 = (Vector4[])m.Uv0?.Clone(); c.Tan = (Vector4[])m.Tan?.Clone(); c.Idx = Flatten(m.Sub);
+        if (Render.K13Looks.Sdf) Render.K13Looks.CopyCrUv1(c, Render.K13Looks.MeshUv1(m));   // kit #13 looks (off: no call)
+        return null;
+    }
+    /// <summary>Kit #12 menusa, the text-mesh cache's engine half (SHEPHERD_K12_TEXTCACHE=1, Render/K12Ui.cs): SetMesh as above, except that a
+    /// channel whose incoming bytes equal the renderer's current array keeps that array (the clone would hold the same bytes). The renderer's
+    /// arrays are the engine's own: nothing writes them in place (SetMesh / Clear store whole arrays; the UI pass only reads them), so a kept
+    /// array still holds exactly what it held. Same null / empty rules as the clones: a null channel stays null, an empty one is empty.</summary>
+    static void SetMeshKept(NCanvasRenderer c, NMesh m)
+    {
+        Render.K12Ui.SetMeshCalls++;
+        int kept = 0;
+        if (Render.K12Ui.Same(m.Pos, c.Pos)) kept++; else { c.Pos = (Vector3[])m.Pos.Clone(); Render.K12Ui.ChCloned++; }
+        if (m.Col == null) c.Col = null; else if (Render.K12Ui.Same(m.Col, c.Col)) kept++; else { c.Col = (Color32[])m.Col.Clone(); Render.K12Ui.ChCloned++; }
+        if (m.Uv0 == null) c.Uv0 = null; else if (Render.K12Ui.Same(m.Uv0, c.Uv0)) kept++; else { c.Uv0 = (Vector4[])m.Uv0.Clone(); Render.K12Ui.ChCloned++; }
+        if (m.Tan == null) c.Tan = null; else if (Render.K12Ui.Same(m.Tan, c.Tan)) kept++; else { c.Tan = (Vector4[])m.Tan.Clone(); Render.K12Ui.ChCloned++; }
+        if (Render.K12Ui.SameFlat(c.Idx, m.Sub)) kept++; else { c.Idx = Flatten(m.Sub); Render.K12Ui.ChCloned++; }
+        int want = 2 + (m.Col != null ? 1 : 0) + (m.Uv0 != null ? 1 : 0) + (m.Tan != null ? 1 : 0);
+        Render.K12Ui.ChKept += kept;
+        if (kept == want)
+        {
+            Render.K12Ui.SetMeshSame++;
+            Render.K12Ui.BytesNotCloned += c.Pos.Length * 12L + (c.Col?.Length ?? 0) * 4L + (c.Uv0?.Length ?? 0) * 16L + (c.Tan?.Length ?? 0) * 16L + c.Idx.Length * 4L;
+        }
     }
     /// <summary>m.Sub.SelectMany(s => s).ToArray() without the iterators (stage 2): the submeshes' indices in order.</summary>
     static int[] Flatten(List<int[]> subs)
@@ -517,12 +551,14 @@ static class RenderIcalls
         c.Materials[i] = N<NMaterial>(a[1]); return null;
     }
     [Icall("UnityEngine.CanvasRenderer::GetMaterial")] static object CRGetMat(object[] a) { var c = CR(a[0]); int i = (int)a[1]; return c != null && i < c.Materials.Length ? c.Materials[i]?.Managed : null; }
-    [Icall("UnityEngine.CanvasRenderer::SetPopMaterial")] static object CRSetPop(object[] a) => null;
-    [Icall("UnityEngine.CanvasRenderer::GetPopMaterial")] static object CRGetPop(object[] a) => null;
+    // kit #12 boot (Render/K12Stencil.cs, SHEPHERD_K12_STENCIL=1): the pop materials (a Mask's unmask material) are kept and drawn after the
+    // Mask's children; with the switch off these stay the no-ops they were (kit #11)
+    [Icall("UnityEngine.CanvasRenderer::SetPopMaterial")] static object CRSetPop(object[] a) { if (Render.K12Stencil.On) Render.K12Stencil.SetPop(CR(a[0]), N<NMaterial>(a[1]), (int)a[2]); return null; }
+    [Icall("UnityEngine.CanvasRenderer::GetPopMaterial")] static object CRGetPop(object[] a) => Render.K12Stencil.On ? Render.K12Stencil.GetPop(CR(a[0]), (int)a[1])?.Managed : null;
     [Icall("UnityEngine.CanvasRenderer::get_materialCount")] static object CRMatCount(object[] a) => CR(a[0])?.MaterialCount ?? 0;
     [Icall("UnityEngine.CanvasRenderer::set_materialCount")] static object CRSetMatCount(object[] a) { var c = CR(a[0]); if (c != null) { c.MaterialCount = (int)a[1]; if (c.Materials.Length < c.MaterialCount) Array.Resize(ref c.Materials, c.MaterialCount); } return null; }
-    [Icall("UnityEngine.CanvasRenderer::get_popMaterialCount")] static object CRPopCount(object[] a) => 0;
-    [Icall("UnityEngine.CanvasRenderer::set_popMaterialCount")] static object CRSetPopCount(object[] a) => null;
+    [Icall("UnityEngine.CanvasRenderer::get_popMaterialCount")] static object CRPopCount(object[] a) => Render.K12Stencil.On ? Render.K12Stencil.PopCount(CR(a[0])) : 0;
+    [Icall("UnityEngine.CanvasRenderer::set_popMaterialCount")] static object CRSetPopCount(object[] a) { if (Render.K12Stencil.On) Render.K12Stencil.SetPopCount(CR(a[0]), (int)a[1]); return null; }
     [Icall("UnityEngine.CanvasRenderer::SetTexture")] static object CRSetTex(object[] a) { var c = CR(a[0]); if (c != null) c.Texture = Tex(a[1]); return null; }
     [Icall("UnityEngine.CanvasRenderer::SetAlphaTexture")] static object CRSetAlphaTex(object[] a) { var c = CR(a[0]); if (c != null) c.AlphaTexture = Tex(a[1]); return null; }
     [Icall("UnityEngine.CanvasRenderer::EnableRectClipping_Injected")] static object CRClipOn(object[] a) { var c = CR(a[0]); if (c != null) { c.RectClipping = true; c.ClipRect = (Rect)a[1]; } return null; }

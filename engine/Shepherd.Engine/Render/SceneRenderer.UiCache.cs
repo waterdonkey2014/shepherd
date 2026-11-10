@@ -104,9 +104,14 @@ public static partial class SceneRenderer
         _afVal = al;
     }
 
+    /// <summary>Kit #13 looks (K13Looks.CamUi): 0 = every root canvas (as before); 1 = only the Screen Space - Camera roots (drawn before the
+    /// camera's post effects, as Unity's camera renders them); 2 = the others (after the post effects). Phases 1 + 2 are one UI pass for the
+    /// caches: the pass counter moves in phase 1, the sweep runs in phase 2.</summary>
+    internal static int K13UiPhase;
     static void DrawOverlayCanvasesFast()
     {
-        _uiPass++; _uiHits = _uiMisses = _uiMoves = 0;
+        if (K13UiPhase != 2) { _uiPass++; _uiHits = _uiMisses = _uiMoves = 0; }
+        if (K12Ui.Any) K12Ui.BeginUiPass();   // kit #12 menusa (no switch on: no call)
         // the reference's roots: the same filters and the same stable order (OrderBy on sortingOrder), without the LINQ pipeline
         var roots = _uiRoots;
         foreach (var n in Registry.Canvases.Items())
@@ -114,6 +119,8 @@ public static partial class SceneRenderer
             if (n is not NBehaviour cv) continue;
             if (!(!cv.Destroyed && cv.Managed is Canvas && cv.Enabled && cv.Go != null && cv.Go.Scene != 0 && cv.Go.ActiveInHierarchy && RenderIcalls.RootCanvasOf(cv.Go) == cv)) continue;
             if ((cv.Get("renderMode") is { } rm ? Convert.ToInt32(rm) : 0) == 2) continue;
+            if (CameraCanvasHidden(cv)) continue;   // kit #13 basec: a Camera-mode canvas whose camera is off (SHEPHERD_K13_CAMCANVAS)
+            if (K13UiPhase != 0 && ((cv.Get("renderMode") is { } rm1 ? Convert.ToInt32(rm1) : 0) == 1) != (K13UiPhase == 1)) continue;   // kit #13 looks (off: phase 0)
             roots.Add(cv);
         }
         int nr = roots.Count;
@@ -125,6 +132,10 @@ public static partial class SceneRenderer
             while (j >= 0 && _uiRootKeys[j] > k) { roots[j + 1] = roots[j]; _uiRootKeys[j + 1] = _uiRootKeys[j]; j--; }
             roots[j + 1] = r; _uiRootKeys[j + 1] = k;
         }
+        // kit #12 menusa (K12Ui.UiReplay, GL only): the pass's backend draws go through the backend's recording (not with the check modes, which
+        // record the stream themselves, nor with the render thread, whose G is its recorder)
+        _k12Rp = K12Ui.UiReplay && !RenderCheck.On && UiCap == null && MtRender.Cur == null && !K12Stencil.Active ? G as IK12UiReplay : null;   // (kit #12 integration: no replay while boot's stencil masks are on -- a kept pass does not carry each draw's stencil state; both opt-in, never tested together)
+        _k12Rp?.K12UiBegin();
         try
         {
             if (nr > 0) RefreshHolders();
@@ -132,8 +143,11 @@ public static partial class SceneRenderer
         }
         finally { roots.Clear(); _uiRoot = null; _afN = 0; _afVal = 1f; }
         UiNoClip();
+        if (_k12Rp != null) { var rp = _k12Rp; _k12Rp = null; _k12Key = null; rp.K12UiEnd(); }
+        if (K12Stencil.Active) K12StencilEnd();   // kit #12 boot: the stencil test off after the UI pass
         LastUiHits = _uiHits; LastUiMisses = _uiMisses; LastUiMoves = _uiMoves;
-        SweepGeoms();
+        if (K12Ui.Any) K12Ui.EndUiPass();
+        if (K13UiPhase != 1) SweepGeoms();
     }
 
     static void DrawRootFast(NBehaviour root)
@@ -164,12 +178,14 @@ public static partial class SceneRenderer
             var inner = MaskOfFast(go, clip);
             for (int i = 0; i < ch.Count; i++) DrawUiTreeFast(ch[i].Go, ref depth, inner, false);
         }
+        if (K12Stencil.Active) K12PopDraws(go, clip, true);   // kit #12 boot (SHEPHERD_K12_STENCIL=1): the renderers' pop (unmask) draws after their children, as Unity's canvas
         _afN = saveN; _afVal = saveVal;
     }
 
     /// <summary>MaskOf with the traversal's root (RootCanvasOf of any object under it).</summary>
     static MaskClip MaskOfFast(NGameObject go, MaskClip outer)
     {
+        if (K12Stencil.Active) return outer;   // kit #12 boot: the Mask is drawn with the stencil buffer (its materials' state), not its bounding box
         var comps = go.Components;
         for (int q = 0; q < comps.Count; q++)
         {
@@ -217,7 +233,11 @@ public static partial class SceneRenderer
     {
         if (UiCacheCfg.Check) UiCacheCheck.Visit(cr, _afVal, _uiRoot);
         var mat = cr.Materials.Length > 0 ? cr.Materials[0] : null;
-        if (mat != null) { if (mat.UiPass != _uiPass) UiMatRead(mat); if (mat.UiCm0) return; }   // _ColorMask == 0
+#if !SHEPHERD_EBOOT
+        if (Diag.K13WorldDump.On && Diag.K13WorldDump.Want(cr.Go)) Diag.K13WorldDump.Ui(cr, mat);   // kit #13 looks (Mac only): SHEPHERD_K13_WDUMP, UI renderers too
+#endif
+        var smat = K12Stencil.PopMat ?? mat;   // kit #12 boot: the stencil state / colour mask of this draw (a pop draw's: its pop material)
+        if (mat != null) { if (mat.UiPass != _uiPass) UiMatRead(mat); if (K12Stencil.Active ? K12SkipNoColour(smat) : mat.UiCm0) return; }   // _ColorMask == 0 (kit #12, stencil on: drawn when it writes the stencil)
         if (mask.Empty) return;
         var tex = cr.Texture;
         if (tex == null && mat != null)
@@ -227,6 +247,7 @@ public static partial class SceneRenderer
         }
         float alpha = _afVal;   // = RenderIcalls.UiAlpha(cr.Go)
         var tint = cr.Color; tint.a *= alpha;
+        if (K13Looks.Sdf) { _k13SdfCr = cr; _k13SdfMat = mat; _k13SdfTint = tint; }   // kit #13 looks (off: one bool test): SubmitIdx's TMP distance-field draw reads them
         if (mat != null && mat.UiHasColor) { var mcol = mat.UiColor; tint.r *= mcol.r; tint.g *= mcol.g; tint.b *= mcol.b; tint.a *= mcol.a; }   // tint * _Color, component-wise
         if (tint.a <= 0.001f) return;
         var m = M.Mul(UiCs(), cr.Go.Transform.LocalToWorld);   // root = _uiRoot = RenderIcalls.RootCanvasOf(cr.Go), never null here
@@ -258,6 +279,7 @@ public static partial class SceneRenderer
             UiClipTo(cx, cy, cw, ch);
         }
         else UiNoClip();
+        if (K12Stencil.Active) K12StencilFor(smat);   // kit #12 boot: this draw's stencil state (off: no call)
         var pos = cr.Pos; var idx = cr.Idx;
         if (pos == null || idx == null || pos.Length == 0 || idx.Length < 3) return;
         var col = cr.Col; var uv = cr.Uv0; float gh = G.H;
@@ -270,7 +292,27 @@ public static partial class SceneRenderer
             && Same(e.TR, tint.r) && Same(e.TG, tint.g) && Same(e.TB, tint.b) && Same(e.TA, tint.a)
             && Same(e.M00, m.m00) && Same(e.M01, m.m01) && Same(e.M02, m.m02) && Same(e.M03, m.m03)
             && Same(e.M10, m.m10) && Same(e.M11, m.m11) && Same(e.M12, m.m12) && Same(e.M13, m.m13);
-        if (same && e.Built) { _uiHits++; e.Pass = _uiPass; SubmitIdx(e.V, pos.Length, e.I, e.Ni, ramp ?? tex, blend, sh.Sdf); return; }
+        if (same && e.Built)
+        {
+            _uiHits++; e.Pass = _uiPass; if (sh.Custom && SubmitUiCustomIdx(mat, e.V, pos.Length, e.I, e.Ni, tex, blend)) return;
+            if (_k12Rp != null) { _k12Key = e.V; _k12Hit = true; SubmitIdx(e.V, pos.Length, e.I, e.Ni, ramp ?? tex, blend, sh.Sdf); _k12Key = null; _k12Hit = false; return; }   // kit #12 (UIREPLAY): the block, unchanged since its last write
+            SubmitIdx(e.V, pos.Length, e.I, e.Ni, ramp ?? tex, blend, sh.Sdf); return;
+        }
+        // kit #12 menusa (K12Ui.ColPatch, off: no test): every input but the colours (the tint, the per-vertex colour array) the same as the
+        // block's build -- a fade, a CanvasGroup alpha tween, a colour tween, TMP per-letter colours. The block's positions, uvs, indices and
+        // partial sums are those inputs' build; only the colour stores of the build loop run, expression for expression (FpsCfg.InlineVertex's)
+        if (K12Ui.ColPatch && !same && !rp && e != null && e.Built && ReferenceEquals(e.Pos, pos) && ReferenceEquals(e.Idx, idx) && ReferenceEquals(e.Uv, uv)
+            && !e.Ramp && e.Premul == premul && Same(e.Gh, gh)
+            && Same(e.M00, m.m00) && Same(e.M01, m.m01) && Same(e.M02, m.m02) && Same(e.M03, m.m03)
+            && Same(e.M10, m.m10) && Same(e.M11, m.m11) && Same(e.M12, m.m12) && Same(e.M13, m.m13))
+        {
+            K12ColPatch(e, pos.Length, col, tint, premul);
+            _uiMisses++; e.Pass = _uiPass;
+            if (sh.Custom && SubmitUiCustomIdx(mat, e.V, pos.Length, e.I, e.Ni, tex, blend)) return;
+            _k12Key = _k12Rp != null ? e.V : null;   // (UIREPLAY: the block, written this frame)
+            SubmitIdx(e.V, pos.Length, e.I, e.Ni, tex, blend, sh.Sdf);   // (ramp ?? tex: no ramp here)
+            _k12Key = null; return;
+        }
         // kit #6 fps (FpsCfg.UiTranslate, needs FpsCfg.InlineVertex): every input but the translation (m03 / m13) the same as the block's build
         // -- a list scrolled under a mask, a sliding panel. With the block's partial sums the new positions are x = Sx + m03, y = gh - (Sy + m13): the build loop's own
         // expressions, evaluated in the same order on the same float32 values, so every byte is a rebuild's; colours, uvs and indices are the block's
@@ -284,8 +326,10 @@ public static partial class SceneRenderer
             var bv = e.V; var sxa = e.Sx; var sya = e.Sy; float t03 = m.m03, t13 = m.m13; int n0 = pos.Length;
             for (int i = 0; i < n0; i++) { ref var d = ref bv[i]; d.position.x = sxa[i] + t03; d.position.y = gh - (sya[i] + t13); }
             e.M03 = t03; e.M13 = t13;
+            if (sh.Custom && SubmitUiCustomIdx(mat, bv, n0, e.I, e.Ni, tex, blend)) return;   // kit #11 gpu2 (opt-in)
+            _k12Key = _k12Rp != null ? bv : null;   // (kit #12 UIREPLAY: the block, written this frame)
             SubmitIdx(bv, n0, e.I, e.Ni, tex, blend, sh.Sdf);   // (ramp ?? tex: no ramp here)
-            return;
+            _k12Key = null; return;
         }
         _uiMisses++;
         if (e == null) { cr.UiGeom = e = new UiGeom(); _uiGeoms.Add(cr); }
@@ -360,7 +404,67 @@ public static partial class SceneRenderer
         e.Pos = pos; e.Idx = idx; e.Col = col; e.Uv = uv; e.Tan = rp ? tan : null; e.Ramp = rp; e.Premul = premul; e.Gh = gh;
         e.TR = tint.r; e.TG = tint.g; e.TB = tint.b; e.TA = tint.a;
         e.M00 = m.m00; e.M01 = m.m01; e.M02 = m.m02; e.M03 = m.m03; e.M10 = m.m10; e.M11 = m.m11; e.M12 = m.m12; e.M13 = m.m13;
+        if (sh.Custom && SubmitUiCustomIdx(mat, v, nv, ib, ni, tex, blend)) return;   // kit #11 gpu2 (opt-in)
+        _k12Key = _k12Rp != null && e.Built ? v : null;   // (kit #12 UIREPLAY: the block when built into it, written this frame; the shared buffers: none)
         SubmitIdx(v, nv, ib, ni, ramp ?? tex, blend, sh.Sdf);
+        _k12Key = null;
+    }
+
+    /// <summary>Kit #12 menusa (K12Ui.ColPatch): the colour stores of the build loop (FpsCfg.InlineVertex's expressions, the same order and
+    /// float32 values) over the block's vertices; then the block records its new colour inputs. SHEPHERD_K12_UICHECK=1: the whole build loop is
+    /// run into a scratch block from the block's inputs and the 32-byte vertices compared.</summary>
+    static unsafe void K12ColPatch(UiGeom e, int nv, Color32[] col, Color tint, bool premul)
+    {
+        var v = e.V; var b2f = B2F; float tr = tint.r, tg = tint.g, tb = tint.b, ta = tint.a;
+        bool neg = K12Ui.NegCtl == "colpatch";
+        for (int i = 0; i < nv; i++)
+        {
+            ref var d = ref v[i];
+            float kr, kg, kb, ka;
+            if (col != null && i < col.Length) { var k = col[i]; kr = b2f[k.r]; kg = b2f[k.g]; kb = b2f[k.b]; ka = b2f[k.a]; }   // = (float)(int)k.x / 255f
+            else { kr = 1f; kg = 1f; kb = 1f; ka = 1f; }
+            kr *= tr; kg *= tg; kb *= tb; ka *= ta;
+            if (premul) { kr *= ka; kg *= ka; kb *= ka; }
+            if (neg) kr *= 0.5f;   // (the negative control: a wrong colour)
+            d.color.r = kr; d.color.g = kg; d.color.b = kb; d.color.a = ka;
+        }
+        e.Col = col; e.TR = tr; e.TG = tg; e.TB = tb; e.TA = ta;
+        K12Ui._colPatches++; K12Ui.ColPatches++; K12Ui.ColPatchVerts += nv;
+        if (!K12Ui.Check) return;
+        // the full build of the same inputs (UiGeom's matrix entries are the build's), compared vertex for vertex
+        var pos = e.Pos; var uv = e.Uv; float gh = e.Gh;
+        if (_k12Scratch.Length < nv) _k12Scratch = new Vertex[Math.Max(nv, _k12Scratch.Length * 2)];
+        var s = _k12Scratch;
+        for (int i = 0; i < nv; i++)
+        {
+            var p = pos[i];
+            float wx = e.M00 * p.x + e.M01 * p.y + e.M02 * p.z + e.M03, wy = e.M10 * p.x + e.M11 * p.y + e.M12 * p.z + e.M13;
+            ref var d = ref s[i];
+            float kr, kg, kb, ka;
+            if (col != null && i < col.Length) { var k = col[i]; kr = b2f[k.r]; kg = b2f[k.g]; kb = b2f[k.b]; ka = b2f[k.a]; }
+            else { kr = 1f; kg = 1f; kb = 1f; ka = 1f; }
+            kr *= tr; kg *= tg; kb *= tb; ka *= ta;
+            if (premul) { kr *= ka; kg *= ka; kb *= ka; }
+            d.position.x = wx; d.position.y = gh - wy; d.color.r = kr; d.color.g = kg; d.color.b = kb; d.color.a = ka;
+            if (uv != null && i < uv.Length) { var u = uv[i]; d.tex_coord.x = u.x; d.tex_coord.y = 1f - u.y; } else { d.tex_coord.x = 0f; d.tex_coord.y = 1f - 0f; }
+        }
+        K12Ui.ColChecked++;
+        bool ok;
+        fixed (Vertex* pa = v, pb = s) ok = K12Ui.SameWords((uint*)pa, (uint*)pb, nv * 8);
+        if (!ok) { K12Ui.ColDiff++; if (K12Ui.ColDiff <= 20) Log.Warn($"[k12ui] colour patch check: block of {nv} vertices differs from its full build (frame {Runtime.Time.FrameCount})"); }
+    }
+    static Vertex[] _k12Scratch = new Vertex[64];
+    /// <summary>Kit #12 menusa (UIREPLAY): the backend's recording during the fast UI pass (null otherwise), and the key of the draw being
+    /// submitted (the block's vertex array when the block is reused unchanged; null for anything else).</summary>
+    internal static IK12UiReplay _k12Rp; internal static object _k12Key; internal static bool _k12Hit;
+    /// <summary>Kit #12 menusa (UIREPLAY): the UI pass threw (Frame's catch: it logs and goes on) -- the recording is stopped and closed (the
+    /// draws so far queued, nothing kept) and the hit flag / key cleared, so no open recording or stale "unchanged" reaches later draws.
+    /// Off (no recording open): nothing.</summary>
+    internal static void K12UiAbort()
+    {
+        if (_k12Rp == null) return;
+        var rp = _k12Rp; _k12Rp = null; _k12Key = null; _k12Hit = false;
+        rp.K12Break(); rp.K12UiEnd();
     }
 
     /// <summary>Drops the blocks of renderers not drawn in the last <see cref="GeomGrace"/> passes (or destroyed), so the cache holds about

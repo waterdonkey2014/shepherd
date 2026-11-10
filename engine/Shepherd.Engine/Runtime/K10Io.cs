@@ -363,11 +363,81 @@ public static unsafe class K10Io
         if (!Monitor.TryEnter(_verifyLock)) return new PackVerify.Result { Path = path, Kind = "verify files", Error = "a Verify files run is already in progress" };
         try
         {
-            var r = PackVerify.Run(path, PackReader.ChunkDecoder, deep, progress);
+            long ilz = K13Ilz ? K13IlzBytes() : 0;   // (kit #13 bootc review fix: the compressed code counted into the window's progress from the start)
+            var wrap = ilz > 0 && progress != null ? new K13Progress(progress, ilz) : null;
+            var r = PackVerify.Run(path, PackReader.ChunkDecoder, deep, (IVerifyProgress)wrap ?? progress);
+            if (K13Ilz && !r.Stopped) K13VerifyIlz(r, progress, wrap?.PackTotal ?? 0, ilz);
             Log.Info("[k10] verify files: " + path + ": " + r.Summary());
             return r;
         }
         finally { Monitor.Exit(_verifyLock); }
     }
     static readonly object _verifyLock = new();
+
+    /// <summary>Device kit #13, track bootc (vita/notes/kit13-bootc.md section 8): Verify Files also reads every compressed code file in full -- the
+    /// VPK's own DLLs in compressed-IL form (app0:managed-ilz/: kit #12's VPKILZ, read by default) and the card's (managed-ilz/: kit #10) -- each
+    /// against its header and its original (host.c k13_bootc.inc.c op 1: the check the load does once and then remembers, done again, ignoring
+    /// what it remembered). The result line names them ("+ N compressed code files"); a bad one makes the result a problem (its pieces counted with
+    /// the pack's, the first bad one named). GL apps on the Vita host only (the Mac has no managed-ilz/). SHEPHERD_K13_VERIFY_ILZ=0 (or
+    /// SHEPHERD_K13_BOOTC=0) = kit #12's Verify Files (the pack only).</summary>
+    static readonly bool K13Ilz = Render.ShepGl.On && Environment.GetEnvironmentVariable("SHEPHERD_K13_VERIFY_ILZ") != "0" && Environment.GetEnvironmentVariable("SHEPHERD_K13_BOOTC") != "0";
+    /// <summary>Review fix: the compressed code part reports progress and can be stopped. The first build read every form in one host call after
+    /// the pack's progress had reached its end -- the window sat at 100 % for the larger part of the run (VLX: 98 of 137 MiB) and the window's
+    /// stop waited for it. Now the forms' bytes (host op 2: sizes only) are counted into the total from the start, and they are checked a few
+    /// files per host call with the window's progress moved (and its stop honoured) between calls. Same files, same checks, same result line.</summary>
+    const int K13IlzBatch = 4;
+    sealed class K13Progress : IVerifyProgress
+    {
+        readonly IVerifyProgress _in; readonly long _extra; public long PackTotal;
+        public K13Progress(IVerifyProgress inner, long extra) { _in = inner; _extra = extra; }
+        public bool Step(long done, long total) { PackTotal = total; return _in.Step(done, total + _extra); }
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe long K13IlzBytes()
+    {
+        try
+        {
+            int* io = stackalloc int[4]; io[0] = 3; io[1] = io[2] = io[3] = 0;
+            return shepherd_vita_k13_bootc(2, io, null, 0) == 0 && io[0] > 0 ? io[2] * 1024L : 0;
+        }
+        catch (Exception) { return 0; }
+    }
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static unsafe void K13VerifyIlz(PackVerify.Result r, IVerifyProgress progress, long packTotal, long ilzTotal)
+    {
+        try
+        {
+            int* io = stackalloc int[4];
+            byte* buf = stackalloc byte[256];
+            int files = 0, bad = 0, calls = 0, steps = 0; long kib = 0, ms = 0, lastDone = 0; string firstBad = null; bool stopped = false;
+            int stopTest = int.TryParse(Environment.GetEnvironmentVariable("SHEPHERD_K13_VERIFY_STOPTEST"), out var st) ? st : 0;   // TEST ONLY: the window closes after this many host calls
+            while (true)
+            {
+                io[0] = 3; io[1] = files; io[2] = K13IlzBatch; io[3] = 0; buf[0] = 0;
+                if (shepherd_vita_k13_bootc(1, io, buf, 256) != 0) break;   // (no compressed-IL runtime: the pack's result as it is)
+                int got = io[0];
+                if (got <= 0) break;
+                calls++; files += got; bad += io[1]; kib += io[2]; ms += io[3];
+                if (io[1] > 0 && firstBad == null) firstBad = Marshal.PtrToStringAnsi((IntPtr)buf);
+                if (stopTest > 0 && calls == stopTest) K10Cache.Verify.StopWanted = true;   // (TEST ONLY: as the window's close sets it)
+                if (progress == null) continue;
+                lastDone = packTotal + Math.Min(kib * 1024L, ilzTotal); steps++;
+                if (!progress.Step(lastDone, packTotal + ilzTotal)) { stopped = true; break; }
+            }
+            if (files <= 0) return;   // (no such files: the pack's result as it is)
+            Log.Info("[k13] verify files: " + files.ToString() + " compressed code file(s) in " + calls.ToString() + " host call(s) of up to 4; the window's progress moved "
+                + steps.ToString() + " time(s) during them, to " + (lastDone / 1024).ToString() + " of " + ((packTotal + ilzTotal) / 1024).ToString() + " KiB (the pack's "
+                + (packTotal / 1024).ToString() + " + the compressed code's " + (ilzTotal / 1024).ToString() + ")" + (stopped ? " -- STOPPED (the window closed)" : ""));
+            r.Kind += $" + {files} compressed code file(s) (managed-ilz/: {(bad == 0 ? "all ok" : bad + " BAD")}{(stopped ? ", stopped" : "")})";
+            r.StoredBytes += kib * 1024L; r.Ms += ms;
+            if (bad > 0)
+            {
+                r.Ok = false; r.Bad += bad; r.Chunks += files;
+                r.FirstBad ??= firstBad;
+            }
+            if (stopped) { r.Stopped = true; r.Ok = false; }
+        }
+        catch (Exception e) { Log.Warn("[k13] verify files: the compressed code files were not checked: " + e.GetBaseException().Message); }
+    }
+    [DllImport("__Internal")] static extern unsafe int shepherd_vita_k13_bootc(int op, int* io, byte* buf, int cap);
 }

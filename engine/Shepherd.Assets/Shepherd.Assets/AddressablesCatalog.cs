@@ -125,8 +125,8 @@ public sealed class AddressablesCatalog
         byte type = d[i++];
         switch (type)
         {
-            case 0: { int len = BinaryPrimitives.ReadInt32LittleEndian(d.AsSpan(i)); return Encoding.ASCII.GetString(d, i + 4, len); }
-            case 1: { int len = BinaryPrimitives.ReadInt32LittleEndian(d.AsSpan(i)); return Encoding.Unicode.GetString(d, i + 4, len); }
+            case 0: { int len = BinaryPrimitives.ReadInt32LittleEndian(d.AsSpan(i)); return StringPool.Intern(Encoding.ASCII.GetString(d, i + 4, len), StringPool.Site.Catalog); }   // kit #13 basec: pooled
+            case 1: { int len = BinaryPrimitives.ReadInt32LittleEndian(d.AsSpan(i)); return StringPool.Intern(Encoding.Unicode.GetString(d, i + 4, len), StringPool.Site.Catalog); }
             case 2: return BinaryPrimitives.ReadUInt16LittleEndian(d.AsSpan(i));
             case 3: return BinaryPrimitives.ReadUInt32LittleEndian(d.AsSpan(i));
             case 4: return BinaryPrimitives.ReadInt32LittleEndian(d.AsSpan(i));

@@ -11,7 +11,7 @@ namespace Shepherd.Engine.Render;
 /// only from SHEPHERD_PAD / SHEPHERD_PAD_FILE. Headless only. SHEPHERD_NULL_DXT=0 refuses DXT (RGBA8 decode path, like GL without
 /// SHEPHERD_GL_DXT).</summary>
 [ProfileOnly]
-public sealed class NullBackend : IRenderBackend, ICompressedUpload, ICompressedUploadPtr, IGpuStylizer, IAlphaUpload, IAlphaUploadPtr, IGpuPost, IAddDraw, IWorldPassSplit, IGpuMesh
+public sealed class NullBackend : IRenderBackend, ICompressedUpload, ICompressedUploadPtr, IGpuStylizer, IAlphaUpload, IAlphaUploadPtr, IGpuPost, IAddDraw, IWorldPassSplit, IGpuMesh, IK12Stencil, IK13Persp, IK13Sdf
 {
     public string Name => "null";
     public int W { get; }
@@ -107,6 +107,17 @@ public sealed class NullBackend : IRenderBackend, ICompressedUpload, ICompressed
     public void ClearTarget(float r, float g, float b, float a) { Flush(); _cur.Clears++; }
     public void Clip(int x, int y, int w, int h) { _view.ClipOn = true; _view.Cx = x; _view.Cy = y; _view.Cw = w; _view.Ch = h; }
     public void NoClip() => _view.ClipOn = false;
+    /// <summary>Kit #12 boot (IK12Stencil, SHEPHERD_K12_STENCIL=1): counted only (the null backend draws nothing).</summary>
+    public int StencilStates;
+    public void Stencil(in K12StencilState s) => StencilStates++;
+    /// <summary>Kit #13 looks (IK13Persp, SHEPHERD_K13_PERSP=1): GlBackend's CPU side -- the draw as Draw / DrawAdd queue it, plus its w stream's 16 bytes a vertex.</summary>
+    public long PerspDraws;
+    public void DrawW(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, ReadOnlySpan<float> w) { PerspDraws++; Draw(tex, blend, false, v, idx); _cur.VertexBytes += v.Length * 16L; }
+    public void DrawAddW(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> add, ReadOnlySpan<float> w) { PerspDraws++; DrawAdd(tex, blend, v, idx, add); }
+    public void DrawEnc(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> enc, bool add) { PerspDraws++; Draw(tex, blend, false, v, idx); _cur.VertexBytes += v.Length * 16L; }
+    /// <summary>Kit #13 looks (IK13Sdf): counted, queued as the SDF draw it replaces, plus its parameter stream's 16 bytes a vertex.</summary>
+    public long SdfDraws;
+    public bool DrawSdfX(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> param, Span<Vertex> before, uint beforeBlend) { SdfDraws++; Draw(tex, blend, true, v, idx); _cur.VertexBytes += v.Length * 16L; return true; }
 
     /// <summary>GlBackend.Draw's CPU side, call for call: the same validation, wrap test, merge key and break reasons, and the
     /// same copy of the vertices into the frame array with 16-bit index rebasing. No GL state, no upload.</summary>
@@ -186,6 +197,9 @@ public sealed class NullBackend : IRenderBackend, ICompressedUpload, ICompressed
         return GlBackend.HasSource(vertexFile) && GlBackend.HasSource(fragmentFile) ? k + 1 : 0;
     }
     List<string> _gpuNames; List<float[]> _gpuMeshes;   // (made on the first call: nothing in a run that never asks)
+    /// <summary>Kit #11 gpu2: DrawGpuMesh with two more textures -- counted as one, like GL's single draw.</summary>
+    public void DrawGpuMeshTex(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, IntPtr tex1, IntPtr tex2, int wrap, uint blend)
+        => DrawGpuMesh(program, data, stride, first, count, uniforms, tex, blend);
     public void DrawGpuMesh(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, uint blend)
     {
         if (_gpuMeshes == null || program <= 0 || data == null || count < 3 || (tex != IntPtr.Zero && !_tex.ContainsKey(tex))) return;

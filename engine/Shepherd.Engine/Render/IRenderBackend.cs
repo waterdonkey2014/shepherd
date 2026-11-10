@@ -119,10 +119,45 @@ public interface IGpuMesh
     /// line), the caller draws on the CPU.</summary>
     int GpuProgram(string name, string vertexFile, string fragmentFile);
     void DrawGpuMesh(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, uint blend);
+    /// <summary>Kit #11 gpu2 (contract Api 5): the same draw with two more textures, on units 1 and 2 (samplers u_tex1 / u_tex2; Zero: white),
+    /// and each texture's addressing: wrap bit k = 1 repeats texture k (0 = clamped, as DrawGpuMesh). A program's u_tex1 / u_tex2 get their
+    /// units when it is built.</summary>
+    void DrawGpuMeshTex(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, IntPtr tex1, IntPtr tex2, int wrap, uint blend);
     /// <summary>The array will not be drawn again: its GPU copy is freed.</summary>
     void ReleaseGpuMesh(float[] data);
 }
 
+/// <summary>Kit #12 menusa (SHEPHERD_K12_UIREPLAY=1, Render/K12Ui.cs): recorded command lists for fixed screens + incremental UI re-batching.
+/// SceneRenderer's fast UI pass opens a recording (K12UiBegin), hands every UI draw to K12Draw with a key -- the renderer's retained block
+/// (its vertex array) when the draw's vertices are that block, else null -- and whether the block is unchanged since last frame (reused, no
+/// write this frame), and closes it (K12UiEnd). A draw matches last frame's draw at the same position when it is unchanged and has the same
+/// key, texture, blend, counts and clip. While every draw so far matches, the backend queues nothing; at the end it replays last frame's batches from the
+/// vertex buffer it kept (no copy, no upload) -- or, at the first draw that differs, takes last frame's batches up to that point as its own
+/// and goes on as before. K12Break: something the recording cannot follow (an owner-local UI draw) -- the rest of the pass runs as before
+/// and nothing is kept.</summary>
+public interface IK12UiReplay
+{
+    void K12UiBegin();
+    void K12Draw(object key, bool unchanged, IntPtr texH, uint blend, bool sdf, Span<Vertex> v, Span<int> idx);
+    void K12Break();
+    void K12UiEnd();
+}
+
+/// <summary>Kit #11 gpu1 (SHEPHERD_K11_GPUPROJ=1, Render/SceneRenderer.K11Proj.cs): world draws whose projection runs on the GPU. The vertices
+/// carry WORLD x / y in position (z in the parallel span), colour and uv as the CPU path makes them; the pass carries the camera's
+/// view-projection, pixel rect and target height. Consecutive draws of one pass batch like Draw's; draw order with Draw / the other calls is
+/// kept. False = not taken (too many vertices, no program): nothing happened, the caller builds the draw on the CPU.</summary>
+public interface IK11Proj
+{
+    /// <summary>The projection program (built on first use, outside the boot set and the gxp cache; a refusal: false for the run).</summary>
+    bool ProjAvailable { get; }
+    bool DrawProj(IntPtr tex, uint blend, Span<Vertex> v, Span<float> z, Span<int> idx, in K11ProjPass pass);
+}
+/// <summary>A camera pass as the projection program needs it (SceneRenderer.Project's inputs besides the vertex).</summary>
+public struct K11ProjPass
+{
+    public UnityEngine.Matrix4x4 Vp; public float X, Y, W, H, Gh;
+}
 /// <summary>Fidelity round 1: a backend that runs the colour-grading post pass on the GPU (GL; the null backend only counts it).
 /// The owner-local post effects (DerivedRender.Post) gather the camera's grading settings and its light mask, then call this from
 /// EndWorldPass. GL: false without the owner-local shader.</summary>
@@ -139,6 +174,12 @@ public struct LutArgs
     /// <summary>PPv2's classic vignette, applied after the grading in the same pass: settings (intensity x3, smoothness x5, roundness',
     /// rounded), colour (linear in a linear project), centre.</summary>
     public bool Vignette; public UnityEngine.Vector4 VigSettings, VigColor; public UnityEngine.Vector2 VigCenter;
+    /// <summary>Kit #11 gpu2 (contract Api 5): the effect blends its LUT pair while its blend amount is not 0 -- shadow = lerp(Lut1, Lut1Blend,
+    /// BlendAmount), lit = lerp(Lut2, Lut2Blend, BlendAmount), each made as an RGBA8 texture of the LUTs' size before the grading samples
+    /// it (GL: GlBackend.RunLut, kept while its inputs are unchanged). Blend false (an Api-4 provider never sets it) = the LUTs as given.
+    /// Lut2BlendFrom (review fix): the highlight LUT the blend starts from when it is not Lut2 -- the effect blends from the identity strip
+    /// when it has no highlight LUT, while the unblended grading (kit #10's, also every fallback) uses Lut2 = Lut1 there; Zero = Lut2.</summary>
+    public bool Blend; public IntPtr Lut1Blend, Lut2Blend, Lut2BlendFrom; public float BlendAmount;
 }
 
 /// <summary>A GPU-Stylizer backend's EndWorldPass without the post passes: the flush and the world counters. EndWorldPass = EndWorldPassBase,
@@ -158,14 +199,22 @@ public sealed class RenderStats
     public int DrawsIn, DrawsOut, Tris, Batches, Flushes, FullScreenPasses, Uploads, WrapDraws, WrapNpotDraws, EmptyClipDraws, Chunks, Textures, WorldDrawsIn, WorldBatches;
     /// <summary>Polish round 2: target clears (ClearTarget) and grab copies (the BlendModes backdrop copies, GL only).</summary>
     public int Clears, Grabs;
+    /// <summary>Kit #11 gpu2 (GL): render-target switches this frame (each starts a new GXM scene on the Vita: the tile memory is written out
+    /// and the next target's work begins), and the pixels the full-screen passes and copies wrote (present copy, grading, Stylizer, grab
+    /// copies, blended LUTs) -- the pass / bandwidth counters of the kit #11 report.</summary>
+    public int TargetSwitches; public long PassPixels;
+    /// <summary>Kit #11 gpu1 (Render/K11World.cs; 0 with its switches off): uniform values sent / not sent again (SHEPHERD_K11_UNIFORMS), draws
+    /// skipped as fully transparent / covering no sampling position (SHEPHERD_K11_NOPIX), GPU-projected draws (SHEPHERD_K11_GPUPROJ).</summary>
+    public int K11UniSent, K11UniSkipped, K11NoPixAlpha, K11NoPixCentre, K11ProjDraws;
     public long UploadBytes, VertexBytes;
     public readonly int[] Breaks = new int[(int)BreakReason.Count];
-    public void Reset() { DrawsIn = DrawsOut = Tris = Batches = Flushes = FullScreenPasses = Uploads = WrapDraws = WrapNpotDraws = EmptyClipDraws = Chunks = Textures = WorldDrawsIn = WorldBatches = Clears = Grabs = 0; UploadBytes = VertexBytes = 0; Array.Clear(Breaks); }
+    public void Reset() { DrawsIn = DrawsOut = Tris = Batches = Flushes = FullScreenPasses = Uploads = WrapDraws = WrapNpotDraws = EmptyClipDraws = Chunks = Textures = WorldDrawsIn = WorldBatches = Clears = Grabs = TargetSwitches = 0; UploadBytes = VertexBytes = PassPixels = 0; Array.Clear(Breaks); K11UniSent = K11UniSkipped = K11NoPixAlpha = K11NoPixCentre = K11ProjDraws = 0; }
     public void CopyTo(RenderStats o)
     {
         o.DrawsIn = DrawsIn; o.DrawsOut = DrawsOut; o.Tris = Tris; o.Batches = Batches; o.Flushes = Flushes; o.FullScreenPasses = FullScreenPasses; o.Uploads = Uploads;
         o.WrapDraws = WrapDraws; o.WrapNpotDraws = WrapNpotDraws; o.EmptyClipDraws = EmptyClipDraws; o.Chunks = Chunks; o.UploadBytes = UploadBytes; o.VertexBytes = VertexBytes; Array.Copy(Breaks, o.Breaks, Breaks.Length);
-        o.Textures = Textures; o.WorldDrawsIn = WorldDrawsIn; o.WorldBatches = WorldBatches; o.Clears = Clears; o.Grabs = Grabs;
+        o.Textures = Textures; o.WorldDrawsIn = WorldDrawsIn; o.WorldBatches = WorldBatches; o.Clears = Clears; o.Grabs = Grabs; o.TargetSwitches = TargetSwitches; o.PassPixels = PassPixels;
+        o.K11UniSent = K11UniSent; o.K11UniSkipped = K11UniSkipped; o.K11NoPixAlpha = K11NoPixAlpha; o.K11NoPixCentre = K11NoPixCentre; o.K11ProjDraws = K11ProjDraws;
     }
     public override string ToString() =>
         $"draws in={DrawsIn} out={DrawsOut} (batches={Batches} [world {WorldDrawsIn}->{WorldBatches}, ui {DrawsIn - WorldDrawsIn}->{Batches - WorldBatches}], full-screen={FullScreenPasses}, flushes={Flushes}, textures={Textures}) tris={Tris} vtxKiB={VertexBytes / 1024} " +

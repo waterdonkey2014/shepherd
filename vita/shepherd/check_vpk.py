@@ -56,6 +56,7 @@ ap.add_argument("--owner-game-aot")                              # kit #4: a fil
 ap.add_argument("--no-fself-check", action="store_true")        # skip re-making the fself from --elf (only for a VPK whose ELF is gone)
 ap.add_argument("--allow-livearea", action="store_true")   # devfail1 diag VPKs: sce_sys/livearea/contents/{template.xml,bg.png,startup.png} too
 ap.add_argument("--launcher"); ap.add_argument("--module-yml"); ap.add_argument("--launcher-allow-libs")   # kit #8: the launcher build
+ap.add_argument("--vpk-ilz", action="store_true")   # kit #12 walkb: managed-ilz/*.dll allowed -- each the compressed-IL form of managed/<same name> (k10_ilz.py verify)
 ap.add_argument("--module-load-libs")   # kit #8.1: the libraries loaded when the launcher loads the engine module (module-load-libs.txt)
 a = ap.parse_args()
 bad = []
@@ -178,9 +179,15 @@ for r in a.forbid: forbid.update(tree_hashes(r))
 z = zipfile.ZipFile(a.vpk)
 names = z.namelist()
 allowed = re.compile(r"^(eboot\.bin|sce_sys/param\.sfo|sce_sys/icon0\.png|managed/[A-Za-z0-9_.\-]+\.dll" + (r"|module/shepherd\.suprx" if a.launcher else "") +
-                     (r"|sce_sys/livearea/contents/(template\.xml|bg\.png|startup\.png)" if a.allow_livearea else "") + r")$")
+                     (r"|managed-ilz/[A-Za-z0-9_.\-]+\.dll" if a.vpk_ilz else "") +
+                     (r"|sce_sys/livearea/contents/(template\.xml|bg\.png|startup\.png)" if a.allow_livearea else "") +
+                     r"|version-history\.txt" + r")$")   # kit #12 (menusb): Settings > PS Vita > Version History (our own text, checked below)
 strays = [x for x in names if not allowed.match(x)]
-ok(not strays, f"VPK holds only eboot.bin, sce_sys/ and managed/*.dll ({len(names)} entries)" + (f": strays {strays}" if strays else ""))
+ok(not strays, f"VPK holds only eboot.bin, sce_sys/, managed/*.dll and version-history.txt ({len(names)} entries)" + (f": strays {strays}" if strays else ""))
+if "version-history.txt" in names:   # kit #12: Shepherd's own version history (vita/tools/k12_history.py) -- nothing else may ride in under that name
+    vh = z.read("version-history.txt").decode("utf-8", "replace").splitlines()
+    ok(len(vh) > 1 and vh[0].startswith("# Shepherd version history") and all(l.startswith(("#", "@ ")) for l in vh if l) and len(vh) < 200,
+       f"version-history.txt is Shepherd's own version history ({len(vh)} lines, made by vita/tools/k12_history.py)")
 dlls = [x for x in names if x.startswith("managed/")]
 unknown, derived = [], []
 total = 0
@@ -189,6 +196,24 @@ for x in dlls:
     if h not in provenance: unknown.append(x)
     if h in forbid: derived.append(f"{x} == {forbid[h]}")
 ok(not unknown, f"all {len(dlls)} managed DLLs ({total} bytes) are byte-identical to the linux-arm 8.0.31 pack or the engine build" + (f": unknown {unknown}" if unknown else ""))
+# kit #12 walkb (--vpk-ilz): every managed-ilz/<name>.dll is the compressed-IL form of the VPK's own managed/<name>.dll -- k10_ilz.py's verify
+# (every method body identical, the metadata streams identical except the RVA columns, the MVID, field data, resources, the header's record of
+# the original); so its provenance and the derived-code scan below are the original's
+ilzs = [x for x in names if x.startswith("managed-ilz/")]
+if a.vpk_ilz or ilzs:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tools"))
+    import k10_ilz
+    ilz_bad = []
+    for x in ilzs:
+        orig = "managed/" + os.path.basename(x)
+        if orig not in names: ilz_bad.append(f"{x}: no {orig}"); continue
+        # kit #12 fix + kit (review finding): a local name -- this block is module-level code, and rebinding the global `bad` here threw away
+        # every FAIL recorded before it (param.sfo, strays, provenance ...) once the last pair verified clean
+        try: vbad, _n = k10_ilz.verify(z.read(orig), z.read(x))
+        except Exception as e: vbad = [f"unreadable ({e})"]
+        if vbad: ilz_bad.append(f"{x}: {'; '.join(vbad)}")
+    ok(a.vpk_ilz and ilzs and not ilz_bad, f"managed-ilz/: {len(ilzs)} DLL(s), each the verified compressed-IL form of its managed/ original (kit #12 vpkilz)"
+       + (" -- none packaged" if not ilzs else "") + (" -- packaged without --vpk-ilz" if not a.vpk_ilz else "") + (f": {ilz_bad[:5]}" if ilz_bad else ""))
 ok(not derived, f"no VPK file equals a file of the game's Managed / runtime/ManagedVita / the pack ({len(forbid)} files compared)" + (": " + "; ".join(derived) if derived else ""))
 eng = sorted(x for x in dlls if os.path.basename(x)[:-4] in ("Shepherd.Engine", "Shepherd.Assets", "Shepherd.Hooks", "Microsoft.Bcl.AsyncInterfaces"))
 print(f"       engine assemblies in the VPK: {' '.join(eng)}")

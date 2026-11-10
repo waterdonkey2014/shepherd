@@ -753,7 +753,10 @@ public static class Coroutines
             switch (y)
             {
                 case null: s.Kind = Wait.NextFrame; return;
-                case WaitForSeconds w: s.Kind = Wait.Seconds; s.ResumeAt = Time.Now + Seconds(w); return;
+                case WaitForSeconds w:
+                    s.Kind = Wait.Seconds; s.ResumeAt = Time.Now + Seconds(w);
+                    if (K12BootSeq.HoldsBootScreen && K12BootSeq.IsSplash(s.Root)) { s.ResumeAt = Time.Now; K12BootSeq.WaitSkipped(); }   // kit #12 boot: the game's splash's waits resume on the next frame (the launcher showed it)
+                    return;
                 case WaitForFixedUpdate: s.Kind = Wait.FixedUpdate; return;
                 case WaitForEndOfFrame: s.Kind = Wait.EndOfFrame; return;
                 case Coroutine c:
@@ -762,7 +765,9 @@ public static class Coroutines
                 case AsyncOperation op:
                     if (AsyncOps.IsDone(op)) continue;
                     s.Kind = Wait.Async; s.Async = op; return;
-                case IEnumerator nested: s.Stack.Push(nested); continue;
+                case IEnumerator nested:
+                    if (K12BootSeq.HoldsBootScreen && s.Stack.Count == 1 && K12BootSeq.IsSplash(s.Root)) { K12BootSeq.NestedSkipped(); continue; }   // kit #12 boot: the splash logo's animation wait is not waited for
+                    s.Stack.Push(nested); continue;
                 default: s.Kind = Wait.NextFrame; return;
             }
         }
@@ -1234,13 +1239,33 @@ public static class AsyncOps
     public sealed class Op { public AsyncOperation Managed; public bool Done; public float Progress; public bool AllowActivation = true; public int Priority; public Func<bool> Poll; public Action OnComplete; public object Result; }
     static readonly Dictionary<IntPtr, Op> ByPtr = new();
     static long _next = 0x10000;
+#if !SHEPHERD_NO_K13WALKC
+    // Kit #13 walkc (Runtime/K13Unload.cs, SHEPHERD_K13_ASYNC): kit #12 never let an operation go -- ByPtr kept every Op (its result: the loaded
+    // assets of every bundle request; its closures) and through Op.Managed the managed AsyncOperation itself, so the managed object's finalizer
+    // (Unity's ~AsyncOperation -> InternalDestroy) never ran. With the row: the frame's integration walks the pending operations in creation
+    // order (= ByPtr's order in kit #12, which never removed one: the same callbacks in the same order); a finished operation lets go of its
+    // managed object once its completion event has fired (nothing reads it after that); when the game drops it, its finalizer queues its
+    // pointer and the next integration forgets the Op -- Unity's lifetime. No string literal here (Assets/Diet.cs).
+    static readonly bool K13Async = K13Unload.Async;
+    static readonly List<Op> _pending = new();
+    static readonly System.Collections.Concurrent.ConcurrentQueue<IntPtr> _dead = new();
+    public static int K13Forgotten;
+    /// <summary>AsyncOperation.InternalDestroy (the managed object's finalizer, on the finalizer thread): forgotten at the next integration.</summary>
+    public static void Destroyed(IntPtr p) { if (K13Async && p != IntPtr.Zero) _dead.Enqueue(p); }
+#endif
     public static Op Of(AsyncOperation a) => a != null && ByPtr.TryGetValue(OpPtr(a), out var o) ? o : null;
     public static bool IsDone(AsyncOperation a) => Of(a)?.Done ?? true;
     public static T Create<T>(Func<bool> poll = null, Action onComplete = null, object result = null) where T : AsyncOperation
     {
         var a = (T)RuntimeHelpers.GetUninitializedObject(typeof(T));
         var p = new IntPtr(_next++); OpPtr(a) = p;
+#if !SHEPHERD_NO_K13WALKC
+        var op = new Op { Managed = a, Poll = poll, OnComplete = onComplete, Result = result };
+        ByPtr[p] = op;
+        if (K13Async) _pending.Add(op);
+#else
         ByPtr[p] = new Op { Managed = a, Poll = poll, OnComplete = onComplete, Result = result };
+#endif
         return a;
     }
     /// <summary>Unity: reading an asset-bundle request's result before it is done (AssetBundleRequest.asset / allAssets,
@@ -1259,6 +1284,9 @@ public static class AsyncOps
 #if !SHEPHERD_EBOOT
         if (Diag.TestSpine.On) Diag.TestSpine.After();   // kit #7 tests: SHEPHERD_TEST_SPINE (review fix: AsyncOperation.completed handlers)
 #endif
+#if !SHEPHERD_NO_K13WALKC
+        if (K13Async) o.Managed = null;   // (kit #13 walkc: its completion event has fired; the managed object may go)
+#endif
     }
     static Op[] _tickBuf = Array.Empty<Op>();
     /// <summary>The frame's integration of finished loads. Kit #10 (boot track, Runtime/K10Load.cs): under the play clock, while Unity's
@@ -1274,6 +1302,9 @@ public static class AsyncOps
     }
     static int TickPass()
     {
+#if !SHEPHERD_NO_K13WALKC
+        if (K13Async) return TickPassK13();
+#endif
         int n = ByPtr.Count, done = 0; if (_tickBuf.Length < n) _tickBuf = new Op[Math.Max(16, n * 2)];
         ByPtr.Values.CopyTo(_tickBuf, 0); var snap = _tickBuf;   // (was ByPtr.Values.ToArray(): the same elements, the same order)
         for (int k = 0; k < n; k++)
@@ -1294,6 +1325,38 @@ public static class AsyncOps
         Array.Clear(snap, 0, n);
         return done;
     }
+#if !SHEPHERD_NO_K13WALKC
+    /// <summary>Kit #13 walkc: <see cref="TickPass"/> over the pending operations (creation order; the operations created during the pass wait
+    /// for the next pass, as with kit #12's snapshot), then the finished ones leave the pending list, and the operations whose managed object
+    /// was finalized are forgotten.</summary>
+    static int TickPassK13()
+    {
+        while (_dead.TryDequeue(out var dp)) if (ByPtr.TryGetValue(dp, out var dop) && dop.Done) { ByPtr.Remove(dp); K13Forgotten++; }
+        int n = _pending.Count, done = 0; if (_tickBuf.Length < n) _tickBuf = new Op[Math.Max(16, n * 2)];
+        _pending.CopyTo(0, _tickBuf, 0, n); var snap = _tickBuf;
+        for (int k = 0; k < n; k++)
+        {
+            var o = snap[k];
+            if (o.Done) continue;
+            if (!o.AllowActivation) { o.Progress = Math.Max(o.Progress, 0.9f); continue; }
+            if (o.Poll == null || o.Poll())
+            {
+                o.Done = true; o.Progress = 1f; done++;
+                try { o.OnComplete?.Invoke(); } catch (Exception e) { Log.Exception(e, "async onComplete"); }
+                try { InvokeCompletionEvent(o.Managed); } catch (Exception e) { Log.Exception(e, "AsyncOperation.completed"); }
+#if !SHEPHERD_EBOOT
+                if (Diag.TestSpine.On) Diag.TestSpine.After();
+#endif
+                o.Managed = null;
+            }
+        }
+        Array.Clear(snap, 0, n);
+        int w = 0;
+        for (int r = 0; r < _pending.Count; r++) { var o = _pending[r]; if (!o.Done) _pending[w++] = o; }
+        if (w < _pending.Count) _pending.RemoveRange(w, _pending.Count - w);
+        return done;
+    }
+#endif
     static void InvokeCompletionEvent(AsyncOperation a)
     {
         var m = typeof(AsyncOperation).GetMethod("InvokeCompletionEvent", BindingFlags.Instance | BindingFlags.NonPublic);

@@ -155,6 +155,12 @@ public static class TagIndex
             s.Add(g);
         }
     }
+#if !SHEPHERD_NO_K13WALKC
+    /// <summary>Kit #13 walkc (Runtime/K13Unload.cs): a tagged asset GameObject leaves its tag's set for one collection (the set would keep it
+    /// alive) and comes back if it is still reached. A query sorts its candidates by path, so the set's order never shows.</summary>
+    internal static bool K13Out(NGameObject g) => K8Speed.Tags && g.Tag is { } t && t != Untagged && ByTag.TryGetValue(t, out var s) && s.Remove(g);
+    internal static void K13In(NGameObject g) { if (g.Tag is { } t && ByTag.TryGetValue(t, out var s)) s.Add(g); }
+#endif
     /// <summary>Objects.Kill of a GameObject record.</summary>
     public static void Killed(NGameObject g)
     {

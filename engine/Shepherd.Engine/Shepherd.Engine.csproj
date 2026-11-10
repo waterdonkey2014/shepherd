@@ -32,6 +32,50 @@
   <PropertyGroup Condition="'$(ShepherdK8)' == '0'">
     <DefineConstants>$(DefineConstants);SHEPHERD_NO_K8</DefineConstants>
   </PropertyGroup>
+  <!-- Device kit #11, track walk (vita/notes/kit11-walk.md, review fix): -p:ShepherdK11Records=0 (vita/shepherd/build.sh SHEPHERD_K11_RECORDS=0)
+       = the build switch back to kit #10's engine records (compile symbol SHEPHERD_K10_RECORDS: NObj / NGameObject / NBehaviour / NMono /
+       NTransform / NCanvasRenderer and Shepherd.Assets' ObjectInfo in kit #10's layouts, no side tables). A field layout is fixed when Mono
+       loads the class, so the records diet has no env-file switch. Default: the kit #11 layouts. -->
+  <PropertyGroup Condition="'$(ShepherdK11Records)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_K10_RECORDS</DefineConstants>
+  </PropertyGroup>
+  <!-- Device kit #12, track walkb (vita/notes/kit12-walkb.md, review fix): -p:ShepherdK12TocCode=0 (vita/shepherd/build.sh SHEPHERD_K12_TOC_CODE=0)
+       = the build switch back to kit #11's index entries (compile symbol SHEPHERD_K11_TOC: Shepherd.Assets' ObjectInfo a class again, one object
+       per entry, and kit #11's callers here). The view's struct costs AOT code whatever the env file says (SHEPHERD_K12_TOC=0 gives back kit
+       #11's GC heap, not its eboot span): this gives back both. Default: the view. -->
+  <PropertyGroup Condition="'$(ShepherdK12TocCode)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_K11_TOC</DefineConstants>
+  </PropertyGroup>
+  <!-- Device kit #12, track menusb (vita/notes/kit12-menusb.md, review fix 2): -p:ShepherdK12Menusb=0 (vita/shepherd/build.sh
+       SHEPHERD_K12_MENUSB_CODE=0) = the build switch back to kit #11's engine image: the track's code left out (Runtime/K12View.cs,
+       Runtime/VitaToggles.K12.cs, Runtime/K12Dump.cs and every hook, compile symbol SHEPHERD_NO_K12MENUSB): kit #11's methods, metadata
+       tokens and so kit #11's eboot span and AOT compile levels (the env switch SHEPHERD_K12_MENUSB=0 turns the rows off but keeps the
+       code). Default: compiled in. -->
+  <PropertyGroup Condition="'$(ShepherdK12Menusb)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_NO_K12MENUSB</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ShepherdK12Menusb)' == '0'">
+    <Compile Remove="Runtime/K12View.cs;Runtime/VitaToggles.K12.cs;Runtime/K12Dump.cs" />
+  </ItemGroup>
+  <!-- Device kit #13, track walkc (vita/notes/kit13-walkc.md): -p:ShepherdK13Walkc=0 (vita/shepherd/build.sh SHEPHERD_K13_WALKC_CODE=0) = the
+       build switch back to kit #12's engine image: the track's engine code left out (Runtime/K13Unload.cs, the Mac diagnostics Diag/K13*.cs and
+       every hook, compile symbol SHEPHERD_NO_K13WALKC): kit #12's methods, metadata tokens, eboot span and AOT compile levels (the env switch
+       SHEPHERD_K13_WALKC=0 turns the rows off but keeps the code). Default: compiled in. -->
+  <PropertyGroup Condition="'$(ShepherdK13Walkc)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_NO_K13WALKC</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ShepherdK13Walkc)' == '0'">
+    <Compile Remove="Runtime/K13Unload.cs;Diag/K13Paths.cs;Diag/K13Bags.cs" />
+  </ItemGroup>
+  <!-- Device kit #14, track small (vita/notes/kit14-small.md): -p:ShepherdK14Small=0 (vita/shepherd/build.sh SHEPHERD_K14_SMALL_CODE=0) = the
+       build switch back to kit #13's engine image: the track's engine code left out (Runtime/K14Catalog.cs and its two calls, compile symbol
+       SHEPHERD_NO_K14SMALL; Shepherd.Hooks drops AddrLazy.cs with the same property). Default: compiled in. -->
+  <PropertyGroup Condition="'$(ShepherdK14Small)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_NO_K14SMALL</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(ShepherdK14Small)' == '0'">
+    <Compile Remove="Runtime/K14Catalog.cs" />
+  </ItemGroup>
   <ItemGroup>
     <Reference Include="$(MSBuildThisFileDirectory)../../runtime/Managed/UnityEngine.*.dll"><Private>false</Private></Reference>
     <ProjectReference Include="../Shepherd.Hooks/Shepherd.Hooks.csproj" />

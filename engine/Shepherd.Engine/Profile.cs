@@ -36,6 +36,9 @@ public static class Profile
         Runtime.SpineReadShare.Install();   // kit6 mem L1: Spine arrays shared during the read (the owner's --spine-share spine-unity.dll calls in); SHEPHERD_SPINE_READSHARE=0 = kit #5
         Runtime.SpineLazySkins.Install();   // kit #7 spine L2: a skin's attachments read when first used (the owner's --spine-lazyskin spine-unity.dll calls in); SHEPHERD_SPINE_LAZYSKIN=0 = kit #6
         Runtime.SpineClipNative.Install();  // kit #7 spine: Spine clipping through the native port (the owner's --spine-clip spine-unity.dll calls in); SHEPHERD_SPINE_CLIP=0 = kit #6
+#if !SHEPHERD_NO_K14SMALL
+        Runtime.K14Catalog.Install();       // kit #14 small: the game catalog kept compact until asked for (the owner's --addr-lazy Unity.Addressables.dll calls in); SHEPHERD_K14_CATALOG=0 = kit #13
+#endif
         if (AppDomain.CurrentDomain.GetAssemblies().Any(a => a.GetName().Name == "System.Net.Http")) { DirectProxy(); return; }
         AppDomain.CurrentDomain.AssemblyLoad += (_, e) => { if (e.LoadedAssembly.GetName().Name == "System.Net.Http") DirectProxy(); };
     }

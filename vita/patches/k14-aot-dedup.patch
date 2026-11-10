@@ -1,0 +1,120 @@
+--- a/src/mono/mono/mini/aot-compiler.c	2026-11-06 10:19:41
++++ b/src/mono/mono/mini/aot-compiler.c	2026-11-06 13:17:10
+@@ -9604,8 +9604,83 @@
+ 				return FALSE;
+ 	}
+ 	return TRUE;
++}
++
++/* SHEPHERD-VITA device kit #14, track small (vita/patches/k14-aot-dedup.patch, vita/notes/kit14-small.md), one copy of shared generic code --
++ * SHEPHERD_AOT_DEDUP_SHARED=1 (off = this compiler writes what the kit #10 compiler writes): the partially shared instances (a type argument
++ * T_INT / T_BYTE / T_REF ... made by mini_get_shared_method_full from the instance's OWN generic definition -- never a gsharedvt one, never a
++ * parameter of a caller) take part in R3 as well. Unlike a concrete instance such an instance often has no copy in its defining image (CoreLib
++ * compiles only what CoreLib calls), so the list holds every image's: the first image that compiled it keeps it; the runtime finds that copy
++ * through find_aot_method's walk over the loaded modules (it tries the defining image first, then the others). An image that is not loaded
++ * yet when the method is first called leaves the call to the interpreter: the same IL, the same answers -- the trace check counts them. */
++static int k14_dedup_shared = -1;
++static gboolean
++k14_shared_on (void)
++{
++	if (k14_dedup_shared < 0) {
++		const char *e = g_getenv ("SHEPHERD_AOT_DEDUP_SHARED");
++		k14_dedup_shared = e && *e == '1';
++	}
++	return k14_dedup_shared == 1;
+ }
+ 
++/* every open type argument is a shared parameter (with a gshared constraint, not gsharedvt) of the instance's own generic definition */
++static gboolean
++k14_shared_instance (MonoMethod *method)
++{
++	MonoGenericContext *ctx = mono_method_get_context (method);
++	MonoGenericContainer *cc = NULL, *mc = NULL;
++	gboolean any = FALSE;
++	if (!method->is_inflated || !ctx)
++		return FALSE;
++	if (mono_class_is_ginst (method->klass))
++		cc = mono_class_get_generic_container (mono_class_get_generic_class (method->klass)->container_class);
++	mc = mono_method_get_generic_container (((MonoMethodInflated *) method)->declaring);
++	for (int k = 0; k < 2; ++k) {
++		MonoGenericInst *gi = k == 0 ? ctx->class_inst : ctx->method_inst;
++		MonoGenericContainer *own = k == 0 ? cc : mc;
++		if (!gi)
++			continue;
++		for (guint i = 0; i < gi->type_argc; ++i) {
++			MonoType *t = gi->type_argv [i];
++			if (!mono_class_is_open_constructed_type (t))
++				continue;
++			if (t->type != MONO_TYPE_VAR && t->type != MONO_TYPE_MVAR)
++				return FALSE;
++			if (!t->data.generic_param->gshared_constraint || mini_is_gsharedvt_gparam (t))
++				return FALSE;
++			if (!own || t->data.generic_param->owner != own)
++				return FALSE;
++			any = TRUE;
++		}
++	}
++	return any;
++}
++
++/* kit #14: a parameter's name says nothing about WHICH struct instance a T_INST stands for (get_shared_gparam_name: every GENERICINST constraint prints "_INST"; every
++ * other constraint is named in full), so two different shared instances -- List<T_INST> over two different structs -- print the same text and are two methods. R3's key
++ * therefore carries the constraint, and the constraint's own _INST arguments, spelled out. Only with SHEPHERD_AOT_DEDUP_SHARED=1 (the caller checks). */
++static void
++k14_append_inst_constraint (GString *s, MonoType *t)
++{
++	if (t->type == MONO_TYPE_GENERICINST) {
++		MonoGenericInst *gi = t->data.generic_class->context.class_inst;
++		for (guint i = 0; gi && i < gi->type_argc; ++i)
++			k14_append_inst_constraint (s, gi->type_argv [i]);
++		return;
++	}
++	if (t->type != MONO_TYPE_VAR && t->type != MONO_TYPE_MVAR)
++		return;
++	MonoType *c = t->data.generic_param->gshared_constraint;
++	if (!c || c->type != MONO_TYPE_GENERICINST)
++		return;
++	char *tn = mono_type_get_name_full (c, MONO_TYPE_NAME_FORMAT_ASSEMBLY_QUALIFIED);
++	g_string_append_printf (s, "{%s", tn);
++	g_free (tn);
++	k14_append_inst_constraint (s, c);
++	g_string_append_c (s, '}');
++}
++
+ /* R3: the key of an inflated method -- the image defining its generic type, its full name, and its type arguments assembly-qualified */
+ static char *
+ k9_instance_key (MonoMethod *method)
+@@ -9625,6 +9700,8 @@
+ 			char *tn = mono_type_get_name_full (gi->type_argv [i], MONO_TYPE_NAME_FORMAT_ASSEMBLY_QUALIFIED);
+ 			g_string_append_printf (s, "\t%c%s", k == 0 ? 'C' : 'M', tn);
+ 			g_free (tn);
++			if (k14_shared_on ())
++				k14_append_inst_constraint (s, gi->type_argv [i]);
+ 		}
+ 	}
+ 	return g_string_free (s, FALSE);
+@@ -9641,8 +9718,10 @@
+ 	}
+ 	if (!k9_skip || !method->is_inflated || method->wrapper_type != MONO_WRAPPER_NONE)
+ 		return FALSE;
+-	if (m_class_get_image (method->klass) == acfg->image || !k9_concrete_instance (method))
+-		return FALSE;   /* this image defines it (its copy is the one the runtime finds first) / not a concrete instance */
++	if (m_class_get_image (method->klass) == acfg->image)
++		return FALSE;   /* this image defines it (its copy is the one the runtime finds first) */
++	if (!k9_concrete_instance (method) && !(k14_shared_on () && k14_shared_instance (method)))
++		return FALSE;   /* not a concrete instance (kit #14: nor one shared over its own definition's parameters) */
+ 	char *key = k9_instance_key (method);
+ 	gboolean skip = g_hash_table_lookup (k9_skip, key) != NULL;
+ 	g_free (key);
+@@ -9693,8 +9772,10 @@
+ 			exit (1);
+ 		}
+ 	}
+-	if (!method->is_inflated || method->wrapper_type != MONO_WRAPPER_NONE || m_class_get_image (method->klass) != acfg->image || !k9_concrete_instance (method))
++	if (!method->is_inflated || method->wrapper_type != MONO_WRAPPER_NONE)
+ 		return;
++	if (!(m_class_get_image (method->klass) == acfg->image && k9_concrete_instance (method)) && !(k14_shared_on () && k14_shared_instance (method)))
++		return;   /* kit #14: every image's shared instances are listed, not only the defining image's */
+ 	char *key = k9_instance_key (method);
+ 	fprintf (k9_inst_out, "%s\n", key);
+ 	g_free (key);

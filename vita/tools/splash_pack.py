@@ -36,7 +36,7 @@ import argparse, json, os, struct, subprocess, sys, tempfile
 
 HDR = 192
 MAGIC = 0x31564853
-F_NO_BFRAMES, F_BT601, F_AUDIO_BAKE, F_DPB1 = 1, 2, 4, 8   # F_DPB1 (kit #9): one reference picture, max_dec_frame_buffering 1
+F_NO_BFRAMES, F_BT601, F_AUDIO_BAKE, F_DPB1, F_LUMA_RED = 1, 2, 4, 8, 16   # F_DPB1 (kit #9): one reference picture, max_dec_frame_buffering 1; F_LUMA_RED (kit #13 fixlooks): k8_shv.h
 W, H = 960, 544
 EVENT_FOR_CLIP = {"Devolver_Animated_Logo_v001_4k_Audio-_HQ_HBR_MP4": "event:/music/devolver_pre_roll/DevolverSplash"}
 DEFAULT_CLIPS = ["Devolver_Animated_Logo_v001_4k_Audio-_HQ_HBR_MP4", "Intro"]   # the two clips the kit routes reach

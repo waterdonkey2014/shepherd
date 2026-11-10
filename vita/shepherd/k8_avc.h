@@ -145,6 +145,9 @@ typedef struct K8Avc {
 	unsigned pts_seen;   /* pictures (any call) that came back carrying a clip time stamp: 0 = the decoder hands back none (the check is blind) */
 	unsigned pts_bad;    /* pictures whose clip time stamp named another picture than the next one (out of order) */
 	unsigned flush_ok;   /* flush pictures vouched for by their clip time stamp (the clip's held pictures, in order) */
+	/* device kit #13, track bootc (appended): how the work area was made (k13avc_*, below): 0 = kit #8's k8avc_open, 1 = the memblock's own
+	 * 1 MiB alignment option, 2 = a block 1 MiB larger with the area at its first 1 MiB boundary, 3 = the previous decoder's area again */
+	unsigned k13_how;
 } K8Avc;
 
 static inline int k8avc_fail (K8Avc *d, const char *why, int rc) { d->why = why; d->rc = rc; return rc < 0 ? rc : -1; }
@@ -398,6 +401,64 @@ static inline int k10avc_stop1 (K8Avc *d, void *out, unsigned pitch, int *got)
 	*got = r < 0 ? 0 : (int) (arr.numOfOutput > 1 ? 1 : arr.numOfOutput);
 	if (r < 0) { d->why = "sceAvcdecDecodeStop refused (one picture per call)"; d->rc = r; if (!d->flush_rc) d->flush_rc = r; }
 	else if (*got > 0) { d->out++; d->drained++; d->flushed++; }
+	return r;
+}
+
+/* ---------------------------------------------------------------- device kit #13, track bootc (vita/notes/kit13-bootc.md section 1): THE WORK AREA
+ * Kit #12's device run (owner, 2026-11-05): the launcher's second clip (the Massive Monster logo) was refused by sceAvcdecCreateDecoder with
+ * 0x80620009 (SCE_AVCDEC_ERROR_INVALID_POINTER) on both launchers, every start, after the first clip had played on a decoder made the same way.
+ * What differed was WHERE its work area landed. The device's user CDRAM blocks are placed first-fit from 0x61000000 in 256 KiB granules (its
+ * logs: the first CDRAM block of a start at 0x61000000, a 256 KiB block after a 2 MiB one at 0x61200000), so the first clip's 7 MiB area sat
+ * right after its 5 MiB clip block (0x61500000: on a 1 MiB boundary), while the second clip's area sat right after the second clip's 1.5 MiB
+ * block in the space the first clip gave back (0x61180000: on a 512 KiB boundary). The engine's own clip has always had its area on a 1 MiB
+ * boundary (k8_boot.inc.c: shepgl_vram_alloc (need, 1 MiB); it decodes on the device) and every sample sizes the area in whole MiB. So the
+ * decoder wants its work area on a 1 MiB boundary (INFERRED from those facts, not documented; vlx now refuses an area that is not, as the
+ * device did: vita/vlx/vlx.c). Two answers, both used by the launcher's second clip:
+ *   k13avc_reopen: the next clip's decoder on the SAME work area, library and module (only the decoder is deleted and created again): the
+ *     exact pointer and size the device already accepted for the first clip -- nothing is allocated;
+ *   k13avc_open: a fresh decoder whose work area is on a 1 MiB boundary whatever the blocks before it (the memblock's alignment option, else
+ *     a block 1 MiB larger with the area at its first boundary) -- the fallback when the re-create is refused. */
+#define K13_AVC_ALIGN 0x100000u
+static inline int k13avc_alloc_work (K8Avc *d, SceKernelMemBlockType memtype, void **work)
+{
+	SceKernelAllocMemBlockOpt opt;
+	sceClibMemset (&opt, 0, sizeof opt);
+	opt.size = sizeof opt; opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT; opt.alignment = K13_AVC_ALIGN;
+	void *base = 0;
+	d->mem = sceKernelAllocMemBlock ("shepherd-avcdec", memtype, d->mem_bytes, &opt);
+	if (d->mem >= 0 && sceKernelGetMemBlockBase (d->mem, &base) >= 0 && !((unsigned) base & (K13_AVC_ALIGN - 1u))) { d->k13_how = 1; *work = base; return 0; }
+	if (d->mem >= 0) sceKernelFreeMemBlock (d->mem);
+	d->mem = sceKernelAllocMemBlock ("shepherd-avcdec", memtype, d->mem_bytes + K13_AVC_ALIGN, NULL);   /* (the option refused or not honoured) */
+	if (d->mem < 0) return k8avc_fail (d, "no memory for the decoder's work area", d->mem);
+	if (sceKernelGetMemBlockBase (d->mem, &base) < 0) return k8avc_fail (d, "the decoder's work area has no base", -1);
+	*work = (void *) (((unsigned) base + K13_AVC_ALIGN - 1u) & ~(K13_AVC_ALIGN - 1u));
+	d->k13_how = 2;
+	return 0;
+}
+static inline int k13avc_open (K8Avc *d, unsigned w, unsigned h, unsigned refs, SceKernelMemBlockType memtype)
+{
+	int need = k8avc_prepare (d, w, h, refs);
+	if (need < 0) return need;
+	void *work = 0;
+	int r = k13avc_alloc_work (d, memtype, &work);
+	if (r < 0) return r;
+	return k8avc_create (d, work, d->mem_bytes);
+}
+/* the decoder deleted and created again on its own work area (the library, the module and the area stay); the per-clip state starts as a new
+ * decoder's (k8avc_prepare_ex zeroes it for one); 0 = ready, < 0 = refused (d->why / d->rc; d->created 0: the caller closes the rest) */
+static inline int k13avc_reopen (K8Avc *d)
+{
+	if (!d->created || !d->ctrl.frameBuf.pBuf) return k8avc_fail (d, "no decoder to create again", -1);
+	void *work = d->ctrl.frameBuf.pBuf;
+	unsigned bytes = d->ctrl.frameBuf.size;
+	int r = sceAvcdecDeleteDecoder (&d->ctrl);
+	d->created = 0;
+	if (r < 0) return k8avc_fail (d, "sceAvcdecDeleteDecoder refused (the previous clip's decoder)", r);
+	d->fed = d->out = d->drained = d->refed = d->flushed = d->second = d->pts_seen = d->pts_bad = d->flush_ok = 0;
+	d->flush_rc = 0; d->tag_clip = 0; d->rc = 0; d->why = 0;
+	sceClibMemset (&d->ctrl, 0, sizeof d->ctrl);
+	r = k8avc_create (d, work, bytes);
+	if (r >= 0) d->k13_how = 3;
 	return r;
 }
 

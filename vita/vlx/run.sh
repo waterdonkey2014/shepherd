@@ -21,6 +21,9 @@
 #    0x80620002 with the pictures held, as the device; VLX_AVC_STOP=all = kit #9's stand-in, =one-only only a one-picture array is taken;
 #    VLX_AVC_IDR=bump an IDR access unit makes every held picture due first (default: the fixed-delay pipe). Kit #9's vlx: VLX_AVC_DELAY=1
 #    VLX_AVC_STOP=all; integration review: VLX_AVC_IDR=hang the refed IDR does not come back for 40 s, VLX_AVC_PTS=0 no time stamps handed back)
+#   (kit #13 bootc: VLX_DEVADDR=0 CDRAM / PHYCONT blocks wherever mmap puts them -- kit #12's vlx; default: the device's addresses, CDRAM
+#    first fit from 0x61000000 in 256 KiB granules; VLX_AVC_CHECK=0 sceAvcdecCreateDecoder without the work-area checks -- kit #12's stand-in;
+#    default: the work area inside one CDRAM / PHYCONT block, on a 1 MiB boundary of its device address, refused 0x80620009 otherwise)
 #   VLX_STACK_REPORT VLX_STACK_ACCOUNT (kit5 mem: thread stack high-water lines; stacks taken from the user budget as on the device)
 #   VLX_GDB=<port>: qemu gdbstub on 127.0.0.1:<port> (lldb: target create --arch armv7-unknown-linux-gnueabihf <elf>;
 #   gdb-remote 127.0.0.1:<port>); the only case that publishes a port, bound to localhost.
@@ -51,6 +54,6 @@ elif [[ -z ${VLX_USER_KIB:-} && ${ELF:t} == menu* ]]; then
   export VLX_USER_KIB=327680   # no span file (an ELF linked before 2026-10-13): the 2026-10-09 device figure for a ~38.9 MiB eboot
   echo "[run.sh] WARNING: no $SPANF: VLX_USER_KIB=327680 (right only for a ~38.9 MiB eboot; relink with link.sh)" >&2
 fi
-for v in VLX_TRACE VLX_BREAK VLX_TRAP_AFTER_S VLX_POLL_MS VLX_USER_KIB VLX_CDRAM_KIB VLX_PHYCONT_KIB VLX_CORE3 VLX_ARM500 VLX_STACK_REPORT VLX_STACK_ACCOUNT VLX_TOUCH VLX_TOUCH_BACK VLX_MEASURED_ARM VLX_PROF QEMU_STRACE VLX_STORES VLX_LAUNCH_ARM VLX_PLUGIN_ARM VLX_IO_DELAY VLX_FORVM_QUOTA_KIB VLX_FORVM_MAX_KIB VLX_FORVM_NOPROTECT VLX_MODEL VLX_VSH_FAIL VLX_FW_REPORTED VLX_AVC_FAIL VLX_MODULE_MS VLX_MODULE_IMPORTS VLX_CARD VLX_STRICT_PATHS VLX_AVC_DELAY VLX_AVC_STOP VLX_AVC_IDR VLX_AVC_PTS VLX_AVC_LIB_KIB VLX_AVC_DEC_KIB VLX_SUSPEND VLX_SUSPEND_CLK VLX_TLS_FOREIGN VLX_THREAD_FPSCR; do
+for v in VLX_TRACE VLX_BREAK VLX_TRAP_AFTER_S VLX_POLL_MS VLX_USER_KIB VLX_CDRAM_KIB VLX_PHYCONT_KIB VLX_CORE3 VLX_ARM500 VLX_STACK_REPORT VLX_STACK_ACCOUNT VLX_TOUCH VLX_TOUCH_BACK VLX_CTRL VLX_MEASURED_ARM VLX_PROF QEMU_STRACE VLX_STORES VLX_LAUNCH_ARM VLX_PLUGIN_ARM VLX_IO_DELAY VLX_FORVM_QUOTA_KIB VLX_FORVM_MAX_KIB VLX_FORVM_NOPROTECT VLX_MODEL VLX_VSH_FAIL VLX_FW_REPORTED VLX_AVC_FAIL VLX_MODULE_MS VLX_MODULE_IMPORTS VLX_CARD VLX_STRICT_PATHS VLX_AVC_DELAY VLX_AVC_STOP VLX_AVC_IDR VLX_AVC_PTS VLX_AVC_LIB_KIB VLX_AVC_DEC_KIB VLX_SUSPEND VLX_SUSPEND_CLK VLX_TLS_FOREIGN VLX_THREAD_FPSCR VLX_HIADDR VLX_HIADDR_BASE VLX_DEVADDR VLX_AVC_CHECK VLX_REFUSE_MEMTYPE; do
   [[ -n ${(P)v:-} ]] && ARGS+=(-e $v=${(P)v}); done
 exec docker run $ARGS "$@" alpine:3.20 /vlxbin/${ELF:t}

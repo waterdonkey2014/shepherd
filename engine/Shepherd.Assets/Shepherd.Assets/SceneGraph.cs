@@ -20,12 +20,20 @@ public sealed class SceneNode
 public sealed class SceneComponent
 {
     public SerializedFile File;      // file the component lives in
+#if !SHEPHERD_K11_TOC
+    public ObjectInfo Object;        // ObjectInfo.None (IsNull) if unresolved
+#else
     public ObjectInfo Object;        // null if unresolved
+#endif
     public PPtr Pointer;
     public int ClassId;
     public MonoScriptInfo Script;    // MonoBehaviours only (null if unresolved)
     public string DisplayName =>
+#if !SHEPHERD_K11_TOC
+        Object.IsNull ? $"<unresolved {Pointer}>" :
+#else
         Object == null ? $"<unresolved {Pointer}>" :
+#endif
         ClassId == ClassIds.MonoBehaviour ? (Script?.FullName ?? "MonoBehaviour<?>") : ClassIds.Name(ClassId);
 }
 
@@ -62,13 +70,22 @@ public static class SceneGraph
                 {
                     var ptr = c is TypeTreeObject pair ? pair.PPtr("component") : default;
                     var (cf, co) = db.Resolve(file, ptr);
+#if !SHEPHERD_K11_TOC
+                    var sc = new SceneComponent { File = cf, Object = co, Pointer = ptr, ClassId = co.IsNull ? 0 : co.ClassId };
+                    if (!co.IsNull && (co.ClassId == ClassIds.Transform || co.ClassId == ClassIds.RectTransform) && node.Transform.IsNull)
+#else
                     var sc = new SceneComponent { File = cf, Object = co, Pointer = ptr, ClassId = co?.ClassId ?? 0 };
                     if (co != null && (co.ClassId == ClassIds.Transform || co.ClassId == ClassIds.RectTransform) && node.Transform == null)
+#endif
                     {
                         node.Transform = co;
                         byTransform[co.PathId] = node;
                     }
+#if !SHEPHERD_K11_TOC
+                    if (!co.IsNull && co.ClassId == ClassIds.MonoBehaviour)
+#else
                     if (co?.ClassId == ClassIds.MonoBehaviour)
+#endif
                     {
                         res.MonoBehaviours++;
                         sc.Script = db.GetMonoScript(cf, co);
@@ -81,7 +98,11 @@ public static class SceneGraph
         // pass 2: transforms -> parent/children (children order from m_Children)
         foreach (var node in res.ByGameObject.Values)
         {
+#if !SHEPHERD_K11_TOC
+            if (node.Transform.IsNull) continue;
+#else
             if (node.Transform == null) continue;
+#endif
             try { node.TransformData = TypeTreeReader.Read(file, node.Transform); }
             catch (Exception e) { res.Warnings.Add($"Transform {node.Transform.PathId}: {e.Message}"); }
         }

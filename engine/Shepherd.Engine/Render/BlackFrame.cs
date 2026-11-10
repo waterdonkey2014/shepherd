@@ -5,7 +5,7 @@ namespace Shepherd.Engine.Render;
 /// <summary>kit #4 (M1, black-frame GC): is the frame on screen covered? A frame counts as covered when one of its draws is an opaque
 /// quad over the whole screen -- four vertices whose bounds contain the screen, every vertex alpha >= 0.99, normal or no blending, and
 /// an opaque texture (Texture2D.whiteTexture or a solid colour texture: what an untextured UI Image draws with) -- and what is drawn
-/// after it covers at most <see cref="MaxOnTop"/> of the screen (the bounding boxes of the later draws, summed). That is what the
+/// after it covers at most <see cref="KitMaxOnTop"/> of the screen (the bounding boxes of the later draws, summed). That is what the
 /// game's scene transitions show at their black hold (MMTransition's full-screen Images at alpha 1, "fade to black" / "white fade",
 /// with the loading icon and its text on top); a screen with an opaque backdrop under real content (the splash logos, a book or
 /// comic page over a black panel) is not covered. Only the main thread's draws are looked at: with
@@ -18,10 +18,22 @@ public static class BlackFrame
     /// <summary>The frame number of <see cref="LastCovered"/>'s frame, and a short description of its cover draw (for the log).</summary>
     public static int LastFrame { get; private set; } = -1;
     public static string LastNote => !_lastCover ? "" : $"'{_lastTex?.Name}' rgb {_lastRgbA.X:F2},{_lastRgbA.Y:F2},{_lastRgbA.Z:F2} alpha {_lastRgbA.W:F3}, {_lastTop * 100:F0} % drawn on top";
-    static bool _covered, _lastCover; static NTexture _tex, _lastTex; static System.Numerics.Vector4 _rgba, _lastRgbA; static double _lastTop;
+    // (kit #12 walka: _lastCover / _lastTop are internal -- read by the opt-in intro arm in Icalls/BundleIcalls.cs, SHEPHERD_K12_INTRO=1 -- and no member
+    // is added: the AOT cold lists key engine methods by token, so a new method or property shifts every later one; vita/notes/kit12-walka.md)
+    static bool _covered; internal static bool _lastCover; static NTexture _tex, _lastTex; static System.Numerics.Vector4 _rgba, _lastRgbA; internal static double _lastTop;
     static int _mainThread = -1; static double _onTop; static int _w, _h;
     /// <summary>The share of the screen the draws after the cover may take (bounding boxes, summed): the loading icon and its text.</summary>
-    public const double MaxOnTop = 0.15;
+    public const double KitMaxOnTop = 0.15;
+    /// <summary>Kit #11 walk (the intro's load peak; vita/notes/kit11-walk.md), OPT-IN (SHEPHERD_K11_COVER=1): the game's MMTransition black hold
+    /// before the QuoteScreen and before / after the intro's scene load draws its loading icon and text over 16-18 % of the screen (VLX,
+    /// SHEPHERD_BLACK_DEBUG=1 on the walk), so kit #4's 15 % counts those UnloadUnusedAssets calls as visible. With the switch a frame whose
+    /// cover has up to 20 % on top counts as covered too -- for the growth gate only (<see cref="LastCoveredWide"/>): measured on the walk,
+    /// the scene-load override there (a full collection right after the intro's load, which frees nothing) raised the arena peak by 5 MiB
+    /// (evacuation copies at the live peak); the gated pre-load collection alone is measured in the note. Off = kit #10 exactly.</summary>
+    public static readonly bool WideCover = Environment.GetEnvironmentVariable("SHEPHERD_K11_COVER") == "1" && Environment.GetEnvironmentVariable("SHEPHERD_K11_WALK") != "0";
+    const double WideMaxOnTop = 0.20;
+    /// <summary>Kit #11 walk (SHEPHERD_K11_COVER=1): the last completed frame was covered with more than kit #4's 15 % but at most 20 % on top.</summary>
+    public static bool LastCoveredWide { get; private set; }
     static readonly bool Debug = Environment.GetEnvironmentVariable("SHEPHERD_BLACK_DEBUG") == "1";
 
     /// <summary>Kit #6 gpulight: a cover was seen earlier in this frame (main thread), so every later screen draw adds its bounding box
@@ -67,7 +79,8 @@ public static class BlackFrame
     internal static void EndFrame()
     {
         double top = _covered && _w > 0 && _h > 0 ? _onTop / ((double)_w * _h) : 0;
-        LastCovered = _covered && top <= MaxOnTop; LastFrame = Runtime.Time.FrameCount;
+        LastCovered = _covered && top <= KitMaxOnTop; LastFrame = Runtime.Time.FrameCount;
+        LastCoveredWide = WideCover && _covered && !LastCovered && top <= WideMaxOnTop;
         _lastCover = _covered; _lastTex = _tex; _lastRgbA = _rgba; _lastTop = top;   // (the note is formatted only when asked for: no allocation per frame)
         Runtime.BlackFrameGc.Track();   // M1's growth gate: the heap after each major
         if (Debug && _covered) Log.Info($"[blackframe] f{LastFrame} {(LastCovered ? "covered" : "NOT covered")} by {LastNote}");

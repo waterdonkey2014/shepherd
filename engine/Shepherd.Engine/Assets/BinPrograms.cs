@@ -237,7 +237,7 @@ static class BinPrograms
         public long I64() { Need(8); var v = BitConverter.ToInt64(_b, _base + Pos); Pos += 8; return v; }
         public float F() { Need(4); var v = BitConverter.ToSingle(_b, _base + Pos); Pos += 4; return v; }
         public void Align() => Pos = (Pos + 3) & ~3;
-        public string Str() { int n = I32(); if (n < 0 || Pos + n > _len) throw new InvalidDataException("bad string"); var s = System.Text.Encoding.UTF8.GetString(_b, _base + Pos, n); Pos += n; Align(); return s; }
+        public string Str() { int n = I32(); if (n < 0 || Pos + n > _len) throw new InvalidDataException("bad string"); var s = Shepherd.Assets.StringPool.Get(new ReadOnlySpan<byte>(_b, _base + Pos, n), Shepherd.Assets.StringPool.Site.Bin); Pos += n; Align(); return s; }   // kit #13 basec: pooled (SHEPHERD_K13_STRPOOL=0: a new copy)
         public UPPtr PPtr() { int fid = I32(); long pid = I64(); return new UPPtr(fid, pid); }
     }
 

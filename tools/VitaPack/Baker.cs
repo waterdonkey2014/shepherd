@@ -46,8 +46,8 @@ sealed partial class Baker
         var recSet = new List<(SerializedFile, ObjectInfo, Recording.Obj)>();
         foreach (var ro in _rec.Objects.Values.OrderBy(o => o.Seq))
         {
-            var f = _db.GetFile(ro.File); var o = f?.GetObject(ro.PathId);
-            if (o == null) { missing++; if (missing <= 10) Say($"  WARNING recorded object not found in the game data: {ro.File} #{ro.PathId}"); continue; }
+            var f = _db.GetFile(ro.File); var o = f != null ? f.GetObject(ro.PathId) : default;
+            if (o.IsNull) { missing++; if (missing <= 10) Say($"  WARNING recorded object not found in the game data: {ro.File} #{ro.PathId}"); continue; }
             recSet.Add((f, o, ro));
         }
         PrepareTrims(recSet.Select(r => (r.Item1, r.Item2)));   // stage 1 (Trims.cs): language, joystick maps
@@ -101,7 +101,7 @@ sealed partial class Baker
     {
         if (p.IsNull || p.PathId == 0) return;
         var (rf, ro) = _db.Resolve(from, p);
-        if (ro != null) { if (!Excluded(rf, ro)) Add(rf, ro, closure: true); return; }
+        if (!ro.IsNull) { if (!Excluded(rf, ro)) Add(rf, ro, closure: true); return; }
         var ef = _db.GetExternalFile(from, p.FileId);
         if (ef == null)
         {
@@ -258,8 +258,8 @@ sealed partial class Baker
         int trees = 0, raws = 0, images = 0, bad = 0;
         foreach (var e in _entries)
         {
-            var pf = r.GetFile(e.File.Name); var po = pf?.GetObject(e.Obj.PathId);
-            if (po == null || po.ClassId != e.Obj.ClassId) { bad++; if (bad < 10) Say($"  VERIFY FAIL {e}: not in the pack index"); continue; }
+            var pf = r.GetFile(e.File.Name); var po = pf != null ? pf.GetObject(e.Obj.PathId) : default;
+            if (po.IsNull || po.ClassId != e.Obj.ClassId) { bad++; if (bad < 10) Say($"  VERIFY FAIL {e}: not in the pack index"); continue; }
             if (e.Tree != null)
             {
                 var t = r.ReadTree(pf, po); trees++;

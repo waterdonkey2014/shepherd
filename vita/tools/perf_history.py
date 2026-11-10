@@ -55,6 +55,21 @@ Columns (empty = not in that log):
   - Memory in KiB as the host logs it. newlib_peak_kib / arena_peak_kib = the highest use SEEN IN THE LOG: the CP / MEM (and for
     newlib STALL / WARN) peak values and every P heartbeat's in-use value. A log that stops without its end summary (no CPend /
     MEM end: a run stopped with the PS button, a freeze, a crash) gives a lower bound (perf-history.md marks it >=).
+  - win_screen / win_sel / win_draws / win_events / win_clock / win_cfg / win_mtdraws / win_ms_x (kit #12 compare audit, 2026-11-04: kit
+    #11's X2 window was the title screen and STEP 7's the menu buttons -- a "+11 % menu render" that was the screen, not the switch): WHICH
+    SCREEN the [sim] window covered. win_screen = title (nothing selected, steady draws, no press) | menu (a button selected, steady, no press
+    but one ON the window's last frame -- Measure's scripted down) | mixed (a pad press or menu response inside the window or up to 70
+    frames before it, or the draws moved > 5 %) | other (not the menu's scenes, or a selection outside the button list: a save slot) | "" (not
+    seen); a trailing "?" = from the engine's menu probes alone (no host log: a press just before the window end cannot be excluded).
+    win_sel = the selected button's INDEX at the window's start > end ("none>none", "b1>b1"; the label itself is never kept); win_draws =
+    draws in at each heartbeat in the window ("516/516/516"); win_events = the menu watch's presses / responses near it ("p1282,r1329,
+    p1362" = press / response frames; "e1776" = a press on the last frame); win_clock = the MEASURED clock in force across the window ("500";
+    "500>444" = a change within 10 s of it: the watchdog needs two 5 s readings; the system's clock when nothing was measured); win_cfg =
+    the env file's switches in force (H1 env lines, SHEPHERD_LOG_DIR left out; "-" = none = as shipped; "" = no host log, unknown);
+    win_mtdraws = the MT apps' captured world draws per frame over the window ([mt] window line; 510 title / 244 buttons on kit #11);
+    win_ms_x = the window mean without the frames that hold a press or a GC (simstats-frames.tsv; Measure's scripted down on its last frame
+    cost 50-363 ms on the device). A percentage between two windows needs the same win_screen (title or menu; a menu with the same button
+    selected) and the same known win_clock -- comparable() below; otherwise both numbers are printed with the reason and no percentage.
   - clock: arm MHz. clock_src "logged" (CLK lines) or "inferred" (no CLK line: builds before 2026-10-13 ran at the 333 MHz launch
     clock; kit #2+ builds set 444 at start).
   - version / kit / commit: from the build stamp in the BEGIN line (VERSIONS below), else from the probe's own header
@@ -79,6 +94,10 @@ usage:
                                     devicelogs PARENT, so every pull folder of a kit -- main + extras -- is in; a run is never counted twice)
   perf_history.py rebuild DIR...    the same from an empty table (the back-fill)
   perf_history.py show              print the comparison of the last two versions
+  perf_history.py window DIR...     (kit #12) print, for every host log in the folders, which screen its [sim] window covered (read-logs.sh)
+  perf_history.py ab A B            (kit #12) compare two runs' windows (A / B = <pull folder>/<host log>, e.g. 20261104-173425/play-gaot.txt):
+                                    the % only when comparable(); then the same-screen frames both runs share (simstats-frames.tsv), so
+                                    a pair whose windows landed on different screens is still compared on frames that match
   "vs last version" compares each new main-line run with the latest earlier-version run of the same app (else of the app it grew
   out of) that passed or has an idle window; it prints both clocks and gives no percentage when they differ (333 vs 444 MHz alone
   is ~1.33x); the best idle menu per version is labelled "different apps" when the two best runs are not the same app.
@@ -144,6 +163,26 @@ VERSIONS = [
                  "20261029-145556", "20261029-145759",
                  "20261029-151120", "20261029-150755", "20261029-151455", "20261029-150841", "20261029-151039",
                  "20261029-150905", "20261029-151105", "20261029-150735"}),
+    # kit #11: built from k11-integ afdbbb8 (= the gated kit #11 integration c1 5f8be96 + the integration review's fixes 7783b4a + VERSION 0.11;
+    # merged to main after the kit build) in a clean clone, 2026-11-03 local = 11:24-11:33 UTC stamps; 00099 00011 00097 (the JIT app) 00098 00095
+    # + the launcher apps 00193 00194 (00095 / 00194 with learned AOT, recipe k10L)
+    dict(v="0.11", kit="kit #11", date="2026-11-03", commit="afdbbb8", since="20261103-112400",
+         stamps={"20261103-112457", "20261103-112819", "20261103-113222", "20261103-112535", "20261103-112738",
+                 "20261103-112557", "20261103-112803"}),
+    dict(v="0.12", kit="kit #12", date="2026-11-04", commit="0b72b82", since="20261105-024400",
+         stamps={"20261105-024445", "20261105-024521", "20261105-024543", "20261105-033519", "20261105-033532", "20261105-024812", "20261105-025149"}),
+    # kit #13: built from k13-integ 0c00e4d (= the gated kit #13 integration c2 b0c8415 + the fix + kit stage 6d20291 / 0c00e4d, VERSION 0.13;
+    # merged to main after the kit build) in a clean clone, 2026-11-05 local = 2026-11-06 02:07-02:15 UTC stamps; 00099 00011 00097 (the JIT
+    # app) 00098 00095 + the launcher apps 00193 00194 (recipe k12K; 00095 / 00194 with keep-k12gaot)
+    dict(v="0.13", kit="kit #13", date="2026-11-05", commit="0c00e4d", since="20261106-020700",
+         stamps={"20261106-020818", "20261106-021145", "20261106-021515", "20261106-020857", "20261106-020738", "20261106-021243", "20261106-020943"}),
+    # kit 13.1: the hotfix of kit #13, VERSION stays 0.13, the same seven title ids: k13-1 7cbd204 (main + k13-fix + k13-fixlooks), recipe k12K, 2026-11-06 20:54-21:06 UTC stamps
+    dict(v="0.13.1", kit="kit 13.1", date="2026-11-06", commit="7cbd204", since="20261106-205400",
+         stamps={"20261106-205545", "20261106-205926", "20261106-210309", "20261106-205621", "20261106-205456", "20261106-210023", "20261106-205709"}),
+    # kit #14: THE WALK. Built from k14-integ e935733 (= the integration's 22a35ee + VERSION 0.14) in a frozen tree on the integration's runtimes2, recipe k12K +
+    # SHEPHERD_K14_DEDUP_SHARED=1 SHEPHERD_K14_LIBTRIM=1, 2026-11-10 09:15-09:22 UTC stamps; the same seven title ids (APP_VER 00.14)
+    dict(v="0.14", kit="kit #14", date="2026-11-10", commit="e935733", since="20261110-091500",
+         stamps={"20261110-091526", "20261110-091826", "20261110-092131", "20261110-091600", "20261110-091534", "20261110-091911", "20261110-091759"}),
 ]
 
 # the probe logs no build stamp; its header names the probe's revision, and each revision shipped in one kit only
@@ -200,7 +239,8 @@ COLS = ("version kit date time folder log title app build commit clock clock_src
         "gc_minor gc_major gc_ms gc_major_max_ms gc_idle_minor_ms gc_full_ms live_mib "
         "newlib_peak_kib newlib_cap_kib arena_peak_kib arena_kib free_min_kib heap_cap_mib "
         "card_mibs card_4k_ms pack_mibs gpu_us_draw shown key ekey "
-        "splash_at_s boot_total_s work_left_s clock_meas clock_note play_ms").split()
+        "splash_at_s boot_total_s work_left_s clock_meas clock_note play_ms "
+        "win_screen win_sel win_draws win_events win_clock win_cfg win_mtdraws win_ms_x").split()   # (kit #12: appended; old TSVs load)
 
 HOST_RE = re.compile(r"^(probe[\w-]*|gldiag|hello(?:-diag(?:-repro)?)?|menu[\w-]*|play[\w-]*)(\.prev)?\.txt$")
 FOLDER_RE = re.compile(r"^(\d{8})-(\d{6})$")
@@ -283,6 +323,12 @@ def parse_engine(lines, simstats=False):
                 m = re.search(r"GCs (\d+) minor \+ (\d+) major", t)
                 if m: e["gc_minor"], e["gc_major"] = int(m.group(1)), int(m.group(2))
                 continue
+        elif tag == "menu":   # kit #12 compare audit: the engine's menu probes (SHEPHERD_MENU_PROBE 1040 / 1300 / 1450 + the re-base)
+            m = re.match(r"^frame (\d+): selected='([^']*)'", t)
+            if m: e.setdefault("probe", {})[int(m.group(1))] = "none" if m.group(2) == "(none)" else "sel"   # (the label is never kept)
+        elif tag == "mt":
+            m = re.match(r"^window \(\d+ frames\):.*?captured world draws ([\d.]+)/frame", t)
+            if m: e["mtdraws"] = fnum(m.group(1))
         elif tag == "pack":
             m = re.match(r"^pack pack: open [\d.]+ ms .*?; (\d+) reads ([\d.]+) MiB in (\d+) ms", t)
             if m and int(m.group(3)) > 0: e["pack_mibs"] = fnum(m.group(2)) / (int(m.group(3)) / 1000.0)
@@ -344,6 +390,17 @@ def parse_host(name, lines):
         if m:
             f, w = int(m.group(1)), fnum(m.group(2))
             h["walls"].setdefault(f, w)
+            # kit #12 compare audit: the screen at this heartbeat -- the selection as the starred entry's INDEX in the buttons list ("b1";
+            # "none"; "x" = selected but not a menu button), draws in, and a hash of the scene list (the game's names are never kept)
+            sel = re.search(r"\bselected='([^']*)'", l)
+            s = None
+            if sel:
+                bl = re.search(r"\bbuttons=\(\d+\) (.*?) \| scenes=", l)
+                k = next((i + 1 for i, x in enumerate(bl.group(1).split(" | ")) if x.startswith("*") and x.endswith("*")), 0) if bl else 0
+                s = "none" if sel.group(1) == "(none)" else (f"b{k}" if k else "x")
+            dr = re.search(r"\bdraws (\d+)->\d+", l)
+            sc = re.search(r"\bscenes=\[([^\]]*)\]", l)
+            h.setdefault("hb", {}).setdefault(f, (w, s, int(dr.group(1)) if dr else None, sha(sc.group(1).encode())[:8] if sc else None))
             if l.startswith("CP"): h.setdefault("cpw", {}).setdefault(f, w)   # (kit #6: CP1300 + the frame-clock re-base)
             h["last_frame"] = max(h.get("last_frame", 0), f)
             if l.startswith("CP"): h["cp_frame"] = f
@@ -355,6 +412,12 @@ def parse_host(name, lines):
         for rx in (r"^STALL\b.*\bnewlib peak (\d+) KiB", r"^WARN newlib heap .*\(peak (\d+)\)"):
             m = re.search(rx, l)
             if m: h["newlib_peaks"].append(int(m.group(1)))
+        m = re.search(r" scene at f(\d+)\)", l) if l.startswith("K7 BOOT ") else None   # kit #12: the menu's arrival frame (K7 BOOT)
+        if m: h["menu_f"] = int(m.group(1))
+        m1 = re.match(r"^M1 f=(\d+) wall=[\d.]+s .*?after pad (\w+) at f(\d+)", l)   # kit #12: the menu watch (first 20 responses)
+        if m1: h.setdefault("m1ev", []).append((int(m1.group(3)), int(m1.group(1)), m1.group(2)))   # (press frame, response frame, VitaPad.B)
+        m = re.match(r"^H1 env (SHEPHERD_[A-Z0-9_]+)=(\S+) \(", l)
+        if m and m.group(1) != "SHEPHERD_LOG_DIR": h.setdefault("envs", []).append(f"{m.group(1)}={m.group(2)}")
         m = re.match(r"^H1 frame clock re-based by (\d+) frames", l)   # kit #6: the Devolver splash (frame clock): the scripted frames + N
         if m: h["rebase"] = int(m.group(1))
         elif l.startswith("H1 frame clock not re-based"): h.setdefault("rebase", 0)
@@ -487,6 +550,7 @@ def parse_folder(d):
         seen.add(k)
         e = parse_engine(lines, simstats=simst)
         if "idle_ms" not in e and "boot_menu_s" not in e: continue
+        e["sf_path"] = os.path.join(d, os.path.dirname(rel), "simstats-frames.tsv")   # (kit #12 compare audit)
         e.update(rel=rel, app=app, key=k, simstats=simst, mtime=os.path.getmtime(os.path.join(d, rel)),
                  ekey=sha(f"run@{e['main_epoch']:.3f}".encode()) if e.get("main_epoch") else k)
         # one run seen twice (logs/engine.log and runtime/logs/simstats.txt of the same run): keep the engine log, it has more
@@ -655,7 +719,100 @@ def make_row(folder, fe, mtime_ok, h, e):
         r["shown"] = num(h.get("shown")) if h.get("shown") else ""
     r["pack_mibs"] = num(e.get("pack_mibs"), 1)
     r["ekey"] = e.get("ekey", "")
+    wrb = (e["win"][0] - 1301) if e.get("win") else (h or {}).get("rebase", 0)   # (an engine log alone: its own [sim] window says the re-base)
+    if "idle_ms" in e or (h and (h.get("hb") or {}).get(1300 + wrb)):   # kit #12: which screen the window covered
+        (r["win_screen"], r["win_sel"], r["win_draws"], r["win_events"], r["win_clock"], r["win_cfg"], r["win_mtdraws"],
+         r["win_ms_x"]) = window_info(h, e, wrb)
     return r
+
+# ---------------------------------------------------------------------------------------- kit #12 compare audit: the window's screen
+WIN_LEAD = 70   # a press up to ~60 frames before the window changes the screen inside it: the title press's menu response came 44-58 frames
+                # after the press on the kit #11 device runs (STEP 8: press f1282 -> response f1329, inside 1301-1400)
+
+def frames_tsv(path):
+    """simstats-frames.tsv -> {frame: (ms, render_ms, gc)}; gc = a minor / major count changed at that frame"""
+    out, prev = {}, None
+    try:
+        with open(path) as f:
+            for l in f:
+                p = l.rstrip("\n").split("\t")
+                if len(p) < 6 or not p[0].isdigit(): continue
+                fr, mi, ma = int(p[0]), p[4], p[5]
+                out[fr] = (float(p[1]), float(p[2]), prev is not None and prev[0] == fr - 1 and (prev[1], prev[2]) != (mi, ma))
+                prev = (fr, mi, ma)
+    except (OSError, ValueError): return {}
+    return out
+
+def clock_at(h, t0, t1):
+    """the measured clock across host wall times t0..t1: '500', '500>444' (a settled change within 10 s of the window), '' (none measured)"""
+    cm = h.get("cmeas") or []
+    if not cm: return h.get("clock", "")
+    cur, seq = cm[0][0], []
+    for mhz, at in cm[1:]:
+        if at is None: continue   # (the end reading)
+        if at < t0 - 10: cur = mhz
+        elif at <= t1 + 10: seq.append(mhz)
+    return ">".join(str(x) for x in [cur] + [x for i, x in enumerate(seq) if x != ([cur] + seq)[i]])
+
+def window_info(h, e, rb):
+    h, e = h or {}, e or {}
+    w0, w1 = 1301 + rb, 1400 + rb
+    hb, probes = h.get("hb", {}), e.get("probe", {})
+    beats = [hb[f] for f in sorted(hb) if w0 - 1 <= f <= w1]
+    s0 = hb.get(w0 - 1, (None, None))[1]
+    q = ""
+    if s0 is None and (w0 - 1) in probes: s0, q = probes[w0 - 1], "?"
+    draws = [b[2] for b in beats if b[2] is not None]
+    mf = h.get("menu_f") or e.get("menu_frame")   # the scenes at the first heartbeat after the menu arrived = the menu's scenes
+    ref = next((hb[f][3] for f in sorted(hb) if mf and f > mf and hb[f][3]), None)
+    mm = [b[3] == ref for b in beats if b[3] is not None] if ref else []
+    ev, contaminated = [], False
+    for p, rsp, btn in h.get("m1ev", []):
+        if w0 - WIN_LEAD <= p < w1 or w0 <= rsp < w1:
+            ev += [f"p{p}", f"r{rsp}"]; contaminated = True
+        elif p == w1: ev.append(f"e{p}")   # a press ON the last frame (Measure's scripted down): its frame is in, its effect is not
+    s1 = s0 if not contaminated else "chg"
+    if not h and (w0 - 1) in probes and (1450 + rb) in probes and probes[w0 - 1] != probes[1450 + rb]: s1, contaminated = "chg", True
+    if not beats and not probes: screen = ""
+    elif mm and not all(mm): screen = "other"
+    elif contaminated or (draws and max(draws) > 1.05 * max(1, min(draws))): screen = "mixed"
+    elif s0 == "none": screen = "title" + q
+    elif s0 in ("sel",) or (s0 or "").startswith("b"): screen = "menu" + q
+    elif s0 == "x": screen = "other"
+    else: screen = ""
+    sel = f"{s0 or '?'}{q}>{s1 or '?'}"
+    t0 = hb.get(w0 - 1, (None,))[0]
+    t1 = beats[-1][0] if beats else None
+    clk = clock_at(h, t0, t1) if (h and t0 is not None and t1 is not None) else (h.get("clock", "") if h else "")
+    cfg = (";".join(sorted(set(h.get("envs", [])))) or "-") if h else ""
+    sf = frames_tsv(e["sf_path"]) if e.get("sf_path") else {}
+    bad = {p for p, rsp, btn in h.get("m1ev", []) for p in (p, rsp)}
+    keep = [sf[f][0] for f in range(w0, w1 + 1) if f in sf and not sf[f][2] and f not in bad]
+    allw = [sf[f][0] for f in range(w0, w1 + 1) if f in sf]
+    same = e.get("idle_ms") is None or (allw and abs(sum(allw) / len(allw) - e["idle_ms"]) < 0.05)   # (the per-frame file is this run's)
+    msx = num(sum(keep) / len(keep), 2) if len(keep) >= 50 and same else ""
+    return (screen, sel, "/".join(str(x) for x in draws), ",".join(ev), clk, cfg, num(e.get("mtdraws"), 1), msx)
+
+def comparable(a, b):
+    """(True, '') when a percentage between two windows is fair: the same screen (title or menu; for a menu the same button selected) and
+    the same known clock across both windows; else (False, why). Rows written before the window columns are never comparable (perf_history.py
+    add on the devicelogs parent fills the columns of the rows already in the table)."""
+    sa, sb = (a.get("win_screen") or "").rstrip("?"), (b.get("win_screen") or "").rstrip("?")
+    if not sa or not sb: return False, "the screen of a window is not recorded"
+    if sa != sb: return False, f"different screens ({a['win_screen']} vs {b['win_screen']})"
+    if sa not in ("title", "menu"): return False, f"both windows {sa}: not one steady screen"
+    ka, kb = (a.get("win_sel") or "?").split(">")[0], (b.get("win_sel") or "?").split(">")[0]
+    if sa == "menu" and "?" not in ka + kb and "sel" not in ka + kb and ka != kb: return False, f"different buttons selected ({ka} vs {kb})"
+    ca, cb = a.get("win_clock") or "", b.get("win_clock") or ""
+    if not ca or not cb: return False, f"the clock at a window is unknown ({ca or '?'} vs {cb or '?'} MHz)"
+    if ">" in ca + cb or ca != cb: return False, f"clock differs at the windows ({ca} vs {cb} MHz)"
+    note = " (engine log only: screen from the menu probes)" if "?" in (a.get("win_screen") or "") + (b.get("win_screen") or "") else ""
+    return True, note
+
+def win_label(r):
+    return (f"{r.get('win_screen') or '?'} window [sel {r.get('win_sel') or '?'}, draws {r.get('win_draws') or '?'}"
+            + (f", events {r['win_events']}" if r.get("win_events") else "") + f", {r.get('win_clock') or '?'} MHz"
+            + (f", env {r['win_cfg']}" if r.get("win_cfg") not in ("", "-", None) else "") + "]")
 
 # ------------------------------------------------------------------------------------------------------------- table + output
 def load_tsv(path):
@@ -781,7 +938,8 @@ def write_md(path, rows):
 def best_idle(rows, version, clock=None):
     """the fastest idle-menu run of a version (kit #8 fix: at one clock -- the given one, else the version's most common measured / logged clock,
     so a 500 MHz extras run is never the 'best' of a 444 MHz kit)"""
-    c = [r for r in rows if r["version"] == version and r["title"] in MAIN_LINE and r["window"] == "menu" and r["idle_ms"] and eff_clock(r)]
+    c = [r for r in rows if r["version"] == version and r["title"] in MAIN_LINE and r["window"] == "menu" and r["idle_ms"] and eff_clock(r)
+         and r.get("win_cfg", "") in ("", "-")]   # (kit #12: as shipped only -- kit #10's "best" was STEP 8 / X5a with the PC float rules)
     if not c: return None
     if clock is None:
         counts = {}
@@ -812,6 +970,10 @@ def prior(rows, r):
     line = [r["title"]] + PREDECESSORS.get(r["title"], [])
     if r["app"].endswith(" (MT)") and r["title"] in MT_SIBLING: line = [MT_SIBLING[r["title"]]] + line   # an MT run: its MT sibling first
     older = {t: [o for o in rows if o["title"] == t and vkey(o["version"]) < vkey(r["version"]) and passed(o)] for t in line}
+    # kit #12 compare audit: a run with the same env switches and a comparable window first (kit #11's Measure took kit #10's X6-B, the
+    # logging diet's arm, as its 'before'; the as-shipped X6-A is the like-for-like)
+    c = [o for o in older[r["title"]] if o.get("win_cfg", "") == r.get("win_cfg", "") and comparable(o, r)[0]]   # (the app itself only)
+    if c: return c[-1]
     # kit #8 fix: the same (measured) clock first -- kit #7's 500 MHz extras runs are not the 'before' of a 444 MHz run
     for t in line:
         c = [o for o in older[t] if (o["idle_ms"] or o.get("play_ms")) and o["window"] == r["window"] and same_clock(o, r)]
@@ -850,8 +1012,10 @@ def compare(rows, new=None):
     out.append("vs last version -- idle Main Menu (frames 1301-1400, the engine's frame timer):")
     if a and b:
         notes = ([] if a["title"] == b["title"] else ["different apps: each version's best"]) + ([clock_note(a, b)] if clock_note(a, b) else [])
+        ok, why = comparable(a, b)
+        notes += [why.strip()] if why.strip() else []
         out.append(f"  best idle menu {a['version']} -> {b['version']}: {describe(a)} -> {describe(b)}"
-                   + (pct(a["idle_ms"], b["idle_ms"]) if same_clock(a, b) else "") + (f" -- {'; '.join(notes)}" if notes else ""))
+                   + (pct(a["idle_ms"], b["idle_ms"]) if ok else "") + (f" -- {'; '.join(notes)}" if notes else ""))
     elif b: out.append(f"  best idle menu {b['version']}: {describe(b)} (no earlier version with an idle-menu window)")
     else: out.append(f"  {cur}: no idle-menu window yet in this version's runs")
     # same app (else the app it grew out of), previous version
@@ -859,11 +1023,21 @@ def compare(rows, new=None):
     for r in (new or [r for r in rows if r["version"] == cur]):
         if r["title"] not in MAIN_LINE: continue
         o = prior(rows, r)
+        if r.get("win_cfg") not in ("", "-", None):   # kit #12: an A/B arm (env switches) -> this version's as-shipped run of the app
+            arm = [x for x in rows if x["version"] == r["version"] and x["title"] == r["title"] and x.get("win_cfg") in ("-", "")
+                   and x is not r and (x["idle_ms"] or x["play_ms"])]   # ("" = an engine log alone: its switches unknown)
+            o = ([x for x in arm if comparable(x, r)[0]] or arm or [o])[-1]
         bits = []
         if r["window"] == "menu" and r["idle_ms"]:
-            bits.append(f"idle {change(o, r, 'idle_ms', ' ms', with_pct=True)}, {change(o, r, 'idle_fps', ' fps')}")
+            ok, why = comparable(o, r) if o else (False, "")
+            bits.append(f"idle {change(o, r, 'idle_ms', ' ms', with_pct=ok)}, {change(o, r, 'idle_fps', ' fps')}" + (f" (no %: {why})" if o and not ok else ""))
         if r["window"] in ("play", "other"):
             bits.append(f"{r['window']} window {r['play_ms']} ms ({'where the owner was' if r['window'] == 'play' else 'not the idle frames'}, not an idle-menu number)" if r.get("play_ms") else r["window"])
+            if r.get("play_ms"):   # kit #12: say which screen it was, and compare only with the same screen at the same clock
+                bits.append(win_label(r))
+                if o and o.get("play_ms"):
+                    ok, why = comparable(o, r)
+                    bits.append(f"vs {o['version']} {o['play_ms']} ms on a {o.get('win_screen') or '?'} window" + (pct(o["play_ms"], r["play_ms"]) + why if ok else f": no % -- {why}"))
             if r["avg_fps"]: bits.append(f"session average {r['avg_fps']} fps")
         if r.get("clock_note") or (r.get("clock_meas") and r["clock_meas"] != r["clock"]):
             bits.append(f"clock measured {r['clock_meas'] or '?'} MHz" + (f" ({r['clock_note']})" if r.get("clock_note") else ""))
@@ -879,6 +1053,83 @@ def compare(rows, new=None):
         out.append(f"  {r['title']} {r['app']} {r['version']} ({clockcell(r) or '?'} MHz, {r['result'] or '?'}; {tag}): "
                    + ("; ".join(bits) or "no numbers"))
     return out
+
+def timeline(h, e, sf):
+    """kit #12 compare audit, per frame: 't' = the title screen settled, 'm<k>' = the menu with the k-th button selected, settled; frames
+    within 20 of a press or response, transitions, other screens and GC frames are left out. From the menu's arrival and the menu watch."""
+    mf = e.get("menu_frame")
+    if not mf or not sf: return {}
+    marks = sorted(h.get("m1ev", []))
+    out, state, k, until = {}, "t", 0, mf + 60
+    # a title press the menu watch did not log (the first heartbeat with a button selected comes before the first logged press): the
+    # frames before that heartbeat are left out, the menu starts there
+    fb = next((f for f in sorted(h.get("hb", {})) if f >= mf and (h["hb"][f][1] or "").startswith("b")), None)
+    if fb is not None and (not marks or marks[0][0] > fb): state, k, until = "m", int(h["hb"][fb][1][1:]), fb + 1
+    # frames within 10 s of a measured clock change are left out (the watchdog settles a change on two 5 s readings)
+    walls = sorted((f, v[0]) for f, v in h.get("hb", {}).items())
+    chg = [at for mhz, at in (h.get("cmeas") or [])[1:] if at is not None]
+    def wall_of(f):
+        lo = max((x for x in walls if x[0] <= f), default=None); hi = min((x for x in walls if x[0] >= f), default=None)
+        if lo is None or hi is None: return None
+        return lo[1] if hi[0] == lo[0] else lo[1] + (hi[1] - lo[1]) * (f - lo[0]) / (hi[0] - lo[0])
+    i, last = 0, max(sf)
+    for f in range(mf, last + 1):
+        if chg:
+            w = wall_of(f)
+            if w is None or any(abs(w - t) <= 10 for t in chg): continue
+        while i < len(marks) and f >= marks[i][0]:
+            p, rsp, btn = marks[i]
+            if state == "t": state, k = "m", 1
+            elif btn == "Down" and state == "m": k += 1
+            elif btn == "Up" and state == "m": k -= 1
+            elif btn == "Circle" and state == "o": state = "m"
+            else: state = "o"   # a cross on a button opens another screen; anything else: not tracked
+            until = rsp + 20; i += 1
+        if f < until or f not in sf or sf[f][2] or state == "o": continue
+        out[f] = "t" if state == "t" else f"m{k}"
+    return out
+
+def ab(specs):
+    """kit #12: compare two runs (A B as <pull folder>/<host log>) -- their windows (the % only when comparable), then the frames on which
+    both show the same settled screen (simstats-frames.tsv + the menu watch): the same frame numbers first, else each run's own nearest"""
+    import statistics as st
+    if len(specs) != 2: print("ab: give two runs, e.g. 20261104-163746/play-gaot.txt 20261104-173425/play-gaot.txt"); return 2
+    got = []
+    for s in specs:
+        s = s if os.path.isabs(s) else os.path.join(os.environ.get("SHEPHERD_DEVICELOGS", "$SHEPHERD_WORK/devicelogs"), s)
+        d, log = os.path.dirname(s), os.path.basename(s)
+        rows = parse_folder(d)
+        r = next((x for x in rows if x["log"] == log), None)
+        if r is None: print(f"ab: {s}: no such run"); return 2
+        data, lines = read_lines(s); h = parse_host(log, lines)
+        e = {}
+        rel = h.get("logdir") or os.path.join("runtime", "logs", h["base"])   # (H1: an env file's SHEPHERD_LOG_DIR, else the app's own)
+        ep = os.path.join(d, rel, "engine.log")
+        if os.path.isfile(ep): e = parse_engine(read_lines(ep)[1])
+        sf = frames_tsv(os.path.join(d, rel, "simstats-frames.tsv"))
+        got.append((s, r, h, e, sf))
+    (sa, ra, ha, ea, fa), (sb, rb_, hb_, eb, fb) = got
+    va, vb = ra["idle_ms"] or ra["play_ms"], rb_["idle_ms"] or rb_["play_ms"]
+    ok, why = comparable(ra, rb_)
+    print(f"A {sa}: {va} ms on a {win_label(ra)}"); print(f"B {sb}: {vb} ms on a {win_label(rb_)}")
+    print(f"  the [sim] windows: " + (f"{va} -> {vb} ms{pct(va, vb)}{why}" if ok else f"no % -- {why}"))
+    ta, tb = timeline(ha, ea, fa), timeline(hb_, eb, fb)
+    for state in sorted(set(ta.values()) & set(tb.values())):
+        common = sorted(f for f in ta if ta[f] == state and tb.get(f) == state)
+        if len(common) >= 30:
+            fs_a, fs_b, how = common, common, f"the same {len(common)} frames f{common[0]}-f{common[-1]}"
+        else:
+            near = lambda t: sorted((f for f in t if t[f] == state), key=lambda f: abs(f - 1350))[:100]
+            fs_a, fs_b = sorted(near(ta)), sorted(near(tb))
+            if min(len(fs_a), len(fs_b)) < 30: continue
+            how = f"NOT the same frames: A {len(fs_a)} frames f{fs_a[0]}-f{fs_a[-1]}, B {len(fs_b)} frames f{fs_b[0]}-f{fs_b[-1]}"
+        ma, mb = st.mean(fa[f][0] for f in fs_a), st.mean(fb[f][0] for f in fs_b)
+        rA, rB = st.mean(fa[f][1] for f in fs_a), st.mean(fb[f][1] for f in fs_b)
+        same_clk = (ra.get("win_clock") or "") == (rb_.get("win_clock") or "") and ra.get("win_clock") and ">" not in ra["win_clock"]
+        name = "title" if state == "t" else f"menu, button {state[1:]} selected"
+        print(f"  same screen ({name}), {how}: frame {ma:.2f} -> {mb:.2f} ms" + (pct(ma, mb) if same_clk else " (no %: clock)")
+              + f", render {rA:.2f} -> {rB:.2f} ms, logic {ma - rA:.2f} -> {mb - rB:.2f} ms")
+    return 0
 
 def expand(dirs):
     out = []
@@ -896,7 +1147,7 @@ def expand(dirs):
 
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("cmd", choices=("add", "rebuild", "show"))
+    ap.add_argument("cmd", choices=("add", "rebuild", "show", "window", "ab"))
     ap.add_argument("dirs", nargs="*")
     ap.add_argument("--tsv", default=DEF_TSV); ap.add_argument("--md", default=DEF_MD)
     ap.add_argument("--dry-run", action="store_true")
@@ -904,6 +1155,15 @@ def main(argv):
     old = load_tsv(a.tsv) if a.cmd != "rebuild" else []
     if a.cmd == "show":
         print("\n".join(compare(old))); return 0
+    if a.cmd == "window":   # kit #12: read-logs.sh prints this per pull (reads the folders only)
+        for d in expand(a.dirs):
+            for r in parse_folder(d):
+                if r["win_screen"] or r["idle_ms"] or r["play_ms"]:
+                    print(f"  {r['log']}: {r['title']} {r['app']}: frames 1301-1400{' (+re-base)' if r['menu_frame'] and int(r['menu_frame']) > 1100 else ''}: "
+                          f"{r['idle_ms'] or r['play_ms'] or '?'} ms (without press / GC frames {r['win_ms_x'] or '-'}) on a {win_label(r)}")
+        return 0
+    if a.cmd == "ab":
+        return ab(a.dirs)
     new = []
     for d in expand(a.dirs): new += parse_folder(d)
     rows, added = merge(old, new)

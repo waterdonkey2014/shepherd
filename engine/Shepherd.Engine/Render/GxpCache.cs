@@ -25,7 +25,15 @@ namespace Shepherd.Engine.Render;
 ///   as a compiled one. So the first start that draws with cached binaries comes after this console proved them identical to its
 ///   compiler's own output. A shader that the native side refuses to load falls back to compiling that program from source (WRN) and
 ///   the file is dropped (the next start compiles the full set again).
-/// Every case writes one line: "[gl] gxp cache: hit / miss / verify ... / refused ... N ms".</summary>
+/// Every case writes one line: "[gl] gxp cache: hit / miss / verify ... / refused ... N ms".
+///
+/// Device kit #13 integration (vita/notes/kit13-integration.md section 3e; <c>SHEPHERD_K13_GXP_REFUSED=0</c> or <c>SHEPHERD_K13_BOOTC=0</c> = kit
+/// #12's rule: a set with a refused program is never written, so every start would compile the whole set again): A REFUSED OPTIONAL PROGRAM
+/// KEEPS AN EMPTY SLOT. When the console's compiler refuses an optional program of the set on a miss start (the game runs without that feature,
+/// as before), the file is written anyway with that program's two blobs EMPTY. The verify start compiles everything again: refused again = the
+/// same empty slot (verified as usual); built this time = a difference, the file replaced by the full output. A hit start takes an empty slot's
+/// program straight to its refusal path (GlBackend.Build) without compiling it. The key is the whole set's, as before; without a refusal
+/// nothing changes. Core programs never get an empty slot (their refusal is fatal, as before).</summary>
 [ProfileOnly]
 sealed class GxpCache
 {
@@ -59,6 +67,8 @@ sealed class GxpCache
     static bool AlwaysVerify => Setting == "verify";
     /// <summary>The cache folder: the owner folder's cache/gxp (ux0:data/shepherd/cache/gxp on the Vita).</summary>
     public static string Dir => Path.Combine(Program.Root, "cache", "gxp");
+    /// <summary>Kit #13 integration: refused optional programs keep an empty slot (see the class summary). 0 = kit #12's rule.</summary>
+    static readonly bool RefusedOn = Environment.GetEnvironmentVariable("SHEPHERD_K13_GXP_REFUSED") != "0" && Environment.GetEnvironmentVariable("SHEPHERD_K13_BOOTC") != "0";
 
     GxpCache(List<Src> progs, string key, string path, int identityMs, Stopwatch sw)
     { _progs = progs; _key = key; _path = path; _identityMs = identityMs; _sw = sw; _compiled = new byte[progs.Count * 2][]; }
@@ -97,6 +107,7 @@ sealed class GxpCache
         if (why == null)
             for (int i = 0; i < progs.Count; i++)
             {
+                if (RefusedOn && file[2 * i].Length == 0 && file[2 * i + 1].Length == 0 && progs[i].Name is not ("sprite" or "sprite+SDF" or "copy")) continue;   // (kit #13: a refused program's empty slot)
                 if (!ShepGl.GxpCheck(file[2 * i], 0)) { why = progs[i].Name + "'s vertex shader refused (" + ShepGl.GxpWhy() + ")"; break; }
                 if (!ShepGl.GxpCheck(file[2 * i + 1], 1)) { why = progs[i].Name + "'s fragment shader refused (" + ShepGl.GxpWhy() + ")"; break; }
             }
@@ -150,8 +161,16 @@ sealed class GxpCache
         if (i < 0) { _problems.Add(name + ": not in the program set"); return; }
         _compiled[2 * i] = bv; _compiled[2 * i + 1] = bf;
     }
-    /// <summary>A program of the set did not build (an optional program the compiler refused): no file is written this start.</summary>
-    public void Failed(string name) => _problems.Add(name + ": did not build");
+    /// <summary>A program of the set did not build (an optional program the compiler refused). Kit #12's rule: no file is written this start.
+    /// Kit #13 integration (RefusedOn): miss / verify -- its slot is left empty (written, or compared with the file's empty slot); hit -- the file's
+    /// slot was already empty (GlBackend.Build refused it without compiling): nothing to note.</summary>
+    public void Failed(string name)
+    {
+        int i = RefusedOn ? Index(name) : -1;
+        if (i >= 0 && State != Kind.Hit) { _compiled[2 * i] = _compiled[2 * i + 1] = Array.Empty<byte>(); return; }
+        if (i >= 0 && _file[2 * i].Length == 0) return;
+        _problems.Add(name + ": did not build");
+    }
 
     /// <summary>After the set: write / verify / report. One log line.</summary>
     public void End()
@@ -309,6 +328,9 @@ sealed class GxpCache
         var badVer = (byte[])f0.Clone(); badVer[8] = 2; var hv = IcallManifest.ContentHash(badVer.AsSpan(0, badVer.Length - 8)); BinaryPrimitives.WriteUInt64LittleEndian(badVer.AsSpan(badVer.Length - 8), hv);
         Check(Try(badVer)?.Contains("version") == true, "another layout version is refused (checksum fixed up)");
         Check(Try(new byte[] { 1, 2, 3 }) != null && Try(Array.Empty<byte>()) != null, "tiny / empty files are refused");
+        // kit #13 integration: a refused optional program's empty slot round-trips (the file's checksum and lengths still cover it)
+        var eb = (byte[][])blobs.Clone(); eb[4] = eb[5] = Array.Empty<byte>();
+        Check(Decode(Encode(key, set, eb, false), key, set, out var ge, out _) == null && Same(ge, eb), "a refused program's empty slot round-trips");
         // IcallManifest.ContentHash (32-bit arithmetic, kit #5) == the 64-bit FNV-1a formula, every length class and random content
         int hashBad = 0, hashN = 0;
         for (int n = 0; n < 300; n++)

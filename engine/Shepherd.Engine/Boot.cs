@@ -12,15 +12,22 @@ public static class Boot
     public static int Run(string[] args)
     {
         Log.Open(Path.Combine(Program.LogDir, "engine.log"));
+#if !SHEPHERD_EBOOT
+        // kit #13 speed (Mac only): the NOPIX fix's brute check -- "k13nosample" (exit 0 = every decision = kit #12's) / "k13nosample negctl"
+        if (args.FirstOrDefault() == "k13nosample") { long bad = Render.K11World.NoSampleBruteCheck(args.Length > 1 && args[1] == "negctl"); Log.Flush(); return bad == 0 ? 0 : 1; }
+#endif
         Runtime.StrictOriginal.Report();   // kit #7 tests: the [strict] line (SHEPHERD_STRICT_ORIGINAL=1 only)
         Log.Info(Runtime.K8Speed.Describe());   // kit #8 speed track: which rows are on
         Log.Info(Runtime.K9Engine.Describe());  // kit #9 engine track: which rows are on
         Log.Info(Runtime.K9Fidelity.Describe());   // kit #9 fidelity track: Unity's Random + the stand-in fixes (SHEPHERD_K9_FIDELITY=0: kit #8)
         if (Profile.Vita) Log.Info(Runtime.K10Boot.Describe());   // kit #10 boot track: the boot screen (the game's own loading screen) and when it ends
+        if (Runtime.K12Boot.Master && Environment.GetEnvironmentVariable("SHEPHERD_K12_BOOTSEQ") is { Length: > 0 }) Log.Info(Runtime.K12BootSeq.Describe());   // kit #12 boot: the owner's boot sequence (only when its line is in the env file)
         Log.Info(Runtime.K10Load.Describe());   // kit #10 boot track: loading priority (Unity's background-loading slice; play clock)
+        Shepherd.Assets.StringPool.Enable(Runtime.K13Basec.StrPool, !Runtime.K13Basec.StrPoolBoot);   // kit #13 basec: the asset readers' string pool (before any asset is read; from the first frame's end unless =boot; tools never pool)
+        Log.Info(Runtime.K13Basec.Describe());   // kit #13 basec: which arm of every row runs
         IcallRegistry.Init(Path.Combine(Program.RuntimeManaged, "icalls.json"));
         var mode = args.FirstOrDefault() ?? "smoke";
-        int rc = mode switch { "smoke" => Smoke(), "gfxtest" => GfxTest(), "uitest" => UiTest(), "boot" => BootGame(args), "nativetest" => NativeTest(), "respaths" => ResPaths(args), "dumpobj" => DumpObj(args), "shaderdump" => ShaderDump(args), _ => PhysCheckHandles(mode) ? PhysCheckRun(args) : Diag.TriggerTest.Handles(mode) ? Diag.TriggerTest.Run() : Diag.SpineClipFuzz.Handles(mode) ? Diag.SpineClipFuzz.Run(args) : Diag.SpineSkipTest.Handles(mode) ? Diag.SpineSkipTest.Run(args) : Diag.VitaSelfTest.Handles(mode) ? Diag.VitaSelfTest.Run() : Render.RenderTest.Handles(mode) ? Render.RenderTest.Run() : Render.GxpCache.Handles(mode) ? Render.GxpCache.SelfTest() : Unknown(mode) };   // "vitatest"
+        int rc = mode switch { "smoke" => Smoke(), "gfxtest" => GfxTest(), "uitest" => UiTest(), "boot" => BootGame(args), "nativetest" => NativeTest(), "respaths" => ResPaths(args), "dumpobj" => DumpObj(args), "shaderdump" => ShaderDump(args), _ => PhysCheckHandles(mode) ? PhysCheckRun(args) : Diag.TriggerTest.Handles(mode) ? Diag.TriggerTest.Run() : Diag.SpineClipFuzz.Handles(mode) ? Diag.SpineClipFuzz.Run(args) : Diag.SpineSkipTest.Handles(mode) ? Diag.SpineSkipTest.Run(args) : Diag.VitaSelfTest.Handles(mode) ? Diag.VitaSelfTest.Run() : Render.RenderTest.Handles(mode) ? Render.RenderTest.Run() : Render.K12UiTest.Handles(mode) ? Render.K12UiTest.Run() : Render.K13PerspTest.Handles(mode) ? Render.K13PerspTest.Run() : Render.GxpCache.Handles(mode) ? Render.GxpCache.SelfTest() : Unknown(mode) };   // "vitatest"
         if (Profile.Vita) VitaSummary(); else if (Impl.NetIcalls.Created > 0) Log.Info(Impl.NetIcalls.Summary());
         IcallRegistry.Report(Path.Combine(Program.LogDir, "missing-icalls.txt"));
 #if !SHEPHERD_EBOOT
@@ -28,28 +35,44 @@ public static class Boot
 #endif
         Diag.SimStats.End();         // V6 SHEPHERD_SIMSTATS: startup/window summary + assembly list; no-op when unset
         Diag.K7.End();               // kit #7: the profiler's last scene + the Chrome trace (SHEPHERD_K7_PROF / _TRACE); no-op when unset
+#if !SHEPHERD_EBOOT
+        Diag.K11Measure.End();       // kit #11 measure: the heat map / green check / census / counters summaries (SHEPHERD_K11_*; Mac / tools builds); no-op when unset
+#endif
         Diag.NativeCensus.Write();   // runtime/logs/native-resolve.txt; no-op unless enabled (vita / SHEPHERD_NATIVE_CENSUS=1)
         if (Assets.PackAssets.On) Assets.PackAssets.Report();   // SHEPHERD_PACK
         if (Assets.PackRecorder.On) Assets.PackRecorder.Close(); // SHEPHERD_PACK_RECORD
         if (Shepherd.Audio.Silence.Summary() is { } silence) Log.Info(silence);   // FMOD's own mute state (Mac default)
         if (Native.RegistryCheck.Summary() is { } regcheck) Log.Info(regcheck);    // SHEPHERD_CHECK_REG=1 (stage 2)
         if (Render.RenderCheck.Summary() is { } rendercheck) Log.Info(rendercheck);   // SHEPHERD_RENDER_CHECK=1 (stage 2)
+        if (Runtime.K13Basec.Summary() is { } k13basec) Log.Info(k13basec);   // kit #13 basec: what the rows did (null with SHEPHERD_K13_BASEC=0)
         if (Render.MtCheck.Summary() is { } mtcheck) Log.Info(mtcheck);              // SHEPHERD_MT_RENDER=1 SHEPHERD_MT_CHECK=1 (menu-speed, multicore stage)
         if (Render.UiCacheCheck.Summary() is { } uicache) Log.Info(uicache);   // SHEPHERD_UICACHE_CHECK=1 (menu-speed)
         if (Native.HopCheck.Summary() is { } hopfix) Log.Info(hopfix);   // SHEPHERD_HOPFIX_CHECK=1 (menu-speed hop fix)
         if (Render.HotCheck.Summary() is { } hot) Log.Info(hot);   // SHEPHERD_HOTSPOT_CHECK=1 (menu-speed, top hotspots)
+        if (Render.K13Speed.Summary() is { } k13speed) Log.Info(k13speed);   // kit #13 speed: what its rows did (one line)
         if (Runtime.RewiredClock.Summary() is { } rewiredClock) Log.Info(rewiredClock);   // headless: Rewired on the frame clock
         if (Diag.Throttle.Summary() is { } throttle) Log.Info(throttle);   // SHEPHERD_FRAME_MS (measurement)
         if (Runtime.SerRulesFast.Summary() is { } serrules) Log.Info(serrules);   // SHEPHERD_SERRULES_FAST=check (kit #5 B4)
         if (Runtime.PlayClock.Summary() is { } clock) Log.Info(clock);   // kit3 play mode: the wall clock's game time vs wall time, clamped frames, fixed steps
         if (Render.G6Cull.Summary() is { } g6) Log.Info(g6);   // kit #7 G6: mesh triangles culled by their shader's Cull state
+        if (Render.K11World.Summary() is { } k11) Log.Info(k11);   // kit #11 gpu1: what its switches did over the run (no switch on: no line)
+        if (Render.K12Ui.Summary() is { } k12ui) Log.Info(k12ui);   // kit #12 menusa: what its switches did over the run (no switch on: no line)
+#if !SHEPHERD_EBOOT
+        Render.K12Ui.CsvEnd();   // kit #12 menusa: SHEPHERD_K12_FRAMECSV (Mac measurement only)
+#endif
         if (Runtime.BlackFrameGc.Summary() is { } blackgc) Log.Info(blackgc);   // kit #4 M1: UnloadUnusedAssets' collections on covered frames
+#if !SHEPHERD_NO_K13WALKC
+        if (Runtime.K13Unload.Summary() is { } k13u) Log.Info(k13u);   // kit #13 walkc: the asset releases
+#endif
         if (Runtime.MenusCfg.MissSummary() is { } misses) Log.Info(misses);   // kit #5 menus: the Resources misses logged once each
         if (Runtime.FieldCopy.Summary() is { } cloneCheck) Log.Info(cloneCheck);   // kit #5 menus: SHEPHERD_CLONE_CHECK=1
         Diag.SpineCats.Summary();   // kit6 mem L1 measurement (SHEPHERD_SPINE_CATS=1)
         Runtime.SpineReadShare.Summary();   // kit6 mem L1: totals (+ the guard with SHEPHERD_SPINE_READSHARE_CHECK=...,end); nothing when no handler is installed
         Runtime.SpineLazySkins.Summary();   // kit #7 spine L2: lazy skins (waited / read later / never read); nothing when no handler is installed or nothing called in
         Runtime.SpineClipNative.Summary();  // kit #7 spine: native clipping totals (+ the check mode's comparisons); nothing when nothing clipped
+#if !SHEPHERD_NO_K14SMALL
+        Runtime.K14Catalog.Summary();       // kit #14 small: the lazy catalog -- what was asked for (+ the check mode's verdict); the Vita profile only
+#endif
         if (Render.SpineSkip.Summary() is { } spineSkip) Log.Info(spineSkip);   // kit #7 spine: colour-0 Spine triangles left out of the GPU draws (none: no line)
         Diag.SpineBake.Summary();           // kit #7 spine: the bake check's totals (SHEPHERD_SPINE_BAKE_CHECK; Mac test tool); nothing otherwise
         Log.Info(Runtime.K6Engine.Summary());   // kit #6 engine track: which items are on
@@ -163,6 +186,9 @@ public static class Boot
             if (K8Play.Pacing) K8Play.FrameStart(i);   // kit #8 play: the frame-time histogram + G3 pacing (play clock on the Vita host; the Frame Pacing row; no-op otherwise)
             Diag.K7.FrameBegin(i);      // kit #7: the black box's frame ring, the boot numbers, the profiler's frame (SHEPHERD_K7=0: nothing)
             Diag.SimStats.Before(i);    // V6 SHEPHERD_SIMSTATS; no-op when unset
+#if !SHEPHERD_EBOOT
+            Diag.K11Measure.Before(i);  // kit #11 measure (SHEPHERD_K11_*; Mac / tools builds): the counters' frame start, the census's frame number; no-op when unset
+#endif
             Diag.NativeCensus.Tick(i);  // V6: frame map for Mono's DllImport log (only with MONO_LOG_DEST + MONO_LOG_MASK=dll)
             Diag.K7Prof.Push(Diag.K7Prof.ZInput);
             Impl.InputState.Pump();
@@ -170,14 +196,20 @@ public static class Boot
             if (Profile.Vita) Impl.VitaTouch.Tick(i); // kit #5: front touch + SHEPHERD_TOUCH_SCRIPT -> the mouse
 #if !SHEPHERD_EBOOT
             Diag.K8PadMap.Before(i);    // kit #8 play: SHEPHERD_K8_PADMAP_PROBE (Mac measurement; not in the eboots); no-op when unset
+            Diag.K12BootRec.Before(i);  // kit #12 boot: SHEPHERD_K12_REC_EMBLEM=<sprite> the boot screen recordings' emblem (Mac tools; not in the eboots); no-op when unset
 #endif
             foreach (var (pf, pk) in presses) { if (i == pf) { Impl.InputState.Press(pk); Log.Info($"[input] press {pk}"); } if (i == pf + 6) Impl.InputState.Release(pk); }
             Diag.VitaHost.BeforeFrame(i);   // kit #8: the lazy menu watch's selection before a press (SHEPHERD_K8_MENU_WATCH); no-op unless the menu watch is on
             Diag.K7Prof.Pop();
+#if !SHEPHERD_EBOOT
+            if (Diag.TestWarp.On) Diag.TestWarp.Before(i);   // kit #13 basec: SHEPHERD_TEST_QUICKSTART / _DOOR / _FOLLOWERS / _DUMP (Mac tests; not in the release eboots, refused under the Vita host); no call when unset
+#endif
             Diag.MemReport.Before(i);   // SHEPHERD_MEMREPORT=<frame>[:<window>]; no-op when unset
             long ft0 = rstats != null ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             Lifecycle.Frame();
+            if (Runtime.K12BootSeq.On) Runtime.K12BootSeq.Tick(i);   // kit #12 boot: the owner's boot sequence -- the Main Menu reached ends the hold (before K10Boot's end; off: no call)
             if (Runtime.K10Boot.On) Runtime.K10Boot.Tick(i);   // kit #10 boot track: the boot screen ends at the game's first frame (before its present) + the boot anatomy line (no frame change)
+            if (Runtime.K12PluginDetect.Pending) Runtime.K12PluginDetect.Handoff(i);   // kit #12 boot: the recommended plugins' detection handed to menusb's Settings row once (Vita GL host only; SHEPHERD_K12_PLUGINS_SET=1, default off: no call)
             rstats?.Frame(i, ft0, g);
             Diag.K7Prof.Push(Diag.K7Prof.ZDiag);
             Diag.MenuClock.After(i);    // stage 2: m+N frames (relative to the Main Menu scene) for the probes below; no-op unless used
@@ -196,16 +228,29 @@ public static class Boot
             Diag.MenuProbe.After(i);    // V6 SHEPHERD_MENU_PROBE: selected button / labels as log lines; no-op when unset
 #if !SHEPHERD_EBOOT
             Diag.StateHash.After(i);    // kit #7 tests: SHEPHERD_STATE_HASH per-frame state checksums (Mac only; not in the eboots)
+            Diag.K11Measure.After(i);   // kit #11 measure (SHEPHERD_K11_*; Mac / tools builds): the frame's heat map / green check / counters, before Present; no-op when unset
             Diag.K8PadMap.After(i);     // kit #8 play: SHEPHERD_K8_PADMAP=<frame> the game's Rewired maps (Mac measurement; not in the eboots); no-op when unset
+            Diag.K12UiDump.After(i);    // kit #12 boot: SHEPHERD_K12_UIDUMP=<frames>[:<object>] a UI subtree's meshes / materials / sprites (Mac measurement; not in the eboots); no-op when unset
+#if !SHEPHERD_NO_K13WALKC
+            Diag.K13Bags.Frame(i);      // kit #13 walkc: SHEPHERD_K13_BAGS=<frame> the engine-side data of asset / scene records and the intro's halves (Mac measurement); no-op when unset
+            Diag.K13Paths.DeadFrame(i); // kit #13 walkc: SHEPHERD_K13_DEAD=<frame> destroyed records the engine's statics still reach (Mac measurement); no-op when unset
+            Diag.K13Paths.DeadSizeFrame(i); // kit #13 walkc: SHEPHERD_K13_DEADSIZE=<frame> what only destroyed records' links hold (Mac measurement); no-op when unset
+#endif
 #endif
             if (Profile.Vita) Impl.VitaTouch.After(i);   // kit #5: SHEPHERD_TOUCH_DIAG=1 pointer lines; no-op otherwise
             if (VitaToggles.Live) VitaToggles.Tick();    // kit #6: the PS Vita Settings rows' clock readout, about once a second while they exist
+#if !SHEPHERD_NO_K12MENUSB
+            if (K12View.Active) K12View.Frame();         // kit #12: Camera Closer / Closest (the projection's factor, fights), the Cutscene Bars' cull
+#endif
             Diag.VitaHost.Frame(i);     // V6 Stage B: checkpoints + heartbeat to the Vita host; no-op unless SHEPHERD_VITA_HOST=1
             if (presses.Any(x => i >= x.f - 1 && i <= x.f + 8)) ProbeInput(i);
             Diag.K7Prof.Pop();
             Diag.K7Prof.Push(Diag.K7Prof.ZPresent);
             if (window || Render.Backends.PresentHeadless) g.Present();   // Stage B: the shepgl host's display is real
             Diag.K7Prof.Pop();
+#if !SHEPHERD_EBOOT
+            if (Render.K11PixHash.On) Render.K11PixHash.Frame(i, g);   // kit #11 gpu1: SHEPHERD_K11_PIXHASH per-frame picture hashes (Mac only; not in the eboots)
+#endif
             if ((every > 0 && (i % every == 0 || i == 1)) || Diag.ShotPlan.Extra(i)) { g.Screenshot(Path.Combine(shots, $"f{i:D5}.png")); Log.Info($"frame {i}: t={UnityEngine.Time.time:F2}s draws={Render.SceneRenderer.LastDraws} tris={Render.SceneRenderer.LastTris} live={Objects.LiveCount} scenes=[{string.Join(", ", Scenes.All.Values.Select(x => x.Name + ":" + x.Roots.Count))}] coroutines={Coroutines.Count}"); rstats?.Shot(i, g); }
             Diag.K7Prof.Push(Diag.K7Prof.ZThrottle);
             Diag.Throttle.After();      // kit3 play mode: SHEPHERD_FRAME_MS=<ms> pads every frame to that much wall time (the device's frame rate on the Mac); no-op unless set
@@ -215,6 +260,7 @@ public static class Boot
         if (Runtime.K10Boot.On) Runtime.K10Boot.Finish(last);   // kit #10 boot track: a boot screen still showing ends with the loop
         Diag.VitaHost.Finish(last);     // V6 Stage B: the end checkpoint (selected menu button); no-op unless SHEPHERD_VITA_HOST=1
         rstats?.Summary(g);
+        if (Runtime.K12PressX.Summary() is { } k12px) Log.Info(k12px);   // kit #12 boot: Press X to Start's count (only when on)
         DumpUi();
         return 0;
     }

@@ -1,0 +1,75 @@
+--- a/src/mono/mono/mini/aot-compiler.c	2026-11-06 13:17:10
++++ b/src/mono/mono/mini/aot-compiler.c	2026-11-06 13:17:10
+@@ -9756,7 +9756,46 @@
+ 	k9_keep_dropped++;
+ 	return TRUE;
+ }
++
++/* SHEPHERD-VITA device kit #14, track small (vita/patches/k14-aot-trim.patch, vita/notes/kit14-small.md), unused library code -- with
++ * SHEPHERD_AOT_KEEP_GENERIC=1 (off = this compiler writes what the kit #10 compiler writes) the keep list also rules the generic instances:
++ * an inflated non-wrapper method whose generic definition lives in an image the list names, and whose definition's token the list does not
++ * hold, is not compiled in any image (it runs in the interpreter: the same IL, the same answers). Every wrapper and every other image's own
++ * code is compiled as before. */
++static GHashTable *k14_keep_images;
++static int k14_keep_generic = -1, k14_gen_dropped;
+ 
++static gboolean
++k14_keep_drop_inflated (MonoMethod *method)
++{
++	if (k14_keep_generic < 0) {
++		const char *e = g_getenv ("SHEPHERD_AOT_KEEP_GENERIC");
++		k14_keep_generic = e && *e == '1';
++	}
++	if (k14_keep_generic != 1 || !k9_keep || !method->is_inflated || method->wrapper_type != MONO_WRAPPER_NONE)
++		return FALSE;
++	if (!k14_keep_images) {
++		k14_keep_images = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++		GHashTableIter it; gpointer k, v;
++		g_hash_table_iter_init (&it, k9_keep);
++		while (g_hash_table_iter_next (&it, &k, &v)) {
++			const char *tab = strchr ((const char *) k, '\t');
++			if (tab)
++				g_hash_table_insert (k14_keep_images, g_strndup ((const char *) k, tab - (const char *) k), GINT_TO_POINTER (1));
++		}
++	}
++	MonoMethod *decl = ((MonoMethodInflated *) method)->declaring;
++	const char *img = m_class_get_image (decl->klass)->assembly_name;
++	if (!g_hash_table_lookup (k14_keep_images, img))
++		return FALSE;
++	char key [600];
++	snprintf (key, sizeof (key), "%s\t%08x", img, mono_method_get_token (decl));
++	if (g_hash_table_lookup (k9_keep, key))
++		return FALSE;
++	k14_gen_dropped++;
++	return TRUE;
++}
++
+ static void
+ k9_log_instance (MonoAotCompile *acfg, MonoMethod *method)
+ {
+@@ -10436,10 +10475,14 @@
+ 
+ 	if (k9_skip_instance (acfg, method))   /* SHEPHERD-VITA kit #9 R3: a dead copy (the defining image has this instance) */
+ 		return;
+-	if (k9_keep_drop (acfg, method)) {   /* SHEPHERD-VITA kit #9 CoreLib trimming: not on the routes -> interpreted */
++	gboolean k9_drop = k9_keep_drop (acfg, method), k14_drop = !k9_drop && k14_keep_drop_inflated (method);
++	if (k9_drop || k14_drop) {   /* SHEPHERD-VITA kit #9 CoreLib trimming: not on the routes -> interpreted (kit #14: + generic instances) */
+ 		if (!k10_learned_method (acfg, method))   /* SHEPHERD-VITA kit #10: ... unless the play reached it (SHEPHERD_AOT_LEARNED) */
+ 			return;
+-		k9_keep_dropped--;
++		if (k9_drop)
++			k9_keep_dropped--;
++		else
++			k14_gen_dropped--;
+ 		k10_learned_kept++;
+ 	}
+ 	if (acfg->aot_opts.profile_only && k10_learned_method (acfg, method))   /* SHEPHERD-VITA kit #10: learned from play -> into the profile */
+@@ -11896,6 +11939,8 @@
+ 			k9_skipped, k9_skip ? (int) g_hash_table_size (k9_skip) : 0, k9_logged);
+ 	if (k9_inst_out)
+ 		fflush (k9_inst_out);
++	if (k14_gen_dropped)   /* SHEPHERD-VITA kit #14 */
++		printf ("SHEPHERD kit #14 trim: %d generic instances not compiled here (their definitions are not in SHEPHERD_AOT_KEEP)\n", k14_gen_dropped);
+ 	if (k9_keep && k9_keep_image == 1)   /* SHEPHERD-VITA kit #9 CoreLib trimming */
+ 		printf ("SHEPHERD kit #9 trim: %d non-generic methods of %s not compiled (not in SHEPHERD_AOT_KEEP, %d entries)\n", k9_keep_dropped, acfg->image->assembly_name, (int) g_hash_table_size (k9_keep));
+ 

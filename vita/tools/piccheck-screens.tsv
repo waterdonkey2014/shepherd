@@ -1,0 +1,7 @@
+# kit #13 looks: the key screens of the PC-capture picture check (vita/tools/piccheck.py run). The PC frames are the owner's captures of the
+# game on his PC (owner-local, never in git); the Mac shots come from the scripted Mac routes (vita/notes/kit13-looks.md "Picture check").
+# Regions in Vita pixels (x,y,w,h[:threshold]); "!name" = left out of the whole-screen numbers. Columns (TAB): name, PC frame, Mac shot
+# (relative to a run dir), whole-screen threshold (mean dE), regions, what.
+#name	pc	mac	threshold	regions	what
+title	00-title.png	title/shots/f01040.png	12	logo=300,175,360,170:15 prompt=380,350,200,30 crowd=0,290,960,254:10 !cursor=395,395,30,30	the title ('Press Any Button to Start') before the first press
+mainmenu	01-mainmenu.png	menu/shots/f01300.png	12	logo=20,95,290,145:15 pentagram=340,385,290,140:20 lamb=410,150,140,240 shrine=440,370,80,90 crowd=0,290,330,254:10 buttons=60,170,240,230 !store=600,40,360,180 !cursor=395,395,30,30 !discord=880,450,80,50 !prompt=0,515,130,29	the idle Main Menu (pentagram, Lamb, crowd, logo, buttons)

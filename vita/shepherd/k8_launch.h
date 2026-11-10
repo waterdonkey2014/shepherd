@@ -57,6 +57,17 @@ struct K8Launch {
 	unsigned second;                        /* pictures of the clip's SECOND copy that came out (never shown: the splash ended there) */
 	/* kit #10 integration review (appended): the time-stamp check made provable (k8_avc.h K8Avc.pts_seen / pts_bad / flush_ok) */
 	unsigned pts_seen, pts_bad, flush_ok;
+	/* device kit #12, track boot (appended; vita/notes/kit12-boot.md section 2): THE BOOT SEQUENCE THE OWNER'S WAY (SHEPHERD_K12_BOOTSEQ=1) --
+	 * the Massive Monster clip (data/video/MassiveMonster.shv: the game's own logo animation as Shepherd draws it, with its pre-roll sound)
+	 * right after the Devolver splash, on the same decoder path; Cross skips the clip on the screen (SHEPHERD_K12_XSKIP=0: no skip) */
+	int k12_seq;                            /* 1 = the boot sequence's clips were queued in this start */
+	int k12_clip2_state;                    /* 0 = none, 1 = playing (the launcher's wait ended during it: k12_clip2_why), 2 = played to its end, 3 = skipped (Cross), -1 = could not play (k12_clip2_why) */
+	unsigned k12_clip2_shown, k12_clip2_total, k12_clip2_late;
+	int k12_skip1;                          /* 1 = Cross skipped the Devolver splash, at picture k12_skip1_at */
+	unsigned k12_skip1_at, k12_skip2_at;
+	unsigned long long k12_t_clip2_first, k12_t_clip2_end;
+	char k12_clip2 [64];                    /* the second clip's name (its .shv header's) */
+	char k12_clip2_why [128];
 };
 
 #endif

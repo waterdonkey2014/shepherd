@@ -38,6 +38,10 @@ public static class SimStats
     /// <c>SHEPHERD_K6_GC_PAUSE=0</c> = kit #5 (no host call, no column, no line).</summary>
     public static readonly bool GcPause = Environment.GetEnvironmentVariable("SHEPHERD_K6_GC_PAUSE") != "0";
     static uint _pause0; static float[] _gcMs = new float[2048];
+    /// <summary>SHEPHERD_K14_SIMROWS=&lt;n&gt; (kit #14 integration; default on the Vita 8192, the list's capacity by then; 0 = no limit, as before): the per-frame rows stop at n, the
+    /// measurement window's always kept. Past n the next doubling is a 1 MiB large-object section, asked for on the frame the game happens to reach it: at a full heap that request
+    /// alone ended a walk at f8150 (an OutOfMemoryException out of this list, not out of the game). The heartbeats keep reporting frame times after n.</summary>
+    static readonly int RowCap = int.TryParse(Environment.GetEnvironmentVariable("SHEPHERD_K14_SIMROWS"), out var rc) ? rc : VitaHost.On ? 8192 : 0;
     /// <summary>Kit #7 (Diag/K7.cs, Render/K7Overlay.cs): the last frame's GC pause and the run's sum, ms (0 without SHEPHERD_K6_GC_PAUSE).</summary>
     public static float LastGcMs; public static double GcMsSum;
     static int _pauseSrc = -1;   // 1 the Vita host's sum, 2 GC.GetTotalPauseDuration (Mac), 0 none (a runtime without it: zeros)
@@ -84,11 +88,28 @@ public static class SimStats
     static int _cur; static long _fxN, _fxTicks;
     public static void NoteFixedStep(long ticks) { if (On && _cur >= From && _cur <= To) { _fxN++; _fxTicks += ticks; } }
 
+    /// <summary>Device kit #11 (track device, the player build; vita/notes/kit11-device.md): SHEPHERD_K11_PLAYER=1 (the host's player build in the play
+    /// apps: opt-in in kit #11 until its device A/B) records a frame's row only inside the measurement window (and frame 1 / the heap frame) -- outside it each frame still measures its
+    /// GC pause (the black box's frame block and the overlay read <see cref="LastGcMs"/>), but takes no allocation / collection counters and adds
+    /// no row (a long play session grew the row list by ~56 B a frame: ~6 MiB an hour at 30 fps). The window's lines, the startup line's stamps
+    /// and the [sim] numbers the kit reads are the same; simstats-frames.tsv then holds the window's rows only. Unset / 0 = every frame, as kit #10.
+    /// (Integration review: the device master switch SHEPHERD_K11_DEVICE=0 turns this off too -- the host also writes SHEPHERD_K11_PLAYER=0 whenever its
+    /// player build is off, so the C half and this half always agree.)</summary>
+    public static readonly bool Player = Environment.GetEnvironmentVariable("SHEPHERD_K11_PLAYER") == "1" && Environment.GetEnvironmentVariable("SHEPHERD_K11_DEVICE") != "0";
+    static bool Keep(int f) => !Player || (f >= From && f <= To) || f == 1 || f == HeapAt;
+    /// <summary>(kit #11 review fix) The frame whose counters <see cref="Before"/> took (-1 none): <see cref="After"/> adds a row only for it. A
+    /// relative window (m+N) learns its frames from MenuClock.After, which runs BETWEEN Before and After -- so until the Main Menu is seen,
+    /// Before takes the counters of every frame (the menu may arrive in it: an m+0 window / heap frame starts there), and After never builds a
+    /// row from an earlier frame's counters.</summary>
+    static int _snap = -1;
+
     public static void Before(int frame)
     {
         if (!On) return;
         _cur = frame;
         if (frame == From) { _winStart = (Minor, Major); ProfMarks.WindowStart(); Render.MtRender.WindowStart(); }
+        if (!Keep(frame) && !((FromAt.Rel || HeapAtAt.Rel) && MenuClock.MenuFrame < 0)) { _snap = -1; if (GcPause) _pause0 = PauseUs(); return; }   // (kit #11 player build: the pause only)
+        _snap = frame;
         _f0 = Stopwatch.GetTimestamp(); _a0 = GC.GetAllocatedBytesForCurrentThread(); _gMinor0 = Minor; _gMajor0 = Major;
         if (GcPause) _pause0 = PauseUs();
     }
@@ -96,14 +117,23 @@ public static class SimStats
     public static void After(int frame)
     {
         if (!On) return;
+        if (!Keep(frame) || _snap != frame)
+        {   // (kit #11 player build: outside the window only the frame's GC pause and the Main Menu stamp -- no row)
+            float g = GcPause ? (uint)(PauseUs() - _pause0) / 1000f : 0f;
+            LastGcMs = g; GcMsSum += g;
+            if (_menuSceneFrame < 0 && Scenes.All.Values.Any(s => s.Name == "Main Menu")) { _menuSceneFrame = frame; _menuSceneMs = SinceMain; }
+            if (PoolProbe.Contains(frame)) { var (pn, pb) = VitaMemory.PooledLargeBytes(drop: false); W($"pool probe @ frame {frame}: ArrayPool<byte>.Shared holds {pn} byte array(s) of >= 1 MiB ({MiB(pb)})"); }
+            return;
+        }
         long t1 = Stopwatch.GetTimestamp(), a1 = GC.GetAllocatedBytesForCurrentThread();
         float gcMs = GcPause ? (uint)(PauseUs() - _pause0) / 1000f : 0f;
         LastGcMs = gcMs; GcMsSum += gcMs;   // (kit #7: the black box's and the overlay's GC share)
         if (frame == To) ProfMarks.WindowEnd();
         if (frame >= From && frame <= To) Render.MtRender.WindowFrame();
         if (frame == To) Render.MtRender.WindowEnd();   // menu-speed multicore stage: [mt] lines (render thread busy / main thread waits; SHEPHERD_MT_CPU=1 per-thread CPU)
-        Rows.Add((frame, Ms(t1 - _f0), Ms(Render.SceneRenderer.LastFrameTicks), a1 - _a0, Minor - _gMinor0, Major - _gMajor0));
-        if (GcPause)
+        bool keepRow = RowCap <= 0 || Rows.Count < RowCap || (frame >= From && frame <= To);
+        if (keepRow) Rows.Add((frame, Ms(t1 - _f0), Ms(Render.SceneRenderer.LastFrameTicks), a1 - _a0, Minor - _gMinor0, Major - _gMajor0));
+        if (GcPause && keepRow)
         {   // (a plain array beside Rows: no new value-tuple instantiation in the eboot)
             int k = Rows.Count - 1;
             if (k >= _gcMs.Length) { var a = new float[_gcMs.Length * 2]; Array.Copy(_gcMs, a, _gcMs.Length); _gcMs = a; }
@@ -204,20 +234,24 @@ public static class SimStats
         if (!On) return;
         try
         {
+            if (Player) W("player build (SHEPHERD_K11_PLAYER=1): rows only inside the window " + From + ".." + To + " + frame 1 / the heap frame -- 'all frames' and simstats-frames.tsv cover those; SHEPHERD_K11_PLAYER=0 = every frame (kit #10)");
             W($"startup: Main entered {_mainUtc:yyyy-MM-ddTHH:mm:ss.fff}Z (unix ms {new DateTimeOffset(_mainUtc).ToUnixTimeMilliseconds()}); asset layer up +{_assetsMs:F0} ms; " +
               $"frame 1 done +{_frame1Ms:F0} ms; Main Menu scene present at frame {_menuSceneFrame} (+{_menuSceneMs:F0} ms); run total +{SinceMain:F0} ms over {Rows.Count} frames; " +
               $"all frames {Dist(Rows.Select(r => r.ms))}; allocated over the run {Rows.Sum(r => r.alloc) / 1048576.0:F1} MiB (main thread, frames only); GCs {Minor} minor + {Major} major" + (GcPause ? "; GC pauses in the frames " + PauseSum().ToString("F0") + " ms (stop-the-world)" : ""));
             if (MenuProbe.On) W($"menu: last probe selected='{MenuProbe.LastSelected}' label='{MenuProbe.LastLabel}'");
             var dir = Program.LogDir;
             var sb = new StringBuilder(GcPause ? "frame\tms\trender_ms\talloc_bytes\tminor_gcs\tmajor_gcs\tgc_pause_ms\n" : "frame\tms\trender_ms\talloc_bytes\tminor_gcs\tmajor_gcs\n");
-            for (int i = 0; i < Rows.Count; i++)
-            {
-                var r = Rows[i];
-                sb.Append(r.f).Append('\t').Append(r.ms.ToString("F3")).Append('\t').Append(r.render.ToString("F3")).Append('\t').Append(r.alloc).Append('\t').Append(r.minor).Append('\t').Append(r.major);
-                if (GcPause) sb.Append('\t').Append(_gcMs[i].ToString("F3"));   // (kit #6: the frame's GC pause)
-                sb.Append('\n');
-            }
-            File.WriteAllText(Path.Combine(dir, "simstats-frames.tsv"), sb.ToString());
+            using (var w = new StreamWriter(Path.Combine(dir, "simstats-frames.tsv"), false))   // (the same bytes as File.WriteAllText)
+                for (int i = 0; i <= Rows.Count; i++)
+                {
+                    // (kit #14 integration: in pieces with the row cap on: the whole table as one string is a large object, at the end of a run that may have no room for it)
+                    if (i == Rows.Count || (RowCap > 0 && sb.Length > 4096)) { w.Write(sb.ToString()); sb.Clear(); }
+                    if (i == Rows.Count) break;
+                    var r = Rows[i];
+                    sb.Append(r.f).Append('\t').Append(r.ms.ToString("F3")).Append('\t').Append(r.render.ToString("F3")).Append('\t').Append(r.alloc).Append('\t').Append(r.minor).Append('\t').Append(r.major);
+                    if (GcPause) sb.Append('\t').Append(_gcMs[i].ToString("F3"));   // (kit #6: the frame's GC pause)
+                    sb.Append('\n');
+                }
             var asm = new StringBuilder("# assemblies loaded at exit: name\tversion\tfile_bytes\tlocation\n");
             long total = 0; int n = 0;
             foreach (var a in AppDomain.CurrentDomain.GetAssemblies())

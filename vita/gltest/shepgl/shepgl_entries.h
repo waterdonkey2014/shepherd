@@ -1,4 +1,4 @@
-/* The 51 GL entry points of engine/Shepherd.Engine/Render/Gl.cs, in Gl.Load's order (index = position in Load).
+/* The 59 GL entry points of engine/Shepherd.Engine/Render/Gl.cs, in Gl.Load's order (index = position in Load).
  * SHEPGL_E(index, Gl.cs field, GL symbol, how)
  *   DIRECT = the table hands out vitaGL's own function (signature checked by tools/check_abi.py)
  *   WRAP   = the table hands out shepgl_w_<symbol> (shepgl_vita.c): vitaGL's version is incomplete, see vita/notes/gltest.md
@@ -54,3 +54,11 @@ SHEPGL_E(47, Finish,                  glFinish,                  DIRECT)
 SHEPGL_E(48, Flush,                   glFlush,                   DIRECT)
 SHEPGL_E(49, GenVertexArrays,         glGenVertexArrays,         DIRECT)
 SHEPGL_E(50, BindVertexArray,         glBindVertexArray,         DIRECT)
+SHEPGL_E(51, StencilFunc,             glStencilFunc,             DIRECT)
+SHEPGL_E(52, StencilOp,               glStencilOp,               DIRECT)
+SHEPGL_E(53, StencilMask,             glStencilMask,             DIRECT)
+SHEPGL_E(54, ColorMask,               glColorMask,               DIRECT)
+SHEPGL_E(55, GenRenderbuffers,        glGenRenderbuffers,        DIRECT)
+SHEPGL_E(56, BindRenderbuffer,        glBindRenderbuffer,        DIRECT)
+SHEPGL_E(57, RenderbufferStorage,     glRenderbufferStorage,     DIRECT)
+SHEPGL_E(58, FramebufferRenderbuffer, glFramebufferRenderbuffer, DIRECT)

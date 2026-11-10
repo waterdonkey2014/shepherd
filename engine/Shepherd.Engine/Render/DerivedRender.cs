@@ -22,7 +22,10 @@ public static class DerivedRender
     /// <summary>The contract version. Bump it whenever an interface below or a <see cref="RenderKit"/> member changes shape or
     /// meaning, or is added: the provider compiles the value it was built against into itself; a provider outside
     /// <see cref="MinApi"/>..Api is not loaded (<see cref="NotLoaded"/>).</summary>
-    public const int Api = 4;   // 4 (kit #6 gpulight): + RenderKit.GpuProgram / SubmitGpuMesh / ReleaseGpuMesh (IGpuMesh: static meshes drawn by a vertex program)
+    public const int Api = 6;   // 6 (kit #13 looks): + IWorldLooks / IDerivedRenderWorld / WorldSprite (owner-local programs of world SpriteRenderers, opt-in)
+                                // 5 (kit #11 gpu2): + LutArgs.Blend / Lut1Blend / Lut2Blend / BlendAmount (the post effect's blended LUT pair; an Api-4 provider never sets them),
+                                //   IGpuMesh.DrawGpuMeshTex / RenderKit.SubmitGpuMeshTex, IUiLooks / IDerivedRenderUi (owner-local UI programs, opt-in)
+                                // 4 (kit #6 gpulight): + RenderKit.GpuProgram / SubmitGpuMesh / ReleaseGpuMesh (IGpuMesh: static meshes drawn by a vertex program)
                                 // 2 (fid1-fixup round 2): + IDerivedRender.Looks; 3 (integration with menu-speed): the engine types the provider
                                 // compiles against changed shape (NGameObject.Scene became a property, SceneRenderer's draw buffers moved
                                 // to its WorldEmitter): a provider built against an Api-2 engine failed per frame (MissingMethodException in
@@ -54,6 +57,22 @@ public static class DerivedRender
     public static IStylizer Stylizer { get { if (!_tried) Load(); return _stylizer; } }
     /// <summary>fid1-fixup round 2: the per-material colour rules read from the game's compiled programs (IShaderLooks), or null.</summary>
     public static IShaderLooks Looks { get { if (!_tried) Load(); return _looks; } }
+    /// <summary>Kit #11 gpu2 (Api 5): the provider's owner-local UI programs (IDerivedRenderUi.UiLooks), or null -- also null unless
+    /// SHEPHERD_K11_WATERCOLOR=1 (opt-in) or with an older provider.</summary>
+    public static IUiLooks UiLooks { get { if (!K11Gpu.WatercolorUi && !K12Looks && !K13Looks.Logo) return null; if (!_tried) Load(); return _uiLooks; } }   // (kit #13 looks: + the logo's program)   // (switches off: nothing loaded or asked here)
+    /// <summary>Kit #12 boot (SHEPHERD_K12_LOOKS=1, opt-in; vita/notes/kit12-boot.md section 1): the provider's kit #12 UI programs -- the boot loading
+    /// screen's emblem (Watercolor/Watercolor-Sprite) and its rings / crown outline (COTL/FX_ParticleMaster_A_UI, two variants), transcribed from the
+    /// game's compiled shaders (owner-local). The provider's claims check this and SHEPHERD_K11_WATERCOLOR each for their own shaders.</summary>
+    public static readonly bool K12Looks = Runtime.K12Boot.Row("SHEPHERD_K12_LOOKS", false);
+    static IUiLooks _uiLooks;
+    /// <summary>Kit #13 looks (Api 6): the provider's owner-local world-sprite programs (IDerivedRenderWorld.WorldLooks), or null -- also null unless
+    /// SHEPHERD_K13_WCWORLD=1 or SHEPHERD_K13_KEYART=1 (opt-in) or with an older provider.</summary>
+    public static IWorldLooks WorldLooks { get { if (!K13Looks.WcWorld && !K13Looks.KeyArt) return null; if (!_tried) Load(); return _worldLooks; } }
+    static IWorldLooks _worldLooks;
+    /// <summary>Kit #13 looks (Api 6): the provider's TextMeshPro distance-field rule (IDerivedRenderText.TextLooks), or null -- also null unless
+    /// SHEPHERD_K13_SDF=1 (opt-in) or with an older provider.</summary>
+    public static ITextLooks TextLooks { get { if (!K13Looks.Sdf) return null; if (!_tried) Load(); return _textLooks; } }
+    static ITextLooks _textLooks;
     /// <summary>A GLSL body the provider embeds (GlBackend.ShaderSource's third source), or null.</summary>
     public static string Shader(string file) => Provider?.Shader(file);
     /// <summary>One line for the logs: what was loaded (or why not).</summary>
@@ -81,6 +100,9 @@ public static class DerivedRender
             if (api < MinApi || api > Api) { NotLoaded($"api {api} not in {MinApi}..{Api}", $"provider API {api}, this engine loads {MinApi}..{Api}: rebuild it (vita/shepherd/build-derived.sh)"); return; }
             var (lit, post, sty, looks) = (p.Lighting, p.Post, p.Stylizer, p.Looks);   // (all or nothing: a member that throws leaves the provider unused)
             _p = p; _lighting = lit; _post = post; _stylizer = sty; _looks = looks; ProviderApi = api; Status = $"loaded (api {api})";
+            if (api >= 5 && p is IDerivedRenderUi pu) _uiLooks = pu.UiLooks;   // kit #11 gpu2 (an Api-5 provider may add it)
+            if (api >= 6 && (K13Looks.WcWorld || K13Looks.KeyArt) && p is IDerivedRenderWorld pw) _worldLooks = pw.WorldLooks;   // kit #13 looks (only asked with a row on)
+            if (api >= 6 && K13Looks.Sdf && p is IDerivedRenderText pt) _textLooks = pt.TextLooks;   // kit #13 looks
             // (kit #6 gpulight review: the provider's own api -- this line printed the engine's before; vlx-run / read-logs.sh read it)
             Log.Info($"[derived] render: provider api {api} from {asm.Location} (lighting {(lit != null ? "on" : "-")}, post {(post != null ? "on" : "-")}, stylizer {(sty != null ? "on" : "-")})"
                 + (api < Api ? $" -- older than this engine's api {Api}: it runs as with an api-{api} engine (it never calls the later additions)" : ""));
@@ -162,6 +184,66 @@ public interface IShaderLooks
     /// <summary>One vertex of a ramp panel (its own uv0 / tangent arrays, index i): rewrite d's texture coordinate and colour for the
     /// ramp lookup (the texture bound is the ramp).</summary>
     void RampVertex(ref Vertex d, Vector4[] uv, Vector4[] tan, int i);
+}
+
+/// <summary>Kit #11 gpu2 (Api 5): UI materials whose look the game computes in its own shader -- per-pixel noise, ramps, clips that no
+/// texture x colour rule can stand in for (the confirmation dialog's "Watercolor/Watercolor-UI" panels, drawn before as their white 4x4
+/// texture). The engine asks once per shader name (ShaderInfo.Custom); a claimed UI draw is handed over with the engine's own vertices and
+/// drawn by the provider (RenderKit.SubmitGpuMeshTex), or, when Draw answers false, drawn as before.</summary>
+public interface IUiLooks
+{
+    bool Claims(string shaderName);
+    /// <summary>v[0..nv) with idx[0..ni): the UI pass's vertices (target pixels; colour = vertex colour x tint, straight unless the blend
+    /// is premultiplied; tex_coord = (u, 1 - v) of the mesh's uv0), the main texture, the blend. True = drawn here.</summary>
+    bool Draw(NMaterial mat, Vertex[] v, int nv, int[] idx, int ni, NTexture tex, uint blend);
+}
+/// <summary>Kit #11 gpu2 (Api 5): what a provider implements, besides IDerivedRender, to hand the engine its UI programs.</summary>
+public interface IDerivedRenderUi
+{
+    IUiLooks UiLooks { get; }
+}
+
+/// <summary>Kit #13 looks (Api 6): one world SpriteRenderer draw whose shader the provider claims -- the sprite's own geometry and the camera pass,
+/// so the provider builds its vertices as the game's vertex program places them (a billboard turns them to the camera) and colours them by its
+/// fragment program. Mpb = the renderer's property block (per-renderer values over the material's), or null.</summary>
+public struct WorldSprite
+{
+    public NMaterial Mat; public NSprite Sprite; public Color Tint; public bool FlipX, FlipY; public Dictionary<int, object> Mpb;
+    public Matrix4x4 Lw, Vp, View; public UnityEngine.Rect Pr; public float Gh; public Vector3 CamPos; public NTexture Tex; public uint Blend;
+}
+/// <summary>Kit #13 looks (Api 6): world materials whose look the game computes in its own shader (the Main Menu's shrine "Watercolor/Watercolor-Sprite",
+/// its crowd "KeyArt/Follower", the candles' "BillboardDoodle"). The engine asks once per shader name; a claimed draw is handed over in the world
+/// pass's draw order and drawn by the provider (RenderKit.SubmitGpuMeshTex) or queued: the engine calls <see cref="Flush"/> before the next draw the
+/// provider did not take and at the end of each camera pass, so consecutive draws of one material can go to the GPU as one draw. Sprite answers
+/// false = drawn as before. <see cref="PassEnd"/>: called at the end of every world camera pass while a row is on (after the last Flush), whether
+/// or not the provider took a draw -- a provider that keeps per-frame copies of its draws (and their GPU copies) lets go of the ones no frame has
+/// drawn for a while there (the Main Menu's crowd batch after the menu).</summary>
+public interface IWorldLooks
+{
+    bool Claims(string shaderName);
+    bool Sprite(in WorldSprite d);
+    bool Pending { get; }
+    void Flush();
+    void PassEnd();
+}
+/// <summary>Kit #13 looks (Api 6): TextMeshPro's distance-field look exactly (SHEPHERD_K13_SDF=1). For one TMP SDF UI draw: the engine's vertices
+/// (a copy: target pixels; colour = the mesh colour x the CanvasRenderer's tint, premultiplied when the UI blend is; tex_coord = the atlas uv),
+/// the mesh's own colours, its second uv channel (TMP's per-glyph scale), the CanvasRenderer's tint (colour x inherited alpha, without the
+/// material's _Color) and the blend the engine will draw with: BLEND_PREMULTIPLIED, TMP's own One / OneMinusSrcAlpha (a provider declines any
+/// other). The provider rewrites the colours, premultiplied (COLOR0 with the material's face colour folded in), and fills one parameter vec4 per
+/// vertex for the owner-local fragment program ("k13_sdf.frag", built by the backend); false = drawn as before.</summary>
+public interface ITextLooks
+{
+    bool Sdf(NMaterial mat, Vertex[] v, int nv, Color32[] col, Vector2[] uv1, Color tint, uint blend, Span<FColor> param);
+}
+public interface IDerivedRenderText
+{
+    ITextLooks TextLooks { get; }
+}
+/// <summary>Kit #13 looks (Api 6): what a provider implements, besides IDerivedRender, to hand the engine its world programs.</summary>
+public interface IDerivedRenderWorld
+{
+    IWorldLooks WorldLooks { get; }
 }
 
 /// <summary>The Stylizer component's image effect on the world pass (SDL: CPU; GL / null: one GPU pass).</summary>

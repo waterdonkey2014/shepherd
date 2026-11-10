@@ -1,0 +1,67 @@
+diff -ruN a/src/mono/mono/sgen/sgen-marksweep.c b/src/mono/mono/sgen/sgen-marksweep.c
+--- a/src/mono/mono/sgen/sgen-marksweep.c	2026-11-03 22:06:37
++++ b/src/mono/mono/sgen/sgen-marksweep.c	2026-11-03 22:06:54
+@@ -1159,13 +1159,46 @@
+ 
+ 
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #12, track walka (vita/notes/kit12-walka.md; mono-vita.h): a REFUSED EVACUATION COPY under the concurrent
++ * collector. A major collection copies each live object of an evacuating size class into a fresh block (copy_object_no_checks); when
++ * that block is refused (the heap's cap, or the arena), sgen pins the object where it is through this function -- and stock sgen asserts
++ * here whenever the collector is marksweep-conc (concurrent_mark is set once, at init, for the whole run), although every caller runs
++ * with the world stopped: the concurrent phase never copies (an object in an evacuating block is left to the finishing pause), so the
++ * copies happen in the finishing pause and in the collector's serial majors (explicit, forced). With mono_vita_gc_set_conc_pin_in_place (1)
++ * such an object is marked in place exactly as the serial collector marks it (the block flagged pinned: it is not evacuated further this
++ * collection; the caller stops evacuating that size class), so memory exhaustion ends in the host's clean OutOfMemoryException path or the
++ * collection survives -- instead of the assertion's abort. Default 0 = stock sgen (the assertion). A call with the world running still
++ * asserts (never reached: the guard keeps stock sgen's check for it). */
++static gboolean vita_conc_pin_in_place;
++static guint32 vita_conc_pins;   /* objects marked in place this way (a test counter: the host's K12 line) */
++void mono_vita_gc_set_conc_pin_in_place (int on);
++void
++mono_vita_gc_set_conc_pin_in_place (int on)
++{
++	vita_conc_pin_in_place = on != 0;
++}
++unsigned mono_vita_gc_conc_pins (void);
++unsigned
++mono_vita_gc_conc_pins (void)
++{
++	return vita_conc_pins;
++}
++#endif
++
+ static void
+ pin_major_object (GCObject *obj, SgenGrayQueue *queue)
+ {
+ 	MSBlockInfo *block;
+ 
+-	if (concurrent_mark)
++	if (concurrent_mark) {
++#ifdef HOST_VITA
++		if (vita_conc_pin_in_place && sgen_is_world_stopped ())
++			++vita_conc_pins;   /* (kit #12 walka: the serial collector's path below) */
++		else
++#endif
+ 		g_assert_not_reached ();
++	}
+ 
+ 	block = MS_BLOCK_FOR_OBJ (obj);
+ 	block->has_pinned = TRUE;
+diff -ruN a/src/mono/mono/utils/mono-vita.h b/src/mono/mono/utils/mono-vita.h
+--- a/src/mono/mono/utils/mono-vita.h	2026-11-03 22:06:37
++++ b/src/mono/mono/utils/mono-vita.h	2026-11-03 22:06:57
+@@ -185,6 +185,12 @@
+ MONO_VITA_API void mono_vita_gc_get_wait_stats (MonoVitaGcWaitStats *stats);
+ /* 1 while an explicit full collection runs (the counters on): ask from the profiler's gc_event (PRE_STOP_WORLD) on the collecting thread */
+ MONO_VITA_API int mono_vita_gc_explicit_running (void);
++/* ---- device kit #12, track walka (vita/notes/kit12-walka.md; vita/patches/k12-walka.patch). Every default is kit #11's behaviour. ----
++ * A REFUSED EVACUATION COPY under the concurrent collector (default 0 = stock sgen: pin_major_object asserts under marksweep-conc): 1 =
++ * the object is marked in place, as the serial collector does (only with the world stopped, where every such copy happens). */
++MONO_VITA_API void mono_vita_gc_set_conc_pin_in_place (int on);
++/* objects marked in place that way so far */
++MONO_VITA_API unsigned mono_vita_gc_conc_pins (void);
+ 
+ #ifdef __cplusplus
+ }

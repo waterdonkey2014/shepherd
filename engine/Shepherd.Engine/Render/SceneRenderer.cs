@@ -26,13 +26,18 @@ public static partial class SceneRenderer
         mt?.FrameStart();   // SHEPHERD_MT_RENDER=1 (Render/MtRender.cs): the render thread has finished the previous frame (and the GL/SDL thread has handed it to the API)
         Diag.K7Prof.Pop();
         Diag.K7Prof.Push(Diag.K7Prof.ZRLayout);
+        Diag.K7Prof.Push(Diag.K7Prof.ZRLRoots);   // (kit #13 speed: the layout zone's three parts, nested; profiler off: one bool test each)
         LayoutRootCanvases();
+        Diag.K7Prof.Pop(); Diag.K7Prof.Push(Diag.K7Prof.ZRLRects);
         NotifyRectChanges();
+        Diag.K7Prof.Pop(); Diag.K7Prof.Push(Diag.K7Prof.ZRLWill);
         try { PreWill?.Invoke(null, null); Will?.Invoke(null, null); } catch (Exception e) { Log.Exception(e, "Canvas.SendWillRenderCanvases"); }
+        Diag.K7Prof.Pop();
 #if !SHEPHERD_EBOOT
         if (Diag.TestSpine.On) Diag.TestSpine.After();   // kit #7 tests: SHEPHERD_TEST_SPINE (review fix: Canvas.willRenderCanvases)
 #endif
         Diag.K7Prof.Pop();
+        if (K11World.Any) K11World.BeginFrame();   // kit #11 gpu1: its counters (no switch on: no call)
         LastDraws = 0; LastTris = 0; _culled = 0; Emit0.ClipTris = Emit0.DropTris = 0; _rtCams = _rtSkipped = 0; _fxSkips = _fxBlends = _fxGlows = _fxGrabs = _fxRtZero = 0;
         _mtDefer = mt != null && !RenderCheck.On;   // SHEPHERD_MT_RENDER=1: the screen cameras' vertex builds go to the render thread (RenderCheck's re-run needs this frame's stream now)
         var cams = HotCfg.On ? CameraIcalls.AllCamerasInto(_cams) : CameraIcalls.AllCameras().ToList();   // (menu-speed: the same list, reused)
@@ -67,6 +72,15 @@ public static partial class SceneRenderer
         // fidelity round 1: the camera's post effects (owner-local): grading settings + light mask (GL). SHEPHERD_MT_RENDER=1: its backend calls
         // (the light mask's target, clear and draws, built here) are recorded in their own scope, like the Stylizer's and the UI pass's
         if (_post != null) { mt?.BeginScope(); try { _post.Prepare(G, _screenCams); } catch (Exception e) { Log.Exception(e, "PostEffects"); } mt?.EndScope(); }
+        if (K13Looks.CamUi && UiCacheCfg.On && !UiCacheCfg.Check)
+        {   // kit #13 looks (SHEPHERD_K13_CAMUI=1): the Screen Space - Camera canvases before the post effects, as Unity's camera draws them (graded,
+            // stylized); the overlay canvases after them, below. Off: one bool test, the pass as before
+            mt?.BeginScope();
+            K13UiPhase = 1;
+            try { DrawOverlayCanvases(); } catch (Exception e) { K12UiAbort(); Log.Exception(e, "DrawOverlayCanvases (camera canvases)"); }
+            finally { K13UiPhase = 2; }
+            mt?.EndScope();
+        }
         mt?.BeginScope();
         try { G.EndWorldPass(); } catch (Exception e) { Log.Exception(e, "Stylizer"); }   // SDL: the CPU Stylizer; GL: the post effects + the GPU Stylizer (owner-local; MT: their parameter lookups run here, their passes are recorded)
         mt?.EndScope();
@@ -83,7 +97,8 @@ public static partial class SceneRenderer
         RenderCheck.Live?.Mark(1);
         Diag.K7Prof.Push(Diag.K7Prof.ZRUi);
         mt?.BeginScope();
-        try { DrawOverlayCanvases(); } catch (Exception e) { Log.Exception(e, "DrawOverlayCanvases"); }
+        try { DrawOverlayCanvases(); } catch (Exception e) { K12UiAbort(); Log.Exception(e, "DrawOverlayCanvases"); }   // (kit #12 menusa: closes an open UI recording)
+        finally { K13UiPhase = 0; }
         mt?.EndScope();
         Diag.K7Prof.Pop();
         if (K7Overlay.On)
@@ -102,6 +117,7 @@ public static partial class SceneRenderer
         LastCulled = _culled; LastRtCams = _rtCams; LastRtSkipped = _rtSkipped;
         LastFxSkips = _fxSkips; LastFxBlends = _fxBlends; LastFxGlows = _fxGlows; LastFxGrabs = _fxGrabs; LastFxRtZero = _fxRtZero;
         LastFrameTicks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+        if (K11World.Any) K11World.EndFrame();
         BlackFrame.EndFrame();
     }
 
@@ -324,6 +340,9 @@ public static partial class SceneRenderer
         var ct = cam.Go.Transform; var camPos = M.Point(ct.LocalToWorld, Vector3.zero); var camRot = ct.Rotation;
         float pd = CameraIcalls.F(cv, "planeDistance", 100f);
         float worldH = CameraIcalls.B(cam, "orthographic", false) ? 2f * CameraIcalls.F(cam, "orthographicSize", 5f) : 2f * pd * MathF.Tan(CameraIcalls.F(cam, "fieldOfView", 60f) * MathF.PI / 360f);
+#if !SHEPHERD_NO_K12MENUSB
+        if (Runtime.K12View.CamK != 1f && ReferenceEquals(cam, Runtime.K12View.CamObj)) worldH /= Runtime.K12View.CamK;   // kit #12: the canvas keeps its size on screen under Camera Closer / Closest
+#endif
         float scale = worldH * s / AppIcalls.ScreenH; if (!(scale > 0) || float.IsInfinity(scale)) return false;
         var wpos = camPos + camRot * new Vector3(0, 0, pd);
         Vector3 lpos = wpos; var lrot = camRot; float pscale = 1f;
@@ -362,7 +381,32 @@ public static partial class SceneRenderer
         m = M.Mul(M.Mul(RootLocalToScreen(root), root.Go.Transform.WorldToLocal), t.LocalToWorld);
         return true;
     }
-    sealed class UiRootMemo { public int Frame; public NBehaviour Root; }   // (a class: the dictionary shares the reference-type code, no new AOT instance)
+    /// <summary>Kit #12 menusa (SHEPHERD_K12_RAYMEMO=1, Render/K12Ui.cs): <see cref="UiScreenMatrix"/> with the matrix kept per rect while every
+    /// input it is a function of is unchanged -- the root (this frame's RootCanvasOf, as above), t's chain stamp (its local-to-world), the root's
+    /// chain stamp (its world-to-local), the root's scale factor bits and the screen size (RootLocalToScreen's only inputs). A kept matrix is
+    /// the bits a recomputation would give.</summary>
+    internal static unsafe bool UiScreenMatrixMemo(NTransform t, out Matrix4x4 m)
+    {
+        m = default;
+        if (t?.Go == null) return false;
+        int frame = Runtime.Time.FrameCount;
+        if (!_uiRootOf.TryGetValue(t, out var e0) || e0 is not UiRootMemoK12 e) { if (_uiRootOf.Count > 4096) _uiRootOf.Clear(); _uiRootOf[t] = e = new UiRootMemoK12 { Frame = -1 }; }
+        if (e.Frame != frame) { e.Frame = frame; e.Root = RenderIcalls.RootCanvasOf(t.Go) as NBehaviour; }
+        var root = e.Root;
+        if (root == null || root.Destroyed || root.Go == null || (root.Get("renderMode") is { } rm ? Convert.ToInt32(rm) : 0) == 2) return false;
+        float s = root.Get("scaleFactor") is { } sf ? (float)Conv.To(sf, typeof(float)) : 1f;
+        long ts = t.ChainStamp, rs = root.Go.Transform.ChainStamp;
+        if (e.MOk && (K12Ui.NegCtl == "raystale" || (ReferenceEquals(e.MRoot, root) && e.MTs == ts && e.MRs == rs && *(uint*)&s == e.MS && e.MW == G.W && e.MH == G.H)))   // (raystale: the negative control -- a kept matrix whatever moved)
+        { m = e.M; K12Ui.RayHits++; return true; }
+        m = M.Mul(M.Mul(RootLocalToScreen(root), root.Go.Transform.WorldToLocal), t.LocalToWorld);
+        e.M = m; e.MOk = true; e.MRoot = root; e.MTs = ts; e.MRs = rs; e.MS = *(uint*)&s; e.MW = G.W; e.MH = G.H;
+        K12Ui.RayMiss++;
+        return true;
+    }
+    class UiRootMemo { public int Frame; public NBehaviour Root; }   // (a class: the dictionary shares the reference-type code, no new AOT instance)
+    /// <summary>Kit #12 menusa (UiScreenMatrixMemo): the root memo + the kept matrix and its inputs (made only with the switch on, so the
+    /// entries UiScreenMatrix makes keep kit #11's size).</summary>
+    sealed class UiRootMemoK12 : UiRootMemo { public bool MOk; public NBehaviour MRoot; public long MTs, MRs; public uint MS; public int MW, MH; public Matrix4x4 M; }
     static readonly Dictionary<NTransform, UiRootMemo> _uiRootOf = new();
     static Matrix4x4 CanvasToScreen(NComponent root)
     {
@@ -427,11 +471,33 @@ public static partial class SceneRenderer
     internal static void DrawOverlayCanvasesRef()
     {
         var roots = Registry.Canvases.Items().OfType<NBehaviour>().Where(cv => !cv.Destroyed && cv.Managed is Canvas && cv.Enabled && cv.Go != null && cv.Go.Scene != 0 && cv.Go.ActiveInHierarchy && RenderIcalls.RootCanvasOf(cv.Go) == cv)
-            .Where(cv => (cv.Get("renderMode") is { } rm ? Convert.ToInt32(rm) : 0) != 2)
+            .Where(cv => (cv.Get("renderMode") is { } rm ? Convert.ToInt32(rm) : 0) != 2 && !CameraCanvasHidden(cv))
             .OrderBy(cv => cv.Get("sortingOrder") is { } so ? Convert.ToInt32(so) : 0).ToList();
         foreach (var root in roots) { int depth = 0; DrawUiTree(root.Go, ref depth, default); }
         UiNoClip();
+        if (K12Stencil.Active) K12StencilEnd();   // kit #12 boot: the stencil test off after the UI pass
     }
+
+    /// <summary>Kit #13 basec (Runtime/K13Basec.cs, SHEPHERD_K13_CAMCANVAS): a Screen Space - Camera root canvas is drawn through its camera only
+    /// (Canvas.worldCamera; with no camera it is drawn as an overlay, as Canvas.renderMode then reads) -- Unity's documented rule for that mode;
+    /// no PC capture of the screen below exists: while that camera is disabled or its GameObject inactive, the canvas is not on screen. The
+    /// first dungeon's 'Camera_StencilLighting' (a disabled child camera of the main camera) carries a full-screen white Image the game
+    /// switches on in the dungeons: drawn as an overlay it covered the whole room. Every UI pass applies it (the reference pass, the retained
+    /// pass, RenderCheck's pre-stage-2 pass). Not changed: the hidden canvas's renderers keep their last AbsoluteDepth (the engine numbers only
+    /// what it draws, as for any undrawn canvas), so its graphics stay raycast targets as in kit #12. Off: every Camera-mode root canvas is
+    /// drawn (kit #12).</summary>
+    internal static bool CameraCanvasHidden(NBehaviour cv)
+    {
+        if (!Runtime.K13Basec.CamCanvas || (cv.Get("renderMode") is { } rm ? Convert.ToInt32(rm) : 0) != 1) return false;
+        var wc = cv.Get("worldCamera");
+        if (wc == null) return false;
+        if (Objects.Get(wc is Assets.LazyRef lr ? lr.Resolve() : wc) is not NBehaviour cam || cam.Destroyed || cam.Go == null) return false;
+        if (cam.Enabled && cam.Go.ActiveInHierarchy) return false;
+        if (_camHidden.Add(cv.InstanceId) && ++Runtime.K13Basec.CamHidden <= 8)   // the log: each canvas once (the first 8)
+            Log.Info($"[k13 basec] camera-mode canvas '{cv.Go.Name}' not drawn from frame {Runtime.Time.FrameCount}: its camera '{cam.Go.Name}' is {(cam.Enabled ? "inactive" : "disabled")} (SHEPHERD_K13_CAMCANVAS=0: drawn as an overlay, kit #12)");
+        return true;
+    }
+    static readonly HashSet<int> _camHidden = new();   // (instance ids: no engine record kept alive)
 
     /// <summary>Polish round 1: uGUI's stencil Mask, approximated by the mask graphic's screen-space bounding box (the engine has no
     /// stencil buffer): everything under an enabled Mask is scissored to that box, nested masks intersect. Exact for the rectangular
@@ -446,6 +512,7 @@ public static partial class SceneRenderer
     }
     static MaskClip MaskOf(NGameObject go, MaskClip outer)
     {
+        if (K12Stencil.Active) return outer;   // kit #12 boot: the Mask is drawn with the stencil buffer, not its bounding box
         foreach (var c in go.Components)
         {
             if (c is not NMono mono || mono.Destroyed || !mono.Enabled || mono.Managed is not UnityEngine.UI.Mask) continue;
@@ -475,22 +542,25 @@ public static partial class SceneRenderer
         }
         // stage 2: walks the child list in place (was a ToArray copy per node): nothing in the UI pass changes the hierarchy
         var ch = go.Transform.Children;
-        if (ch.Count == 0) return;
+        if (ch.Count == 0) { if (K12Stencil.Active) K12PopDraws(go, clip, false); return; }   // (kit #12 boot: a childless Mask's pop draw too)
         var inner = MaskOf(go, clip);   // the Mask's own graphic is drawn under the outer clip; its children under its box
         for (int i = 0; i < ch.Count; i++) DrawUiTree(ch[i].Go, ref depth, inner);
+        if (K12Stencil.Active) K12PopDraws(go, clip, false);   // kit #12 boot: the pop (unmask) draws after the children
     }
 
     static readonly int ColorMaskId = ShaderIds.Id("_ColorMask");
     static void DrawCanvasRenderer(NCanvasRenderer cr, MaskClip mask)
     {
         var mat = cr.Materials.Length > 0 ? cr.Materials[0] : null;
+        var smat = K12Stencil.PopMat ?? mat;   // kit #12 boot: the stencil state / colour mask of this draw (a pop draw's: its pop material)
         // polish round 1: a material with ColorMask 0 writes no colour (uGUI's Mask with showMaskGraphic off: the graphic only marks
-        // the stencil); a box fully masked away draws nothing
-        if (mat != null && mat.P.TryGetValue(ColorMaskId, out var cm) && cm is float cmf && cmf == 0f) return;
+        // the stencil); a box fully masked away draws nothing. Kit #12 boot, stencil on: drawn (colour off) when it writes the stencil
+        if (K12Stencil.Active ? K12SkipNoColour(smat) : mat != null && mat.P.TryGetValue(ColorMaskId, out var cm) && cm is float cmf && cmf == 0f) return;
         if (mask.Empty) return;
         var tex = cr.Texture ?? (mat?.P.TryGetValue(ShaderIds.MainTex, out var mt) == true ? RenderIcalls.Tex(mt) : null);
         float alpha = RenderIcalls.UiAlpha(cr.Go);
         var tint = cr.Color; tint.a *= alpha;
+        if (K13Looks.Sdf) { _k13SdfCr = cr; _k13SdfMat = mat; _k13SdfTint = tint; }   // kit #13 looks (off: one bool test)
         if (mat != null && mat.P.TryGetValue(ShaderIds.Color, out var mc) && mc is Color mcol) tint *= mcol;
         if (tint.a <= 0.001f) return;
         var root = RenderIcalls.RootCanvasOf(cr.Go);
@@ -523,6 +593,7 @@ public static partial class SceneRenderer
             UiClipTo(cx, cy, cw, ch);
         }
         else UiNoClip();
+        if (K12Stencil.Active) K12StencilFor(smat);   // kit #12 boot: this draw's stencil state (off: no call)
         // was Emit(..., v => { var w = M.Point(m, v); return new Vector2(w.x, G.H - w.y); }, ...): the same expressions, inline
         var pos = cr.Pos; var idx = cr.Idx;
         if (pos == null || idx == null || pos.Length == 0 || idx.Length < 3) return;
@@ -536,8 +607,46 @@ public static partial class SceneRenderer
             Vertex(ref v[i], wx, gh - wy, col, uv, i, tint, premul);
             if (ramp != null) { if (looks != null) looks.RampVertex(ref v[i], uv, cr.Tan, i); else RampShown(ref v[i]); }
         }
+        if (sh.Custom && SubmitUiCustom(mat, v, pos.Length, idx, tex, blend)) return;   // kit #11 gpu2: an owner-local UI program (opt-in)
         Submit(v, pos.Length, idx, ramp ?? tex, blend, sh.Sdf);
     }
+
+    /// <summary>Kit #11 gpu2 (IUiLooks, SHEPHERD_K11_WATERCOLOR=1): a UI draw whose shader the provider claims, handed over after Submit's index
+    /// filter (its draws go through RenderKit.SubmitGpuMeshTex); false = drawn as before.</summary>
+    internal static bool SubmitUiCustom(NMaterial mat, Vertex[] v, int nv, int[] idx, NTexture tex, uint blend)
+    {
+        var ui = DerivedRender.UiLooks; if (ui == null || mat == null) return false;
+        if (Emit0.IBuf.Length < idx.Length) Emit0.IBuf = new int[Math.Max(idx.Length, Emit0.IBuf.Length * 2)];
+        var ib = Emit0.IBuf; int ni = 0;
+        for (int k = 0; k < idx.Length; k++) { int ix = idx[k]; if (ix >= 0 && ix < nv) ib[ni++] = ix; }
+        ni -= ni % 3;
+        if (ni > 0 && DerivedRender.K12Looks && _curTarget == IntPtr.Zero && BlackFrame.CoveredSoFar) return K12CoveredUi(ui, mat, v, nv, ib, ni, tex, blend);   // kit #12 boot
+        return ni > 0 && ui.Draw(mat, v, nv, ib, ni, tex, blend);
+    }
+    /// <summary>The same with the index list already filtered (the retained UI pass's blocks).</summary>
+    internal static bool SubmitUiCustomIdx(NMaterial mat, Vertex[] v, int nv, int[] ib, int ni, NTexture tex, uint blend)
+    {
+        var ui = DerivedRender.UiLooks; if (ui == null || mat == null) return false;
+        _k12Rp?.K12Break();   // kit #12 menusa (UIREPLAY): an owner-local UI draw -- the recording cannot follow it
+        ni -= ni % 3;
+        if (ni > 0 && DerivedRender.K12Looks && _curTarget == IntPtr.Zero && BlackFrame.CoveredSoFar) return K12CoveredUi(ui, mat, v, nv, ib, ni, tex, blend);   // kit #12 boot
+        return ni > 0 && ui.Draw(mat, v, nv, ib, ni, tex, blend);
+    }
+    /// <summary>Kit #12 boot (SHEPHERD_K12_LOOKS=1): an owner-local UI draw over a screen already covered this frame (the boot loading screen draws on
+    /// its own full-screen black): the GPU-mesh path refuses those (the black-frame watch must see every later draw's box), so the draw's box goes to
+    /// the watch here -- the same call the CPU path's SubmitIdx makes, with the same vertices -- and the provider may draw it.</summary>
+    static bool K12CoveredUi(IUiLooks ui, NMaterial mat, Vertex[] v, int nv, int[] ib, int ni, NTexture tex, uint blend)
+    {
+        _k12CoverOk = true;
+        try
+        {
+            if (!ui.Draw(mat, v, nv, ib, ni, tex, blend)) return false;
+            if (!_k12NoColour) BlackFrame.Draw(v, nv, ni, tex, blend, G.W, G.H);
+            return true;
+        }
+        finally { _k12CoverOk = false; }
+    }
+    static bool _k12CoverOk;
 
     /// <summary>Polish round 1: the menus' "UI/Watercolor-Background" (Lamb.UI.UIBackgroundMeshRenderer), drawn before as an untextured
     /// white sheet: the panel's colour is its 1-D ramp (_Texture1, clamped), opaque, the vertex rgb not used. How a vertex maps onto the
@@ -604,7 +713,7 @@ public static partial class SceneRenderer
             var t = b.Go.Transform;
             bool atRoot = b.Get("sortAtRoot") is { } sar && (sar is bool sb ? sb : (bool)Conv.To(sar, typeof(bool)));
             var parent = atRoot || t.Parent == null ? null : MemberOf(t.Parent);
-            var g = new SGroup { B = b, Layer = SortingLayerValue(b), Order = SortOrder(b), Dist = SqrDist(t.Position, _sgCam), Stamp = _sgStamp };
+            var g = new SGroup { B = b, Layer = SortingLayerValue(b), Order = SortOrder(b), Dist = SortDist(t.Position, _sgCam), Stamp = _sgStamp };
             g.Chain = parent == null ? new[] { g } : parent.Chain.Append(g).ToArray();
             Stamp(t, g);
         }
@@ -621,6 +730,20 @@ public static partial class SceneRenderer
         if (HopCheck.On) HopCheck.F(HopCheck.SortDist, d, (a - b).sqrMagnitude);
         return d;
     }
+    /// <summary>Kit #11 gpu1: the world pass's distance key -- SqrDist to the camera as before, or with SHEPHERD_K11_TIE=unity on an orthographic
+    /// camera the depth along its view direction (K11World.OrthoDepth: Unity's default transparency sort; renderers at one depth then tie and keep
+    /// their creation order, Seq). Off: _k11Ortho is never set, the key is kit #10's.</summary>
+    static float SortDist(Vector3 p, Vector3 cam) => _k11Ortho ? K11World.OrthoDepth(p, cam, _k11Fwd) : SqrDist(p, cam);
+    static bool _k11Ortho; static Vector3 _k11Fwd;
+    /// <summary>Kit #11 gpu1 (SHEPHERD_K11_TIE=unity): each pass item's creation key (K11World.CreKey of its renderer), by item index -- an array
+    /// of its own, made on the first item with the switch on, so the draw item and kit #9's packed sort key keep kit #10's layout.</summary>
+    static long[] _k11Cre;
+    static void K11Cre(int i, int id)
+    {
+        var a = _k11Cre ??= new long[Math.Max(256, i + 1)];
+        if (i >= a.Length) { Array.Resize(ref _k11Cre, Math.Max(i + 1, a.Length * 2)); a = _k11Cre; }
+        a[i] = K11World.CreKey(id);
+    }
     /// <summary>Color.white = new Color(1, 1, 1, 1) (hop fix: our own constant).</summary>
     static Color White() { if (HopCheck.On) HopCheck.Col(HopCheck.White, Um.White, Color.white); return Um.White; }
 
@@ -630,7 +753,11 @@ public static partial class SceneRenderer
         var view = CameraIcalls.View(cam); var proj = CameraIcalls.Proj(cam); var vp = M.Mul(proj, view);
         FrustumPlanes(in vp); if (_litFrame) _lit.BeginCamera(in vp);
         if (_mtDefer) MtRender.Cur.NextPass(in vp, in pr, gh);   // SHEPHERD_MT_RENDER=1: this camera pass's view-projection, pixel rect and target height, once
+        if (K11World.Reuse) K11Begin(cam, in vp, in pr, gh);   // kit #11 gpu1 (SceneRenderer.K11Reuse.cs; off: no call)
+        if (K11World.GpuProj) K11ProjBegin(cam, in vp, in pr, gh);   // kit #11 gpu1 (SceneRenderer.K11Proj.cs; off: no call)
         var camPos = cam.Go.Transform.Position; int n = 0, seq = 0;
+        _k11Ortho = K11World.Tie && CameraIcalls.B(cam, "orthographic", false);   // kit #11 gpu1 (SHEPHERD_K11_TIE=unity): Unity's orthographic sort key
+        if (_k11Ortho) { _k11Fwd = cam.Go.Transform.Rotation * Vector3.forward; K11World._orthoCams++; }
         bool groups = Registry.SortingGroups.Count > 0; _sgCam = camPos;
         if (groups) StampGroups();
         foreach (var o in Registry.WorldRenderers.Snapshot())   // the SpriteRenderer / MeshRenderer records, in Objects.All order
@@ -668,8 +795,11 @@ public static partial class SceneRenderer
                 if (Runtime.Visibility.On) Runtime.Visibility.Seen(r);   // kit #8 (opt-in): visible in this camera
                 ref var it = ref Item(n++); it.R = r;
                 it.Mesh = false; it.Shape = null; it.Sprite = ns; it.Col = col; it.Fx = fx; it.Fy = fy; it.Lw = lw; it.Mat = mat; it.Blend = wc != null ? wc.Blend(mat) : ShaderOf(mat?.ShaderName ?? "Sprites/Default").BlendWorld;
-                it.Layer = wc != null ? wc.Layer(nr) : SortingLayerValue(r); it.Order = wc != null ? wc.Order(nr) : SortOrder(r); it.Dist = SqrDist(tr.Position, camPos); it.Seq = sq;
+                it.Layer = wc != null ? wc.Layer(nr) : SortingLayerValue(r); it.Order = wc != null ? wc.Order(nr) : SortOrder(r); it.Dist = SortDist(tr.Position, camPos); it.Seq = sq; if (K11World.Tie) K11Cre(n - 1, r.InstanceId);
                 it.Groups = grp;
+#if !SHEPHERD_EBOOT
+                if (Diag.K13WorldDump.On && Diag.K13WorldDump.Want(r.Go)) Diag.K13WorldDump.Sprite(r, ns, mat, col, fx, fy, in lw, in vp, in pr, gh);   // kit #13 looks (Mac only): SHEPHERD_K13_WDUMP
+#endif
             }
             else if (kind == 2)
             {
@@ -683,9 +813,12 @@ public static partial class SceneRenderer
                 ref var it = ref Item(n++); it.R = r;
                 it.Mesh = true; it.Shape = null; it.Pos = mesh.Pos; it.MCol = mesh.Col; it.Uv = mesh.Uv0; it.Mats = mats; it.Mpb = mpb; it.Lw = lw; it.MeshRec = mesh; it.Go = r.Go;
                 it.Spine = SpineSkip.On && SpineSkip.IsSpine(r);   // kit #7 spine: its colour-0 triangles may leave the GPU draw (Render/SpineSkip.cs)
+#if !SHEPHERD_EBOOT
+                if (Diag.K13WorldDump.On && Diag.K13WorldDump.Want(r.Go)) Diag.K13WorldDump.Mesh(r, mesh, mats);   // kit #13 looks (Mac only): SHEPHERD_K13_WDUMP
+#endif
                 it.NSubs = mesh.Sub.Count; if (it.Subs == null || it.Subs.Length < it.NSubs) it.Subs = new int[Math.Max(4, it.NSubs)][];
                 mesh.Sub.CopyTo(it.Subs);   // the submesh list as it is now (the old code took mesh.Sub.ToArray() here)
-                it.Layer = SortingLayerValue(r); it.Order = SortOrder(r); it.Dist = SqrDist(tr.Position, camPos); it.Seq = sq;
+                it.Layer = SortingLayerValue(r); it.Order = SortOrder(r); it.Dist = SortDist(tr.Position, camPos); it.Seq = sq; if (K11World.Tie) K11Cre(n - 1, r.InstanceId);
                 it.Groups = grp;
             }
             else if (SpriteShapes.On && (wc != null ? kind == 3 : Registry.IsSpriteShapeRenderer(r)))
@@ -704,7 +837,7 @@ public static partial class SceneRenderer
                 if (Runtime.Visibility.On) Runtime.Visibility.Seen(r);   // kit #8 (opt-in)
                 ref var it = ref Item(n++); it.R = r;
                 it.Mesh = false; it.Sprite = null; it.Shape = d; it.Lw = lw; it.Mats = wc != null ? wc.Shared(nr) : RendererIcalls.Shared(r); it.Col = wc != null ? wc.Color(nr) : r.Get("color") is Color c ? c : White();
-                it.Layer = wc != null ? wc.Layer(nr) : SortingLayerValue(r); it.Order = wc != null ? wc.Order(nr) : SortOrder(r); it.Dist = SqrDist(tr.Position, camPos); it.Seq = sq;
+                it.Layer = wc != null ? wc.Layer(nr) : SortingLayerValue(r); it.Order = wc != null ? wc.Order(nr) : SortOrder(r); it.Dist = SortDist(tr.Position, camPos); it.Seq = sq; if (K11World.Tie) K11Cre(n - 1, r.InstanceId);
                 it.Groups = grp;
             }
         }
@@ -712,9 +845,17 @@ public static partial class SceneRenderer
         // the old items.OrderBy(Layer).ThenBy(Order).ThenByDescending(Dist).ThenBy(Seq): Seq is unique, so the order is the one total order
         // of these keys under float.CompareTo, whatever sort finds it
         var ord = K9Sort ? SortWorldK9(n, cam) : SortWorld(n);   // kit #9 engine (SHEPHERD_K9_SORT / _HOT): the same order (below)
+        var wl = K13Looks.WcWorld || K13Looks.KeyArt ? DerivedRender.WorldLooks : null;   // kit #13 looks (off: null, no call below)
         for (int k = 0; k < n; k++)
         {
             ref var it = ref _wi[ord[k]];
+            if (wl != null)
+            {   // kit #13 looks (IWorldLooks): a claimed sprite goes to the provider; anything else first flushes what the provider has queued
+                if (!it.Mesh && it.Shape == null && it.Mat != null && K13WlClaims(wl, it.Mat) && !_litOn
+                    && wl.Sprite(new WorldSprite { Mat = it.Mat, Sprite = it.Sprite, Tint = it.Col, FlipX = it.Fx, FlipY = it.Fy, Mpb = it.R?.Get("__mpb") as Dictionary<int, object>, Lw = it.Lw, Vp = vp, View = view, Pr = Um.ToRect(in pr), Gh = gh, CamPos = camPos, Tex = it.Sprite.Texture, Blend = it.Blend }))
+                    continue;
+                if (wl.Pending) wl.Flush();
+            }
             if (it.Shape != null) { SpriteShapes.Draw(it.Shape, it.Mats, it.Col, in it.Lw, in vp, in pr, gh); continue; }   // (built here, also with SHEPHERD_MT_RENDER=1)
             if (!it.Mesh)
             {
@@ -725,7 +866,10 @@ public static partial class SceneRenderer
                     // lit model decides per draw (LitBegin); a lit draw is built here, never captured for the render thread -- its shading runs
                     // at the draw, on this thread, and its DrawAdd goes to the backend (MT: recorded, in order)
                     LitBegin(it.Mat, in it.Lw, true);
-                    if (_litOn || !_mtDefer || !MtRender.Cur.Sprite(ns.Vertices, ns.Uv, ns.Triangles, it.Fx, it.Fy, in it.Lw, in vp, in pr, gh, ns.Texture, it.Col, it.Blend, ns.GeomShared))
+                    if (K11World.NoPix && !_litOn && NoPixBuild(it.Col, it.Blend, ns.Texture)) K11World._noPixBuild++;   // kit #11 gpu1 (off: one bool test)
+                    else if (_k11ProjOn && !_litOn && K11ProjSprite(ref it, ns, in vp)) { }   // kit #11 gpu1: projected on the GPU (SHEPHERD_K11_GPUPROJ=1)
+                    else if (_k11Cur != null && !_litOn) K11Sprite(ref it, ns, in vp, in pr, gh);   // kit #11 gpu1: the change signature (SHEPHERD_K11_REUSE=1)
+                    else if (_litOn || !_mtDefer || !MtRender.Cur.Sprite(ns.Vertices, ns.Uv, ns.Triangles, it.Fx, it.Fy, in it.Lw, in vp, in pr, gh, ns.Texture, it.Col, it.Blend, ns.GeomShared))
                         Emit0.EmitSprite(ns.Vertices, ns.Uv, ns.Triangles, it.Fx, it.Fy, in it.Lw, in vp, in pr, gh, ns.Texture, it.Col, it.Blend);
                     LitEnd();
                 }
@@ -751,7 +895,10 @@ public static partial class SceneRenderer
                             bool skip0 = it.Spine && !_litOn;   // kit #7 spine: never a lit draw (the lit model adds light whatever the vertex colour)
                             // (kit #7 integration: `sub` = the probes track's G6 triangle list -- culled triangles as -1, dropped by Emit's index filter before
                             //  the spine track's colour-0 filter sees the indices)
-                            if (_litOn || !_mtDefer || !MtRender.Cur.Mesh(it.Pos, it.MCol, it.Uv, sub, in it.Lw, in vp, in pr, gh, tex, tint, bs, skip0))
+                            if (K11World.NoPix && !_litOn && NoPixBuild(tint, bs, tex)) K11World._noPixBuild++;   // kit #11 gpu1 (off: one bool test)
+                            else if (_k11ProjOn && !_litOn && K11ProjMesh(ref it, s, sub, tex, tint, bs, skip0, in vp)) { }   // kit #11 gpu1 (SHEPHERD_K11_GPUPROJ=1)
+                            else if (_k11Cur != null && !_litOn) K11Mesh(ref it, s, sub, tex, tint, bs, skip0, in vp, in pr, gh);   // kit #11 gpu1 (SHEPHERD_K11_REUSE=1)
+                            else if (_litOn || !_mtDefer || !MtRender.Cur.Mesh(it.Pos, it.MCol, it.Uv, sub, in it.Lw, in vp, in pr, gh, tex, tint, bs, skip0))
                                 Emit0.EmitMesh(it.Pos, it.MCol, it.Uv, sub, in it.Lw, in vp, in pr, gh, tex, tint, bs, skip0);
                             LitEnd();
                             break;
@@ -764,7 +911,26 @@ public static partial class SceneRenderer
                 }
             }
         }
+        if (wl != null) { if (wl.Pending) wl.Flush(); wl.PassEnd(); }   // kit #13 looks: the provider's queued draws, before the pass ends; its per-pass tick
+        if (_k11Cur != null) K11End();
+        if (_k11ProjOn) { K11ProjEnd(); _k11ProjOn = false; }
         for (int k = 0; k < n; k++) { ref var it = ref _wi[k]; it.Sprite = null; it.Pos = null; it.MCol = null; it.Uv = null; it.Mats = null; it.Mpb = null; it.Groups = null; it.Mat = null; it.MeshRec = null; it.Shape = null; it.Go = null; it.R = null; if (it.Subs != null) Array.Clear(it.Subs); }   // keep nothing alive
+    }
+    /// <summary>Kit #11 gpu1, SHEPHERD_K11_NOPIX=1: a normal unlit world draw whose every vertex comes out fully transparent -- the tint's alpha
+    /// is 0, and every vertex colour is (vertex colour or white) x tint -- under a blend that then keeps the pixel (K11World.ClearBlend) is not
+    /// built at all (the animation that set the tint keeps running: it is game code). The premultiplied blends need the vertex rgb 0 as well:
+    /// under BLEND_PREMULTIPLIED the build multiplies it by that alpha 0 (zero when finite); under ADD_PREMULTIPLIED it does not premultiply
+    /// (EmitSprite / EmitMesh premultiply only under BLEND_PREMULTIPLIED), so the draw is skipped only when tint.rgb is exactly 0. Not when the
+    /// draw is untextured (its blend is the draw blend, NONE: it writes), samples a RenderTexture (the draw marks the target as read), a cover
+    /// was seen this frame (the black-frame watch adds every later draw's bounds), a check mode wants the stream, or the texture's Handle would
+    /// do anything (TryHandle: not yet loaded, decoded, uploaded or current) -- so a texture first used by an invisible draw is still loaded,
+    /// uploaded and recorded by the pack recorder on the same frame as before (that frame builds the draw as kit #10 did; the backend's rule
+    /// still drops it).</summary>
+    static bool NoPixBuild(Color tint, uint blend, NTexture tex)
+    {
+        if (tint.a != 0f || tex == null || tex.IsRenderTexture || !K11World.ClearBlend(blend, out bool rgb0)) return false;
+        if (rgb0 && (blend == BLENDMODE_BLEND_PREMULTIPLIED ? !float.IsFinite(tint.r + tint.g + tint.b) : tint.r != 0f || tint.g != 0f || tint.b != 0f)) return false;   // (0 x inf = NaN: not a zero colour)
+        return !BlackFrame.CoveredSoFar && !RenderCheck.On && UiCap == null && TryHandle(tex, false, out _);
     }
     // ---------- polish round 2: FX draws (Render/ShaderPolicy.cs) ----------
     static int _fxSkips, _fxBlends, _fxGlows, _fxGrabs, _fxRtZero;
@@ -863,6 +1029,7 @@ public static partial class SceneRenderer
         int c = FCmp(a.Layer, b.Layer); if (c != 0) return c;
         c = FCmp(a.Order, b.Order); if (c != 0) return c;
         c = FCmp(b.Dist, a.Dist); if (c != 0) return c;   // descending
+        if (K11World.Tie && _k11Cre[x] != _k11Cre[y]) return _k11Cre[x] < _k11Cre[y] ? -1 : 1;   // kit #11 gpu1: Unity's tie order, creation (unique: Seq is never reached)
         return a.Seq < b.Seq ? -1 : a.Seq > b.Seq ? 1 : 0;
     }
     /// <summary>The comparison with SortingGroups: walk both group chains from the top level down; at the first level where the two
@@ -879,6 +1046,12 @@ public static partial class SceneRenderer
             int c = FCmp(la, lb); if (c != 0) return c;
             c = FCmp(oa, ob); if (c != 0) return c;
             c = FCmp(db, da); if (c != 0) return c;   // descending
+            if (K11World.Tie && ga == null && gb == null)
+            {   // kit #11 gpu1 (SHEPHERD_K11_TIE=unity): two renderers in the same group (or none) tie by creation, as WCmp's; a tie between a group
+                // and another unit keeps kit #10's scan order (not pinned by a test scene)
+                long ca = K11World.CreKey(a.R.InstanceId), cb = K11World.CreKey(b.R.InstanceId);
+                if (ca != cb) return ca < cb ? -1 : 1;
+            }
             if (sa != sb) return sa < sb ? -1 : 1;
             if (ga == null && gb != null) return -1;   // a renderer before a group whose first member it is (a stable tie-break)
             if (gb == null && ga != null) return 1;
@@ -906,12 +1079,12 @@ public static partial class SceneRenderer
     public const bool LinearProject = true;
 
     /// <summary>What the draws derive from a shader name (Blend's substring tests, the SDF test), once per name string.</summary>
-    internal sealed class ShaderInfo { public uint BlendWorld, BlendSpine, BlendUi; public bool Sdf, Ramp; }
+    internal sealed class ShaderInfo { public uint BlendWorld, BlendSpine, BlendUi; public bool Sdf, Ramp, Custom; }
     static readonly Dictionary<string, ShaderInfo> _shaders = new(ReferenceEqualityComparer.Instance);
     static ShaderInfo ShaderOf(string shader)
     {
         if (_shaders.TryGetValue(shader, out var si)) return si;
-        si = new ShaderInfo { BlendWorld = Blend(shader, false), BlendSpine = Blend(shader, premulSpine: true), BlendUi = Blend(shader, premulSpine: shader.Contains("Spine")), Sdf = shader.Contains("Distance Field") || shader.Contains("TextMeshPro"), Ramp = shader == "UI/Watercolor-Background" };
+        si = new ShaderInfo { BlendWorld = Blend(shader, false), BlendSpine = Blend(shader, premulSpine: true), BlendUi = Blend(shader, premulSpine: shader.Contains("Spine")), Sdf = shader.Contains("Distance Field") || shader.Contains("TextMeshPro"), Ramp = shader == "UI/Watercolor-Background", Custom = DerivedRender.UiLooks?.Claims(shader) == true };
         if (_shaders.Count < 4096) _shaders[shader] = si;
         return si;
     }
@@ -1069,14 +1242,83 @@ public static partial class SceneRenderer
     {
         if (ni - ni % 3 < 3) return;
         ni -= ni % 3;
-        if (_curTarget == IntPtr.Zero) BlackFrame.Draw(v, nv, ni, tex, blend, G.W, G.H);   // kit #4 M1 (reads the draw, changes nothing; every screen draw: one drawn on top of a cover counts -- text, Spine, any mesh -- k4 review)
+        if (_curTarget == IntPtr.Zero && !_k12NoColour) BlackFrame.Draw(v, nv, ni, tex, blend, G.W, G.H);   // kit #4 M1 (reads the draw, changes nothing; every screen draw: one drawn on top of a cover counts -- text, Spine, any mesh -- k4 review; kit #12: not a draw that writes no colour)
         var h = Handle(tex, sdf);
+        if (sdf && K13Looks.Sdf && _k13SdfCr != null && K13SdfSubmit(v, nv, ib, ni, h, blend)) return;   // kit #13 looks: TMP's distance field exactly (off: one bool test)
         if (_litOn && !sdf) { LitDraw(v, nv, ib, ni, h, blend); return; }   // fidelity round 1: lit shaders (owner-local; world draws only)
         var vs = new Span<Vertex>(v, 0, nv); var ix = new Span<int>(ib, 0, ni);
         if (UiCap != null) { UiCap.Draw(h, blend, sdf, vs, ix); if (UiCapOnly) return; }   // SHEPHERD_UICACHE_CHECK=1 only
+        if (_k12Rp != null) _k12Rp.K12Draw(_k12Key, _k12Hit, h, blend, sdf, vs, ix); else   // kit #12 menusa (UIREPLAY, the fast UI pass only)
         G.Draw(h, blend, sdf, vs, ix); LastDraws++; LastTris += ni / 3;
         RenderCheck.Live?.Draw(h, blend, sdf, vs, ix);
     }
+    /// <summary>Kit #13 looks (K13Looks.Sdf): the UI renderer being drawn (both UI passes set them before its SubmitIdx), its material and tint
+    /// (colour x inherited alpha, without the material's _Color: TMP's vertex program passes COLOR0 as it is).</summary>
+    static NCanvasRenderer _k13SdfCr; static NMaterial _k13SdfMat; static Color _k13SdfTint;
+    static Vertex[] _k13SdfV = new Vertex[0]; static FColor[] _k13SdfP = new FColor[0];
+    /// <summary>The scratch arrays' use: the largest draw of the frame before (they shrink back to it after a large text has gone: below).</summary>
+    static int _k13SdfPeak, _k13SdfPeakPrev, _k13SdfFrame = -1;
+    /// <summary>A TMP SDF UI draw through the owner-local rule (ITextLooks) and program (IK13Sdf): false = drawn as before (no provider / program,
+    /// no second uv channel, a declined material, a blend TMP's shader never has, the check modes). TMP's "Distance Field" shader blends
+    /// One / OneMinusSrcAlpha: the provider writes premultiplied colours and the exact draw uses BLEND_PREMULTIPLIED (the engine's UI blend for the
+    /// shader name is BLEND, whose straight-alpha source factor would apply the alpha twice). <paramref name="v"/> stays untouched: it is the
+    /// draw as before (a deferred backend that refuses the program at replay draws it, with <paramref name="blend"/>).</summary>
+    static bool K13SdfSubmit(Vertex[] v, int nv, int[] ib, int ni, IntPtr h, uint blend)
+    {
+        var cr = _k13SdfCr; var mat = _k13SdfMat; _k13SdfCr = null; _k13SdfMat = null;
+        var tl = DerivedRender.TextLooks;
+        if (tl == null || mat == null || G is not IK13Sdf gs || UiCap != null || _k12Rp != null || RenderCheck.On) return false;
+        if (blend != BLENDMODE_BLEND && blend != BLENDMODE_BLEND_PREMULTIPLIED) return false;
+        var uv1 = K13Looks.CrUv1(cr); if (uv1 == null || uv1.Length < nv) return false;
+        int f = Runtime.Time.FrameCount;
+        if (f != _k13SdfFrame)
+        {   // a new frame: arrays more than twice the largest draw of the last frame (and over 4096 vertices: 192 KiB) go back to that size
+            if (_k13SdfFrame >= 0) _k13SdfPeakPrev = _k13SdfPeak;
+            _k13SdfFrame = f; _k13SdfPeak = 0;
+            if (_k13SdfV.Length > 4096 && _k13SdfV.Length > 2 * Math.Max(_k13SdfPeakPrev, nv)) { int n = Math.Max(Math.Max(_k13SdfPeakPrev, nv), 1024); _k13SdfV = new Vertex[n]; _k13SdfP = new FColor[n]; }
+        }
+        if (nv > _k13SdfPeak) _k13SdfPeak = nv;
+        if (_k13SdfV.Length < nv) { _k13SdfV = new Vertex[Math.Max(nv, _k13SdfV.Length * 2)]; _k13SdfP = new FColor[_k13SdfV.Length]; }
+        Array.Copy(v, _k13SdfV, nv);
+        const uint xb = BLENDMODE_BLEND_PREMULTIPLIED;
+        var pv = new Span<FColor>(_k13SdfP, 0, nv);
+        if (!tl.Sdf(mat, _k13SdfV, nv, cr.Col, uv1, _k13SdfTint, xb, pv)) return false;
+        var vs = new Span<Vertex>(_k13SdfV, 0, nv); var ix = new Span<int>(ib, 0, ni);
+        if (!gs.DrawSdfX(h, xb, vs, ix, pv, new Span<Vertex>(v, 0, nv), blend)) return false;
+        K13Looks.SdfDraws++; LastDraws++; LastTris += ni / 3;
+        if (RenderCheck.Live is { } live) { live.Draw(h, xb, true, vs, ix); live.PerspF(pv); }
+        return true;
+    }
+    /// <summary>Kit #13 looks (RenderKit.GpuMeshOk): SubmitGpuMesh's refusal tests, without a draw.</summary>
+    internal static bool GpuMeshOk => G is IGpuMesh && !RenderCheck.On && UiCap == null && !_litOn && !(_curTarget == IntPtr.Zero && BlackFrame.CoveredSoFar && !_k12CoverOk);
+    /// <summary>Kit #13 looks (IWorldLooks): the provider's claim, asked once per shader name (two string sets: no new generic instance over a value
+    /// type in the eboot's AOT code).</summary>
+    static readonly HashSet<string> _k13Claimed = new(), _k13Unclaimed = new();
+    static bool K13WlClaims(IWorldLooks wl, NMaterial m)
+    {
+        var n = m.ShaderName;
+        if (_k13Claimed.Contains(n)) return true;
+        if (n == null || _k13Unclaimed.Contains(n)) return false;
+        if (!wl.Claims(n)) { _k13Unclaimed.Add(n); return false; }
+        _k13Claimed.Add(n); Log.Info($"[k13] world looks: '{n}' drawn by its owner-local program"); return true;
+    }
+    /// <summary>Kit #13 looks (K13Looks.Persp, WorldEmitter.Out): a world draw under a perspective camera, with each vertex's clip w -- SubmitIdx's
+    /// bookkeeping, then the backend's IK13Persp draw (a lit draw: the owner-local model's DrawAdd finds the w in <see cref="LitW"/>). Without
+    /// IK13Persp, or in the check modes that compare the stream with an older pass, the draw goes through SubmitIdx as before.</summary>
+    internal static void SubmitIdxW(Vertex[] v, int nv, int[] ib, int ni, NTexture tex, uint blend, float[] w)
+    {
+        if (G is not IK13Persp pg || UiCap != null || _k12Rp != null || RenderCheck.On) { K13Looks.PerspFallback++; SubmitIdx(v, nv, ib, ni, tex, blend, false); return; }
+        if (ni - ni % 3 < 3) return;
+        ni -= ni % 3;
+        if (_curTarget == IntPtr.Zero && !_k12NoColour) BlackFrame.Draw(v, nv, ni, tex, blend, G.W, G.H);
+        var h = Handle(tex, false);
+        if (_litOn) { LitW = w; try { LitDraw(v, nv, ib, ni, h, blend); } finally { LitW = null; } RenderCheck.Live?.Persp(new ReadOnlySpan<float>(w, 0, nv)); return; }
+        var vs = new Span<Vertex>(v, 0, nv); var ix = new Span<int>(ib, 0, ni);
+        pg.DrawW(h, blend, vs, ix, new ReadOnlySpan<float>(w, 0, nv)); LastDraws++; LastTris += ni / 3;
+        if (RenderCheck.Live is { } live) { live.Draw(h, blend, false, vs, ix); live.Persp(new ReadOnlySpan<float>(w, 0, nv)); }   // (a lit draw: LitDraw recorded it)
+    }
+    /// <summary>Kit #13 looks: the clip w of the lit draw being shaded (its DrawAdd reads it on this thread), else null.</summary>
+    [ThreadStatic] internal static float[] LitW;
     /// <summary>kit #7 spine (Render/SpineSkip.cs): a draw whose every triangle was left out -- what SubmitIdx does before the backend gets
     /// it (the early-out, the black-frame watch on the main target), no backend call.</summary>
     internal static void SkippedDraw(Vertex[] v, int nv, int ni, NTexture tex, uint blend)
@@ -1093,13 +1335,19 @@ public static partial class SceneRenderer
     /// and the stream-hash record (kind 7). False -- nothing done, the caller builds the draw on the CPU -- when the backend has no such
     /// draw, when the check modes need the CPU stream (SHEPHERD_RENDER_CHECK, SHEPHERD_UICACHE_CHECK), when a lit draw is open, or on the
     /// main target after a cover (BlackFrame reads the vertices of every later screen draw).</summary>
-    internal static bool SubmitGpuMesh(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, NTexture tex, uint blend)
+    internal static bool SubmitGpuMesh(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, NTexture tex, uint blend,
+        NTexture tex1 = null, NTexture tex2 = null, int wrap = 0, bool more = false)
     {
         if (G is not IGpuMesh gm || program <= 0 || count < 3 || RenderCheck.On || UiCap != null || _litOn) return false;
-        if (_curTarget == IntPtr.Zero && BlackFrame.CoveredSoFar) return false;
+        if (_curTarget == IntPtr.Zero && BlackFrame.CoveredSoFar && !_k12CoverOk) return false;   // (kit #12 boot: K12CoveredUi already gave the watch the draw's box)
         var h = Handle(tex, false);
-        gm.DrawGpuMesh(program, data, stride, first, count, uniforms, h, blend); LastDraws++; LastTris += count / 3;
+        // kit #11 gpu2 (RenderKit.SubmitGpuMeshTex): two more textures on units 1 / 2 (the stream hash records them too: review fix)
+        IntPtr h1 = IntPtr.Zero, h2 = IntPtr.Zero;
+        if (more) { h1 = tex1 != null ? Handle(tex1, false) : IntPtr.Zero; h2 = tex2 != null ? Handle(tex2, false) : IntPtr.Zero; gm.DrawGpuMeshTex(program, data, stride, first, count, uniforms, h, h1, h2, wrap, blend); }
+        else gm.DrawGpuMesh(program, data, stride, first, count, uniforms, h, blend);
+        LastDraws++; LastTris += count / 3;
         RenderCheck.Live?.Gpu(h, blend, program, first, count, data, uniforms);
+        if (more) RenderCheck.Live?.GpuTex(h1, h2, wrap);
         return true;
     }
     /// <summary>The index buffer of the lit draw being shaded (RenderKit.Indices while ILitShading.Draw runs; else Emit0.IBuf).</summary>

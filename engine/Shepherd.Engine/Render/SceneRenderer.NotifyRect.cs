@@ -118,13 +118,17 @@ public static partial class SceneRenderer
         return true;
     }
     /// <summary>SHEPHERD_HOTSPOT_CHECK=1: every transform the original walk would compare now (its test passes and its size is not seen) is in the
-    /// collected set.</summary>
+    /// collected set (kit #13 speed, SHEPHERD_K13_RECTDIRTY on: every one whose comparison could change something).</summary>
     static void NrcCheck(List<NObj> items)
     {
         foreach (var n in items)
         {
             if (n is not NTransform t || !t.IsRect || t.Destroyed || t.Go == null || t.Go.Scene == 0) continue;
             bool need = !t.SizeSeen();
+            // kit #13 speed (SHEPHERD_K13_RECTDIRTY): only pose writes are no longer queued, so a rect whose world stamp moved is left out when
+            // its size is the one it was last compared with -- the comparison would change nothing. What must be in the set: every rect never
+            // compared, and every rect whose size differs from its last compared size (Unity's approximate equality, as NotifyRect compares).
+            if (need && K13Speed.RectDirty) need = !LastSize.TryGetValue(t, out var old) || !SameSize(old, t.Size);
             HotCheck.Bool(HotCheck.Nrc, true, !need || Array.BinarySearch(_nrcKey, 0, _nrcN, t.Slot) >= 0 && ReferenceEquals(_nrcCand[Array.BinarySearch(_nrcKey, 0, _nrcN, t.Slot)], t));
         }
     }

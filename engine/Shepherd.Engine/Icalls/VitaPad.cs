@@ -74,7 +74,7 @@ public static class VitaPad
     {
         var env = Environment.GetEnvironmentVariable("SHEPHERD_PAD") ?? "";
         var file = Environment.GetEnvironmentVariable("SHEPHERD_PAD_FILE");
-        if (string.IsNullOrEmpty(file) && env.StartsWith('@')) { file = env[1..]; env = ""; }
+        if (string.IsNullOrEmpty(file) && env.StartsWith('@') && !Diag.MenuClock.InlineScreenItem(env, true)) { file = env[1..]; env = ""; }   // (kit #13 bootc review fix: "@SaveSlots+30:cross,..." is a script, not a file)
         if (string.IsNullOrEmpty(file)) return env;
         if (!File.Exists(file)) { Console.Error.WriteLine($"SHEPHERD_PAD_FILE: '{file}' not found (no pad events from a file)"); return env; }
         var items = File.ReadAllLines(file).Select(l => l.Split('#')[0]).SelectMany(l => l.Split(new[] { ',', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries));
@@ -88,9 +88,9 @@ public static class VitaPad
         foreach (var item in (s ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var p = item.Split(':');
-            if (p.Length >= 2 && Diag.MenuClock.Parse(p[0], out var f) && Enum.TryParse<B>(p[1], true, out var b))
+            if (p.Length >= 2 && Diag.MenuClock.ParseAt(p[0], out var f) && Enum.TryParse<B>(p[1], true, out var b))   // (kit #13 bootc: @Screen[+N] too)
             {
-                if (PadShift != 0 && !f.Rel) f = new Diag.MenuClock.At(f.N + PadShift, false);
+                if (PadShift != 0 && !f.Rel && f.Screen == null) f = new Diag.MenuClock.At(f.N + PadShift, false);   // (kit #13 bootc: a screen wait is never shifted)
                 l.Add((f, b, p.Length > 2 && int.TryParse(p[2], out var h) ? Math.Max(1, h) : 6));
             }
             else Console.Error.WriteLine($"SHEPHERD_PAD: cannot parse '{item}' (want frame:button[:holdFrames]; frame = N or m+N, N frames after the Main Menu scene arrived)");
@@ -198,6 +198,9 @@ public static class VitaPad
             if (frame >= f && frame < f + hold) want.Add(b);
             if (frame == f) Log.Info($"[pad] {b} -> keys {string.Join("+", Map[b])} (held {hold} frames)");
         }
+        bool k12hold = Runtime.K12PressX.On && Runtime.K12PressX.Waiting;   // kit #12 boot: "Press X to Start" -- while the title waits, only Cross (and no stick) reaches the game
+        if (k12hold && (want.Count > (want.Contains(B.Cross) ? 1 : 0) || Math.Abs(_lx) > 0.2f || Math.Abs(_ly) > 0.2f || Math.Abs(_rx) > 0.2f || Math.Abs(_ry) > 0.2f))
+        { bool x = want.Contains(B.Cross); want.Clear(); if (x) want.Add(B.Cross); Runtime.K12PressX.Held(); }
         foreach (var b in want) if (!PrevWant.Contains(b)) { PressFrame = frame; PressButton = b; }
         PrevWant.Clear(); PrevWant.UnionWith(want);
         HashSet<int> keys;
@@ -218,6 +221,7 @@ public static class VitaPad
             ax[1] = Math.Clamp(_ly + (want.Contains(B.LDown) ? 1f : 0f) - (want.Contains(B.LUp) ? 1f : 0f), -1f, 1f);       // Rewired's map inverts it)
             ax[6] = (want.Contains(B.Right) ? 1f : 0f) - (want.Contains(B.Left) ? 1f : 0f);   // d-pad x
             ax[7] = (want.Contains(B.Down) ? 1f : 0f) - (want.Contains(B.Up) ? 1f : 0f);      // d-pad y (+down)
+            if (k12hold) { ax[0] = 0f; ax[1] = 0f; if (PadK8) { ax[2] = 0f; ax[3] = 0f; ax[4] = -1f; ax[5] = -1f; } }   // (kit #12: the sticks and triggers at rest while the title waits)
         }
         ReleaseNotIn(keys);
         foreach (var k in keys) if (Owned.Add(k)) InputState.Press(k);
@@ -265,11 +269,18 @@ public static class VitaPad
         foreach (var (bit, b) in RearMap)
         {
             bool down = (rear & bit) != 0;
+            if (Runtime.K12PressX.TouchHold)
+            {   // kit #13 bootc: while the title waits for Press X, a rear corner never becomes a button; one touched during the wait stays swallowed until released
+                if (!down) _k13RearSwallow &= ~bit;
+                else if ((_k13RearSwallow & bit) != 0) continue;
+                else if (Runtime.K12PressX.Waiting) { _k13RearSwallow |= bit; NativeHeld.Remove(b); Runtime.K12PressX.Held(); Runtime.K12PressX.SwallowedTouch(frame, true); continue; }
+            }
             if (down && NativeHeld.Add(b) && _nativeLogged < 200) { _nativeLogged++; Log.Info("[pad] native " + b + " (rear touch) down at frame " + frame); }
             else if (!down) NativeHeld.Remove(b);
         }
     }
     static readonly (uint bit, B b)[] RearMap = { (1, B.L2), (2, B.R2), (4, B.L3), (8, B.R3) };
+    static uint _k13RearSwallow;   // kit #13 bootc: rear corners touched while the title waited (Press X), swallowed until released
     [DllImport("__Internal")] static extern int shepherd_vita_k8_pad(int rearOn, out int rx, out int ry, out uint rear);
 
     static readonly Dictionary<Type, Type> RewiredBase = new();   // kit #5 menus: type -> its Rewired.InputManager_Base base type, or null

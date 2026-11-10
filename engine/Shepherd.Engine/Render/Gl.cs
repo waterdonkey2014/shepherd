@@ -2,7 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 namespace Shepherd.Engine.Render;
 
-/// <summary>The OpenGL ES 2.0 subset GlBackend uses — nothing outside GLES2 core except the two desktop-only entries marked
+/// <summary>The OpenGL ES 2.0 subset GlBackend uses (59 entry points since kit #12: + the 8 stencil / renderbuffer entries) — nothing outside GLES2 core except the two desktop-only entries marked
 /// (VAO for a 3.2 core context) and S3TC (EXT_texture_compression_s3tc, which vitaGL exposes). Entry points are resolved
 /// through a host-supplied GetProcAddress (Mac: SDL_GL_GetProcAddress; Vita: vglGetProcAddress or a static table) and called
 /// through unmanaged function pointers: no delegates, no marshalling, no per-call allocation.</summary>
@@ -21,6 +21,11 @@ public static unsafe class Gl
     public const uint VENDOR = 0x1F00, RENDERER = 0x1F01, VERSION = 0x1F02, SHADING_LANGUAGE_VERSION = 0x8B8C, EXTENSIONS = 0x1F03;
     public const uint MAX_TEXTURE_SIZE = 0x0D33, MAX_TEXTURE_IMAGE_UNITS = 0x8872, MAX_VARYING_VECTORS = 0x8DFC, MAX_FRAGMENT_UNIFORM_VECTORS = 0x8DFD, MAX_VARYING_FLOATS = 0x8B4B, MAX_FRAGMENT_UNIFORM_COMPONENTS = 0x8B49;
     public const uint UNPACK_ALIGNMENT = 0x0CF5, PACK_ALIGNMENT = 0x0D05, NO_ERROR = 0;
+    /// <summary>Kit #12 boot (the stencil entry points, Render/K12Stencil.cs): the stencil buffer bit, the stencil functions / operations uGUI's
+    /// StencilMaterial sets (CompareFunction / StencilOp values map onto these in K12Stencil), and the renderbuffer that holds the stencil.</summary>
+    public const uint STENCIL_BUFFER_BIT = 0x400, KEEP = 0x1E00, REPLACE = 0x1E01, INCR = 0x1E02, DECR = 0x1E03, INVERT = 0x150A, INCR_WRAP = 0x8507, DECR_WRAP = 0x8508;
+    public const uint NEVER = 0x0200, LESS = 0x0201, EQUAL = 0x0202, LEQUAL = 0x0203, GREATER = 0x0204, NOTEQUAL = 0x0205, GEQUAL = 0x0206, ALWAYS = 0x0207;
+    public const uint RENDERBUFFER = 0x8D41, DEPTH24_STENCIL8 = 0x88F0, DEPTH_ATTACHMENT = 0x8D00, STENCIL_ATTACHMENT = 0x8D20, DEPTH_STENCIL_ATTACHMENT = 0x821A;
     public const uint COMPRESSED_RGB_S3TC_DXT1 = 0x83F0, COMPRESSED_RGBA_S3TC_DXT1 = 0x83F1, COMPRESSED_RGBA_S3TC_DXT3 = 0x83F2, COMPRESSED_RGBA_S3TC_DXT5 = 0x83F3;
 
     /// <summary>Device kit #5 (track runtime, R2; vita/notes/kit5-runtime.md): the 17 leaf state setters below (viewport / scissor /
@@ -121,6 +126,16 @@ public static unsafe class Gl
     // desktop core profile only (not GLES2): a VAO must be bound
     public static delegate* unmanaged<int, uint*, void> GenVertexArrays;
     public static delegate* unmanaged<uint, void> BindVertexArray;
+    // kit #12 boot: the stencil entry points (GLES2 core; uGUI's stencil Masks, Render/K12Stencil.cs). Resolved with the others, called only while
+    // SHEPHERD_K12_STENCIL=1 draws a mask: with the switch off no call is made and every GL record is kit #11's.
+    public static delegate* unmanaged<uint, int, uint, void> StencilFunc;
+    public static delegate* unmanaged<uint, uint, uint, void> StencilOp;
+    public static delegate* unmanaged<uint, void> StencilMask;
+    public static delegate* unmanaged<byte, byte, byte, byte, void> ColorMask;
+    public static delegate* unmanaged<int, uint*, void> GenRenderbuffers;
+    public static delegate* unmanaged<uint, uint, void> BindRenderbuffer;
+    public static delegate* unmanaged<uint, uint, int, int, void> RenderbufferStorage;
+    public static delegate* unmanaged<uint, uint, uint, uint, void> FramebufferRenderbuffer;
 
     /// <summary>Resolve every entry point. <paramref name="getProc"/> returns 0 for unknown names; FBO entries fall back to the
     /// EXT names (macOS legacy 2.1 contexts expose both). Returns the names that could not be resolved (empty = all good).</summary>
@@ -131,7 +146,7 @@ public static unsafe class Gl
         IntPtr P(string name, bool required = true)
         {
             var p = getProc(name);
-            if (p == IntPtr.Zero && name.Contains("Framebuffer")) p = getProc(name + "EXT");
+            if (p == IntPtr.Zero && (name.Contains("Framebuffer") || name.Contains("Renderbuffer"))) p = getProc(name + "EXT");   // (kit #12: the renderbuffer entries too)
             if (p == IntPtr.Zero && required) missing.Add(name);
             return p;
         }
@@ -186,6 +201,14 @@ public static unsafe class Gl
         Flush = (delegate* unmanaged<void>)P("glFlush");
         GenVertexArrays = (delegate* unmanaged<int, uint*, void>)P("glGenVertexArrays", required: core);
         BindVertexArray = (delegate* unmanaged<uint, void>)P("glBindVertexArray", required: core);
+        StencilFunc = (delegate* unmanaged<uint, int, uint, void>)P("glStencilFunc");
+        StencilOp = (delegate* unmanaged<uint, uint, uint, void>)P("glStencilOp");
+        StencilMask = (delegate* unmanaged<uint, void>)P("glStencilMask");
+        ColorMask = (delegate* unmanaged<byte, byte, byte, byte, void>)P("glColorMask");
+        GenRenderbuffers = (delegate* unmanaged<int, uint*, void>)P("glGenRenderbuffers");
+        BindRenderbuffer = (delegate* unmanaged<uint, uint, void>)P("glBindRenderbuffer");
+        RenderbufferStorage = (delegate* unmanaged<uint, uint, int, int, void>)P("glRenderbufferStorage");
+        FramebufferRenderbuffer = (delegate* unmanaged<uint, uint, uint, uint, void>)P("glFramebufferRenderbuffer");
         return missing;
     }
 

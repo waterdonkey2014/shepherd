@@ -27,6 +27,8 @@ internal static class MtCheck
         /// <summary>DrawAdd: the added colours. Lut: the pass's arguments and its answer (issued: what the main thread was told; received:
         /// what the backend returned).</summary>
         public FColor[] Add; public LutArgs Lut; public bool Ok;
+        /// <summary>Kit #11 gpu2 (review fix): GpuMesh -- whether it was DrawGpuMeshTex, its textures on units 1 / 2 and their wrap bits.</summary>
+        public bool More; public IntPtr Tex1, Tex2; public int Wrap;
     }
     internal sealed class Rec
     {
@@ -40,10 +42,12 @@ internal static class MtCheck
         }
         public void AddSty(in GlBackend.StylizeArgs a) => E.Add(new Ev { Kind = Stylize, Sty = a });
         public void AddLut(in LutArgs a, bool ok) => E.Add(new Ev { Kind = Lut, Lut = a, Ok = ok });
-        /// <summary>Kit #6 gpulight: a static-mesh draw (program -1: a release) -- its arguments, the data array's identity, the uniforms.</summary>
-        public void AddGpu(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, uint blend)
+        /// <summary>Kit #6 gpulight: a static-mesh draw (program -1: a release) -- its arguments, the data array's identity, the uniforms.
+        /// Kit #11 gpu2 (review fix): <paramref name="more"/> = DrawGpuMeshTex's two textures and wrap bits (null: DrawGpuMesh).</summary>
+        public void AddGpu(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, uint blend, IntPtr[] more = null)
             => E.Add(new Ev { Kind = program < 0 ? GpuRelease : GpuMesh, A = program, B = first, C = count, D = stride, Tex = tex, Blend = blend, Add = uniforms.ToArray(),
-                              Bytes = data == null ? 0 : (ulong)(uint)System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(data) << 32 | (uint)data.Length });
+                              Bytes = data == null ? 0 : (ulong)(uint)System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(data) << 32 | (uint)data.Length,
+                              More = more != null, Tex1 = more != null ? more[0] : IntPtr.Zero, Tex2 = more != null ? more[1] : IntPtr.Zero, Wrap = more != null ? (int)more[2] : 0 });
     }
     static ulong Fnv(byte[] b) { ulong h = 14695981039346656037UL; foreach (var x in b) h = (h ^ x) * 1099511628211UL; return h ^ (ulong)b.Length; }
 
@@ -93,6 +97,7 @@ internal static class MtCheck
                     : x.Kind is Draw or DrawAdd && !x.I.AsSpan().SequenceEqual(y.I) ? $"indices ({x.I.Length} vs {y.I.Length})"
                     : x.Kind == DrawAdd && !MemoryMarshal.AsBytes(x.Add.AsSpan()).SequenceEqual(MemoryMarshal.AsBytes(y.Add.AsSpan())) ? $"added colours ({x.Add.Length} vs {y.Add.Length})"
                     : x.Kind == GpuMesh && !MemoryMarshal.AsBytes(x.Add.AsSpan()).SequenceEqual(MemoryMarshal.AsBytes(y.Add.AsSpan())) ? $"uniforms ({x.Add.Length} vs {y.Add.Length})"
+                    : x.Kind == GpuMesh && (x.More != y.More || x.Tex1 != y.Tex1 || x.Tex2 != y.Tex2 || x.Wrap != y.Wrap) ? "DrawGpuMeshTex's extra textures / wrap bits"
                     : x.Kind == Stylize && !StyEq(x.Sty, y.Sty) ? "Stylizer arguments"
                     : x.Kind == Lut && !LutEq(x.Lut, y.Lut) ? "grading-pass arguments"
                     : x.Kind == Lut && x.Ok != y.Ok ? $"RunLut's answer (told {x.Ok}, the backend's {y.Ok})" : null;
@@ -111,7 +116,8 @@ internal static class MtCheck
         && x.Hdr == y.Hdr && x.Linear == y.Linear && x.Vignette == y.Vignette
         && Bits(x.VigSettings.x) == Bits(y.VigSettings.x) && Bits(x.VigSettings.y) == Bits(y.VigSettings.y) && Bits(x.VigSettings.z) == Bits(y.VigSettings.z) && Bits(x.VigSettings.w) == Bits(y.VigSettings.w)
         && Bits(x.VigColor.x) == Bits(y.VigColor.x) && Bits(x.VigColor.y) == Bits(y.VigColor.y) && Bits(x.VigColor.z) == Bits(y.VigColor.z) && Bits(x.VigColor.w) == Bits(y.VigColor.w)
-        && Bits(x.VigCenter.x) == Bits(y.VigCenter.x) && Bits(x.VigCenter.y) == Bits(y.VigCenter.y);
+        && Bits(x.VigCenter.x) == Bits(y.VigCenter.x) && Bits(x.VigCenter.y) == Bits(y.VigCenter.y)
+        && x.Blend == y.Blend && x.Lut1Blend == y.Lut1Blend && x.Lut2Blend == y.Lut2Blend && x.Lut2BlendFrom == y.Lut2BlendFrom && Bits(x.BlendAmount) == Bits(y.BlendAmount);   // (kit #11 gpu2 review fix)
     static void Note(string s) { if (++_notes <= 20) Log.Info("[mtcheck] " + s); }
 
     public static string Summary() => !MtRender.CheckOn ? null :

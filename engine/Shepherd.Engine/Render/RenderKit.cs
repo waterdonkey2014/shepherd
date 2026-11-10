@@ -59,8 +59,15 @@ public static class RenderKit
     /// with the program and its vec4 uniforms, like any world draw (counters, stream hash). False: not drawn -- build it on the CPU.</summary>
     public static bool SubmitGpuMesh(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, NTexture tex, uint blend)
         => SceneRenderer.SubmitGpuMesh(program, data, stride, first, count, uniforms, tex, blend);
+    /// <summary>Kit #11 gpu2 (Api 5): SubmitGpuMesh with two more textures (units 1 / 2: samplers u_tex1 / u_tex2; null = white) and their
+    /// addressing (wrap bit k = 1: texture k repeats, else clamped). False: not drawn -- the caller's own draw.</summary>
+    public static bool SubmitGpuMeshTex(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, NTexture tex, NTexture tex1, NTexture tex2, int wrap, uint blend)
+        => SceneRenderer.SubmitGpuMesh(program, data, stride, first, count, uniforms, tex, blend, tex1, tex2, wrap, true);
     /// <summary>Kit #6 gpulight (Api 4): the target draws go to now (Zero = the frame's main target): SceneRenderer's record (check runs).</summary>
     public static IntPtr CurrentTarget => SceneRenderer._curTarget;
+    /// <summary>Kit #13 looks (Api 6): SubmitGpuMesh would take a draw now (the same tests, without a draw): a provider that queues draws asks before
+    /// it takes one, so a queued draw is never refused at its flush.</summary>
+    public static bool GpuMeshOk => SceneRenderer.GpuMeshOk;
     /// <summary>Kit #6 gpulight (Api 4): the array will not be drawn again (its GPU copy is freed).</summary>
     public static void ReleaseGpuMesh(float[] data) { if (SceneRenderer.G is IGpuMesh gm && data != null) gm.ReleaseGpuMesh(data); }
 

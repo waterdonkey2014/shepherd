@@ -34,6 +34,9 @@ public static class ShaderPolicy
     public sealed class State
     {
         public int Queue = -1; public bool GrabBefore, HasMainTex, BlendModesGrab;
+        /// <summary>Kit #13 looks (K13Looks.MaskFix): the shader declares all six of uGUI's stencil properties (_Stencil, _StencilOp, _StencilComp,
+        /// _StencilReadMask, _StencilWriteMask, _ColorMask) -- what StencilMaterial.Add asks with HasProperty before it makes a stencil copy.</summary>
+        public bool DeclStencil;
         public byte Src = 1, Dst = 0, ColMask = 15;   // UnityEngine.Rendering.BlendMode factors (One, Zero); colour mask RGBA = 15
         public int SrcProp, DstProp, ColMaskProp;      // ShaderIds of the material floats that drive them (0 = fixed in the shader)
         /// <summary>Kit #7 G6 (Render/G6Cull.cs): the main pass's Cull -- 0 Off, 1 Front, 2 Back, 255 unknown (no culling field in the asset and
@@ -62,6 +65,8 @@ public static class ShaderPolicy
                     if (pn == "_MainTex") st.HasMainTex = true;
                     (defs ??= new())[pn] = pt.Float("m_DefValue[0]");   // a property-driven factor's value when the material lacks it
                 }
+            st.DeclStencil = defs != null && defs.ContainsKey("_Stencil") && defs.ContainsKey("_StencilOp") && defs.ContainsKey("_StencilComp")
+                && defs.ContainsKey("_StencilReadMask") && defs.ContainsKey("_StencilWriteMask") && defs.ContainsKey("_ColorMask");   // (kit #13 looks; read only with K13Looks.MaskFix)
             if (pf["m_SubShaders"] is not List<object> subs || subs.Count == 0 || subs[0] is not TypeTreeObject ss) return st;
             st.Queue = Queue(TagValue(ss["m_Tags"], "Queue"));
             TypeTreeObject main = null; bool grab = false;

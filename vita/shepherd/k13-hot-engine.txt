@@ -1,0 +1,46 @@
+# device kit #13, track speed (vita/notes/kit13-speed.md): Shepherd.Engine methods compiled HOT by name (build.sh SHEPHERD_K13_HOT_NAMES).
+# Our own engine's methods only ("Namespace.Type:Method" = every overload; "Namespace.Type::Method/sig`arity" = one exact method, AsmSize
+# tok2id's form). The cold recipe's ran list names methods by metadata token, so a per-draw method added after the traces is compiled for
+# size by chance; these run every frame / every draw with a kit #13 row or a kit #11 gpu1 row on. Codegen only: the same results.
+#
+# kit #11 gpu1 -- NOPIX (the X1 class: cold by token position, its callees out of line)
+Shepherd.Engine.Render.K11World:NoPixel
+Shepherd.Engine.Render.K11World:NoSample
+Shepherd.Engine.Render.K11World:AllClear
+Shepherd.Engine.Render.K11World:ClearBlend
+Shepherd.Engine.Render.GlBackend:SkipNoPixel
+Shepherd.Engine.Render.SceneRenderer:NoPixBuild
+# kit #11 gpu1 -- UNIFORMS / REUSE
+Shepherd.Engine.Render.GlBackend:U4
+Shepherd.Engine.Render.SceneRenderer:SameM12
+Shepherd.Engine.Render.SceneRenderer:K11Sprite
+Shepherd.Engine.Render.SceneRenderer:K11Mesh
+Shepherd.Engine.Render.SceneRenderer:K11Replay
+Shepherd.Engine.Render.SceneRenderer:K11Begin
+Shepherd.Engine.Render.SceneRenderer:K11End
+# kit #13 speed -- the dirty-only rect checks (every position / rotation / scale write)
+Shepherd.Engine.Native.NTransform:ChangedPose
+# kit #12 boot's stencil masks -- the UI pass's per-draw / per-node calls (ON by default since kit #12)
+Shepherd.Engine.Render.SceneRenderer:K12StencilFor
+Shepherd.Engine.Render.SceneRenderer:K12SkipNoColour
+Shepherd.Engine.Render.SceneRenderer:K12PopDraws
+Shepherd.Engine.Render.K12Stencil:Of
+Shepherd.Engine.Render.K12Stencil:Pops
+Shepherd.Engine.Render.K12Stencil:get_AnyPops
+Shepherd.Engine.Render.GlBackend:Stencil
+# kit #13 integration (vita/notes/kit13-integration.md section 3a) -- methods kit #12's ran list named (kit #11's device-measured code) whose
+# signature a kit #13 track changed: the identity remap (recipe k12K) drops them, so they would fall to the size level. Re-keyed here by name.
+Shepherd.Engine.Render.WorldEmitter:Out
+Shepherd.Engine.Render.WorldEmitter:Submit
+# kit #13 integration -- the per-draw / per-frame engine methods of kit #13 rows that are ON by default (new methods: no trace names them yet)
+Shepherd.Engine.Render.SceneRenderer:SubmitIdxW
+Shepherd.Engine.Render.GlBackend:DrawW
+Shepherd.Engine.Render.GlBackend:DrawAddW
+Shepherd.Engine.Render.GlBackend:DrawEnc
+Shepherd.Engine.Render.GlBackend:K13Enc
+Shepherd.Engine.Render.K13Looks:EncW
+Shepherd.Engine.Render.K13Looks:EncAddW
+Shepherd.Engine.Render.MtBackendGpu:DrawW
+Shepherd.Engine.Render.MtBackendGpu:DrawAddW
+Shepherd.Engine.Render.MtRender/Sink:DrawW
+Shepherd.Engine.Runtime.AsyncOps:TickPassK13

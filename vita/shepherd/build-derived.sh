@@ -43,6 +43,8 @@ if grep -rnE '\.(Get|Set)\("' --include='*.cs' "$SRC" > "$TMPDIR/derived-bagread
   echo "refusing: derived code reads property-bag keys directly (use Shepherd.Engine.Render.RenderKit):" >&2; cat "$TMPDIR/derived-bagreads.txt" >&2; exit 1
 fi
 ENG=(); [[ -n ${SHEPHERD_DERIVED_ENGINE:-} ]] && ENG=(-p:ShepherdEngineDll="$SHEPHERD_DERIVED_ENGINE")
+# device kit #14: SHEPHERD_K14_SMALL_CODE=0 = kit #13's engine image, which has no catalog contract: the owner-local catalog reader stays out of this DLL too
+[[ ${SHEPHERD_K14_SMALL_CODE:-1} == 0 ]] && ENG+=(-p:ShepherdK14Small=0)
 mkdir -p "$OUT"
 rm -rf "$ART/out"
 dotnet build "$P" -c Release -p:DisableTransitiveFrameworkReferenceDownloads=true --source ~/.nuget/packages $ENG \

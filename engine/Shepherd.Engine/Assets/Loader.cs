@@ -54,30 +54,64 @@ public static class Loader
     /// Dictionary's free list, so a new key takes the place the dictionary would give it and the enumeration order stays the dictionary's.</summary>
     static int[] _liveFree; static int _liveFreeN;
     /// <summary>The live-record map's values in its enumeration order (diagnostics included).</summary>
+#if !SHEPHERD_NO_K13WALKC
+    public static IEnumerable<NObj> LiveRecords => !LiveIndex ? Live.Values : _liveFreeN == 0 && _k13Holes == 0 ? _liveOrder : LiveFilled();
+    static IEnumerable<NObj> LiveFilled() { foreach (var n in _liveOrder) if (n != null) yield return n; }   // (only after a removal: the free places are null; kit #13 walkc: or a released asset's place)
+#else
     public static IEnumerable<NObj> LiveRecords => !LiveIndex ? Live.Values : _liveFreeN == 0 ? _liveOrder : LiveFilled();
     static IEnumerable<NObj> LiveFilled() { foreach (var n in _liveOrder) if (n != null) yield return n; }   // (only after a removal: the free places are null)
+#endif
+#if !SHEPHERD_K11_TOC
+    /// <summary>Where (f, o)'s key keeps its record position: the owner file's index entry, or <see cref="ObjectInfo.None"/> (then the side
+    /// map). (Kit #12 walkb: the owner file's table searched in place -- kit #11 built that file's ObjectsByPathId dictionary for it.)</summary>
+#else
     /// <summary>Where (f, o)'s key keeps its record position: the owner file's index entry, or null (then the side map).</summary>
+#endif
     static ObjectInfo LiveEntry(SerializedFile f, ObjectInfo o)
     {
         if (!_liveOwner.TryGetValue(f.Name, out var owner)) { _liveOwner[f.Name] = f; return o; }
         if (ReferenceEquals(owner, f)) return o;
+#if !SHEPHERD_K11_TOC
+        return owner.FindQuiet(o.PathId);
+#else
         return owner.ObjectsByPathId.TryGetValue(o.PathId, out var oo) ? oo : null;
+#endif
     }
     static bool LiveTryGet(SerializedFile f, ObjectInfo o, out NObj n)
     {
         if (!LiveIndex) return Live.TryGetValue((f.Name, o.PathId), out n);
+#if !SHEPHERD_K11_TOC
+        var e = LiveEntry(f, o); int pos = !e.IsNull ? e.LivePos : _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0;
+#else
         var e = LiveEntry(f, o); int pos = e != null ? e.LivePos : _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0;
+#endif
+#if !SHEPHERD_NO_K13WALKC
+        n = pos > 0 ? _liveOrder[pos - 1] : null; return n != null;   // (kit #13 walkc: a released asset's place holds null -- made again on its next Get; kit #12 never has null at a place in use)
+#else
         n = pos > 0 ? _liveOrder[pos - 1] : null; return pos > 0;
+#endif
     }
     static void LiveSet(SerializedFile f, ObjectInfo o, NObj n)
     {
         if (!LiveIndex) { Live[(f.Name, o.PathId)] = n; return; }
+#if !SHEPHERD_K11_TOC
+        var e = LiveEntry(f, o); int pos = !e.IsNull ? e.LivePos : _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0;
+#else
         var e = LiveEntry(f, o); int pos = e != null ? e.LivePos : _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0;
+#endif
+#if !SHEPHERD_NO_K13WALKC
+        if (pos > 0) { var old = _liveOrder[pos - 1]; _liveOrder[pos - 1] = n; if (_shaderPos != null) ShaderTrack(pos, old, n); if (old == null && _k13Holes > 0) K13Refill(pos, n); return; }   // an existing key: its value replaced in place (the dictionary's overwrite; kit #13 walkc: a released asset made again)
+#else
         if (pos > 0) { var old = _liveOrder[pos - 1]; _liveOrder[pos - 1] = n; if (_shaderPos != null) ShaderTrack(pos, old, n); return; }   // an existing key: its value replaced in place (the dictionary's overwrite)
+#endif
         if (_liveFreeN > 0) { pos = _liveFree[--_liveFreeN]; _liveOrder[pos - 1] = n; }   // kit #6 integration: a removed key's place, as Dictionary reuses its last freed entry
         else { _liveOrder.Add(n); pos = _liveOrder.Count; }
         if (_shaderPos != null) ShaderTrack(pos, null, n);
+#if !SHEPHERD_K11_TOC
+        if (!e.IsNull) e.LivePos = pos; else (_liveOther ??= new())[(f.Name, o.PathId)] = pos;
+#else
         if (e != null) e.LivePos = pos; else (_liveOther ??= new())[(f.Name, o.PathId)] = pos;
+#endif
     }
     /// <summary>Kit #6 integration: (f, o)'s record leaves the map as Dictionary.Remove would take it out (the engine track's scene reload,
     /// written against kit #5's dictionary): its place becomes a free place (null) that the next new key takes, last freed first.</summary>
@@ -85,14 +119,26 @@ public static class Loader
     {
         if (!LiveIndex) { if (!Live.TryGetValue((f.Name, o.PathId), out n)) return false; Live.Remove((f.Name, o.PathId)); return true; }
         var e = LiveEntry(f, o); int pos;
+#if !SHEPHERD_K11_TOC
+        if (!e.IsNull) { pos = e.LivePos; e.LivePos = 0; }
+#else
         if (e != null) { pos = e.LivePos; e.LivePos = 0; }
+#endif
         else { pos = _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0; if (pos > 0) _liveOther[(f.Name, o.PathId)] = 0; }
         if (pos <= 0) { n = null; return false; }
         n = _liveOrder[pos - 1]; _liveOrder[pos - 1] = null;
+#if !SHEPHERD_NO_K13WALKC
+        bool k13hole = n == null && _k13Holes > 0;
+        if (k13hole) { _k13Holes--; Runtime.K13Unload.Forget(pos); }   // (kit #13 walkc: the key of a released asset leaves: its reservation goes with it; no record to hand back)
+#endif
         if (_shaderPos != null) ShaderTrack(pos, n, null);
         if (_liveFree == null || _liveFreeN == _liveFree.Length) { var a = new int[Math.Max(64, _liveFreeN * 2)]; if (_liveFree != null) Array.Copy(_liveFree, a, _liveFreeN); _liveFree = a; }
         _liveFree[_liveFreeN++] = pos;
+#if !SHEPHERD_NO_K13WALKC
+        return !k13hole;
+#else
         return true;
+#endif
     }
     /// <summary>Kit #10 E3 (create programs): the places in the live-record list that hold a shader record, ascending -- CreateShader's search
     /// for the first live shader of a name walked every live record (the menu: ~50,000 per shader asset, 188 shader assets); with the live index
@@ -114,6 +160,30 @@ public static class Loader
         for (int i = 0; i < _liveOrder.Count; i++) if (_liveOrder[i] is NShader) l.Add(i + 1);
         return _shaderPos = l;
     }
+#if !SHEPHERD_NO_K13WALKC
+    // ---- kit #13 walkc: Unity's UnloadUnusedAssets (Runtime/K13Unload.cs) -- a released asset's place in the live-record list stays its key's
+    // place (its index entry keeps the position) and holds null until the asset is asked for again: Get then makes it at the same place, so
+    // LiveRecords' order is kit #12's. (No string literal here: Assets/Diet.cs.) ----
+    static int _k13Holes;
+    internal static int K13Holes => _k13Holes;
+    /// <summary>The place of n's own key in the live-record list (1-based), or 0 when n is not the record its key maps to.</summary>
+    internal static int K13Pos(NObj n)
+    {
+        if (!LiveIndex || n.SourceFile is not SerializedFile f) return 0;
+#if !SHEPHERD_K11_TOC
+        var o = f.FindQuiet(n.PathId); if (o.IsNull) return 0;
+        var e = LiveEntry(f, o); int pos = !e.IsNull ? e.LivePos : _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0;
+#else
+        if (!f.ObjectsByPathId.TryGetValue(n.PathId, out var o)) return 0;
+        var e = LiveEntry(f, o); int pos = e != null ? e.LivePos : _liveOther != null && _liveOther.TryGetValue((f.Name, o.PathId), out var p) ? (int)p : 0;
+#endif
+        return pos > 0 && pos <= _liveOrder.Count && ReferenceEquals(_liveOrder[pos - 1], n) ? pos : 0;
+    }
+    internal static void K13Hole(int pos) => _liveOrder[pos - 1] = null;
+    internal static void K13Unhole(int pos, NObj n) => _liveOrder[pos - 1] = n;
+    internal static void K13Released(int count) => _k13Holes += count;   // (no LazyRef memo can hold a released record: its memo would have kept it reached)
+    static void K13Refill(int pos, NObj n) { _k13Holes--; Runtime.K13Unload.Refilled(pos, n); }
+#endif
     /// <summary>Bumped on every write to <see cref="Live"/> (LazyRef's memo key).</summary>
     public static long LiveEpoch;
     static readonly Queue<Action> Pending = new(); static int _depth;
@@ -151,7 +221,12 @@ public static class Loader
         // physics (plan v2 1.4): from Stage 1 the project's physics settings are read and self-tested at boot here; at level 0 / none they stay
         // lazy exactly as in kit #4 (Physics2DSettings at the first trigger candidate; the menus read nothing; physcheck runs the self-test)
         if (Physics.PhysConfig.Level >= 1 && Physics.PhysWorld.Sim) LoadPhysicsSettings();   // (level 1 without a core: Stage 0's lazy read)
+#if !SHEPHERD_K11_TOC
+        Log.Info($"assets: catalog {Catalog?.InternalIds.Count ?? 0} ids; {SortingLayers.Count} sorting layers; {CustomTags.Count} custom tags; index entries: " +
+                 (Shepherd.Assets.ObjectTable.View ? "a view over each file's object table (kit #12 walkb: no object per entry)" : "one object per entry (kit #11's; SHEPHERD_K12_TOC=0)"));
+#else
         Log.Info($"assets: catalog {Catalog?.InternalIds.Count ?? 0} ids; {SortingLayers.Count} sorting layers; {CustomTags.Count} custom tags");
+#endif
     }
 
     // ---------------- identity / resolution ----------------
@@ -163,7 +238,11 @@ public static class Loader
         LoadProf.Enter(LoadProf.Resolve);   // (the profile's calls: compiled out of eboots)
         try { r = Db.Resolve(from, p); } catch (Exception e) { LoadProf.Exit(LoadProf.Resolve); Log.Warn($"resolve {p} from {from?.Name}: {e.Message}"); return null; }
         LoadProf.Exit(LoadProf.Resolve);
+#if !SHEPHERD_K11_TOC
+        return r.f == null || r.o.IsNull ? null : Get(r.f, r.o);
+#else
         return r.f == null || r.o == null ? null : Get(r.f, r.o);
+#endif
     }
 
     public static NObj Get(SerializedFile f, ObjectInfo o)
@@ -645,7 +724,7 @@ public static class Loader
         public ulong U64() { Need(8); var v = BitConverter.ToUInt64(_b, _base + Pos); Pos += 8; return v; }
         public float F() { Need(4); var v = BitConverter.ToSingle(_b, _base + Pos); Pos += 4; return v; }
         public void Align() => Pos = (Pos + 3) & ~3;
-        public string Str() { int n = I32(); if (n < 0 || Pos + n > _len) throw new InvalidDataException("bad string"); var s = System.Text.Encoding.UTF8.GetString(_b, _base + Pos, n); Pos += n; Align(); return s; }
+        public string Str() { int n = I32(); if (n < 0 || Pos + n > _len) throw new InvalidDataException("bad string"); var s = Shepherd.Assets.StringPool.Get(new ReadOnlySpan<byte>(_b, _base + Pos, n), Shepherd.Assets.StringPool.Site.Bin); Pos += n; Align(); return s; }   // kit #13 basec: pooled (SHEPHERD_K13_STRPOOL=0: a new copy)
         public UPPtr PPtr() { int fid = I32(); long pid = (long)U64(); return new UPPtr(fid, pid); }
     }
 
@@ -657,6 +736,7 @@ public static class Loader
         var tex = Reg(f, o, Objects.Bind(Objects.NewManaged(typeof(Texture2D)), new NTexture
         {
             Name = S(d, "m_Name"), Width = I(d, "m_Width"), Height = I(d, "m_Height"), Format = I(d, "m_TextureFormat"), FilterMode = ts != null ? I(ts, "m_FilterMode", 1) : 1,
+            WrapMode = Render.K11Gpu.WatercolorUi && ts != null ? I(ts, Render.K11Gpu.WrapUKey, 0) : 0,   // kit #11 gpu2: read only for the opt-in owner-local UI programs (their samplers' addressing); 0 = kit #10 (the key is a field of the [ProfileOnly] K11Gpu: no literal here, the diet's key scan is kit #10's)
             Src = TextureDecoder.Source(d)
         }, true));
         tex.SetSource(d);
@@ -727,7 +807,11 @@ public static class Loader
     static (SerializedFile file, TypeTreeObject tree) AtlasTree(SerializedFile from, UPPtr ap)
     {
         var (af, ao) = Db.Resolve(from, ap);
+#if !SHEPHERD_K11_TOC
+        if (ao.IsNull) return (af, null);
+#else
         if (ao == null) return (af, null);
+#endif
         if (VitaMemory.AtlasCache) foreach (var c in _atlasCache) if (c.tree != null && c.af == af && c.pathId == ao.PathId) return (af, c.tree);
         var (rf, ro, atlas) = Db.ResolveRead(from, ap);
         if (atlas != null) { _atlasCache[_atlasNext] = (rf, ro.PathId, atlas); _atlasNext = (_atlasNext + 1) % _atlasCache.Length; }
@@ -811,7 +895,12 @@ public static class Loader
             }
             foreach (var e in (V(props, "m_Floats") as IList ?? Array.Empty<object>()).OfType<TypeTreeObject>()) m.P[ShaderIds.Id(V(e, "first") as string)] = Convert.ToSingle(V(e, "second"));
             foreach (var e in (V(props, "m_Ints") as IList ?? Array.Empty<object>()).OfType<TypeTreeObject>()) m.P[ShaderIds.Id(V(e, "first") as string)] = Convert.ToInt32(V(e, "second"));
-            foreach (var e in (V(props, "m_Colors") as IList ?? Array.Empty<object>()).OfType<TypeTreeObject>()) m.P[ShaderIds.Id(V(e, "first") as string)] = Col(V(e, "second") as TypeTreeObject);
+            foreach (var e in (V(props, "m_Colors") as IList ?? Array.Empty<object>()).OfType<TypeTreeObject>())
+            {
+                var cid = ShaderIds.Id(V(e, "first") as string);
+                if (Render.K13Looks.Shadow && m.P.TryGetValue(cid, out var hid) && hid is float hf) m.P[cid | Render.K13Looks.FloatShadow] = hf;   // kit #13 looks: the float this colour hides (off: no test)
+                m.P[cid] = Col(V(e, "second") as TypeTreeObject);
+            }
         }
         foreach (var k in (V(d, "m_ValidKeywords") as IList ?? Array.Empty<object>()).OfType<string>()) m.Keywords.Add(k);
         foreach (var k in (S(d, "m_ShaderKeywords")).Split(' ', StringSplitOptions.RemoveEmptyEntries)) m.Keywords.Add(k);
@@ -908,7 +997,13 @@ public static class Loader
     }
     static int InstantiateCore(SerializedFile file, string name, string path, bool activate, System.Diagnostics.Stopwatch sw, int buildIndex)
     {
+#if !SHEPHERD_NO_K13WALKC
+        Runtime.K13Unload.NoteSceneFile(file);   // (kit #13 walkc: a scene file's records are never released as assets)
+#endif
         if (file?.Pack != null) file = PackAssets.SceneFile(Db, file);   // V3 pack: a scene file the pack holds only partly is a loud miss
+#if !SHEPHERD_NO_K13WALKC
+        Runtime.K13Unload.NoteSceneFile(file);
+#endif
         if (K6Engine.SceneReload && file != null && !_sceneFilesLoaded.Add(file.Name)) RetireSceneRecords(file, name);   // kit #6 (b): a reload gets new objects
         var scene = Scenes.Create(name, path); scene.BuildIndex = buildIndex; _loadingFile = file;
         if (Scenes.All.TryGetValue(1, out var boot) && boot.Name == "Shepherd" && boot.Roots.Count == 0 && Scenes.ActiveHandle == 1) Scenes.All.Remove(1);
@@ -978,7 +1073,11 @@ public static class Loader
     {
         try
         {
+#if !SHEPHERD_K11_TOC
+            var gm = Db.GetFile("globalgamemanagers"); var o = gm.ObjectsOfClass(78).FirstOrDefault(); if (o.IsNull) return;
+#else
             var gm = Db.GetFile("globalgamemanagers"); var o = gm.ObjectsOfClass(78).FirstOrDefault(); if (o == null) return;
+#endif
             var r = new BinReader(gm.GetObjectBytes(o).ToArray());
             int n = r.I32(); for (int i = 0; i < n; i++) CustomTags.Add(r.Str());
             int nl = r.I32(); for (int i = 0; i < nl; i++) LayerNames.Add(r.Str());
@@ -996,7 +1095,11 @@ public static class Loader
     {
         try
         {
+#if !SHEPHERD_K11_TOC
+            _gm = Db.GetFile("globalgamemanagers"); var o = _gm.ObjectsOfClass(147).FirstOrDefault(); if (o.IsNull) return;
+#else
             _gm = Db.GetFile("globalgamemanagers"); var o = _gm.ObjectsOfClass(147).FirstOrDefault(); if (o == null) return;
+#endif
             var r = new BinReader(_gm.GetObjectBytes(o).ToArray()); int n = r.I32();
             for (int i = 0; i < n; i++) { var path = r.Str(); var p = r.PPtr(); ResourcePaths.Add((path.ToLowerInvariant(), p)); }
         }

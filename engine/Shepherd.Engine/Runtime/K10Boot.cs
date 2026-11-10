@@ -51,14 +51,14 @@ public static unsafe class K10Boot
         + "; SHEPHERD_K10_BOOTSCREEN=0 = kit #9";
 
     /// <summary>Icalls/VideoMiscIcalls.cs: a VideoPlayer's clip starts playing (its Playing phase) -- a fallback end (the first frame ends it first).</summary>
-    public static void FirstContent(string clip) => End("the game's first video '" + (clip ?? "?") + "' starts", Time.FrameCount);
+    public static void FirstContent(string clip) { if (!K12BootSeq.HoldsBootScreen) End("the game's first video '" + (clip ?? "?") + "' starts", Time.FrameCount); }   // (kit #12 boot: not while the sequence holds the screen)
 
     /// <summary>The boot loop, after each frame's update and before its present: the end at the game's first frame (frame 1 is presented after
     /// this call) and, once, the boot anatomy at the Main Menu.</summary>
     public static void Tick(int frame)
     {
         if (!On) return;
-        if (!_ended && frame >= 1) End("the game's first frame: every frame from here is the game's own", frame);
+        if (!_ended && frame >= 1 && !K12BootSeq.HoldsBootScreen) End(K12BootSeq.On ? "the Main Menu (kit #12 boot sequence: the loading screen until the menu)" : "the game's first frame: every frame from here is the game's own", frame);
         if (!_lined) foreach (var s in Scenes.All.Values) if (s.Name == "Main Menu") { BootLine(frame); break; }
     }
     /// <summary>The boot loop ended (Boot.BootGame): a boot screen still showing ends here.</summary>
@@ -82,7 +82,7 @@ public static unsafe class K10Boot
         int logo0 = v[8], logo1 = v[9], rel = v[10], bs0 = v[2], bs1 = v[3];
         // the black stretches the owner saw: before the launcher's logo, between it and the boot screen, after the boot screen
         string black = "";
-        if (logo1 >= 0 && bs0 > 0) black += " | black between the launcher's logo and the boot screen " + S(bs0 - logo1) + " s";
+        if (logo1 >= 0 && bs0 > 0) black += (K12BootSeq.On ? " | the Massive Monster clip (kit #12 boot sequence) + black between the launcher's logo and the boot screen " : " | black between the launcher's logo and the boot screen ") + S(bs0 - logo1) + " s";
         else if (logo1 >= 0 && _contentMs >= 0) black += " | black between the launcher's logo and the game's first content " + S((int)_contentMs - logo1) + " s (no boot screen)";
         string probe = Environment.GetEnvironmentVariable("SHEPHERD_FAST_TLS") == "probe"
             ? " | WARNING SHEPHERD_FAST_TLS=probe: this start's boot times are NOT comparable (every thread-local read takes the checked slow path: kit #9's MT launcher boot +5 % vs kit #8 was this probe -- kit10-boot.md)"

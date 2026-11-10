@@ -57,7 +57,12 @@ public static class BlackFrameGc
         int frame = Time.FrameCount;
         int sceneObjects = _sceneObjects; _sceneObjects = 0;
         bool afterScene = AfterScene && sceneObjects >= SceneObjectsMin;
-        bool covered = Render.BlackFrame.LastCovered && Render.BlackFrame.LastFrame >= frame - 1;
+        bool recent = Render.BlackFrame.LastFrame >= frame - 1;
+        bool covered = Render.BlackFrame.LastCovered && recent;
+        // kit #11 walk (SHEPHERD_K11_COVER=1, opt-in): a black hold with 15-20 % on top counts as covered for the growth gate only (no scene-load
+        // override: Render/BlackFrame.WideCover)
+        bool wide = !covered && Render.BlackFrame.LastCoveredWide && recent;
+        if (wide) { covered = true; afterScene = false; }
         if (!covered) { Visible++; if (Visible <= 3) Log.Info($"[blackgc] f{frame} UnloadUnusedAssets on a visible frame: no collection (as before)"); return; }
         Track();   // (a major since this frame began: its heap is the base)
         long heap = HeapBytes();
@@ -71,13 +76,21 @@ public static class BlackFrameGc
         long inUse0 = GC.GetTotalMemory(false);
         K9House.BeforeCollect();   // kit #9 engine (SHEPHERD_K9_PURGE): the purgeable arena is dropped so this collection reclaims it
         var sw = Stopwatch.StartNew();
+#if !SHEPHERD_NO_K13WALKC
+        var k13n = K13Unload.Collect();   // kit #13 walkc: a full collection; with SHEPHERD_K13_UNLOAD on, Unity's release of unreached assets inside it
+#else
         GC.Collect();
+#endif
         sw.Stop();
         Collections++; CollectMs += sw.Elapsed.TotalMilliseconds;
         _base = HeapBytes(); _majorsSeen = GC.CollectionCount(GC.MaxGeneration);
         Log.Info($"[blackgc] f{frame} UnloadUnusedAssets on a covered frame ({Render.BlackFrame.LastNote}): full collection {sw.Elapsed.TotalMilliseconds:F0} ms, GC heap in use {inUse0 / 1048576.0:F1} -> {GC.GetTotalMemory(false) / 1048576.0:F1} MiB" +
                  (double.IsInfinity(grown) ? " (no major seen before it)" : $" (the major heap grew {grown / 1048576.0:F1} MiB since the last major; allowance {allowance / 1048576.0:F1} MiB)") +
-                 (afterScene && grown < GrowthFraction * allowance ? $"; after a scene load of {sceneObjects} objects (mode scene: Unity's rule for this call)" : ""));
+                 (afterScene && grown < GrowthFraction * allowance ? $"; after a scene load of {sceneObjects} objects (mode scene: Unity's rule for this call)" : "")
+#if !SHEPHERD_NO_K13WALKC
+                 + k13n
+#endif
+                 );
     }
 
     public static string Summary() => !On ? null : $"[blackgc] UnloadUnusedAssets: {Calls} calls, {Collections} full collections on covered frames ({CollectMs:F0} ms), {Skipped} covered calls skipped by the growth gate, {Visible} on visible frames (mode {Mode})";

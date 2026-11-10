@@ -1,0 +1,60 @@
+diff -ruN a/src/mono/mono/mini/interp/interp.c b/src/mono/mono/mini/interp/interp.c
+--- a/src/mono/mono/mini/interp/interp.c
++++ b/src/mono/mono/mini/interp/interp.c
+@@ -403,6 +403,10 @@
+ 	jit_tls->interp_context = context;
+ }
+ 
++#ifdef HOST_VITA
++#define MONO_VITA_K14_ISAFE 1024u   /* (kit #14 integration) a refused interpreter stack: smaller, then the host's clean stop; a refused multi-block sgen request is named as such (utils/mono-mmap-vita.c) */
++#endif
++
+ static ThreadContext *
+ get_context (void)
+ {
+@@ -416,6 +420,20 @@
+ 		static gint32 k14_contexts;
+ 		guint k14_size = ((mono_vita_k14_flags & MONO_VITA_K14_ISTACK) && mono_atomic_inc_i32 (&k14_contexts) > 1) ? 256 * 1024 : INTERP_STACK_SIZE;
+ 		context->stack_start = (guchar*)mono_valloc_aligned (k14_size, MINT_STACK_ALIGNMENT, MONO_MMAP_READ | MONO_MMAP_WRITE, MONO_MEM_ACCOUNT_INTERP_STACK);
++		/* SHEPHERD-VITA device kit #14 integration (vita/notes/kit14-integration.md): the shared pool can refuse this at any time (a worker thread starts when the GC heap has filled it),
++		 * and NULL + the code below is a stack pointer of 0x10: the thread's first interpreted call faults, no END line, the host never hears of it. With the row on
++		 * (MONO_VITA_K14_ISAFE) a smaller stack (the same overflow check; the walk's deepest thread other than the first 11 KiB), and below 64 KiB the host's clean stop (its log
++		 * callback knows this message). Nothing changes unless the pool refuses. Off: as kit #14's first merge. */
++		if (!context->stack_start && (mono_vita_k14_flags & MONO_VITA_K14_ISAFE)) {
++			guint k14_asked = k14_size;
++			while (!context->stack_start && k14_size > 64 * 1024) {
++				k14_size >>= 1;
++				context->stack_start = (guchar*)mono_valloc_aligned (k14_size, MINT_STACK_ALIGNMENT, MONO_MMAP_READ | MONO_MMAP_WRITE, MONO_MEM_ACCOUNT_INTERP_STACK);
++			}
++			if (!context->stack_start)
++				g_error ("K14 interpreter stack refused: no %u KiB and no 64 KiB of the shared pool for a new thread", k14_asked / 1024);
++			g_warning ("K14 interpreter stack: %u KiB refused, this thread runs on %u KiB", k14_asked / 1024, k14_size / 1024);
++		}
+ 		context->stack_end = context->stack_start + k14_size - INTERP_REDZONE_SIZE;
+ 		context->stack_real_end = context->stack_start + k14_size;
+ #else
+diff -ruN a/src/mono/mono/utils/mono-mmap-vita.c b/src/mono/mono/utils/mono-mmap-vita.c
+--- a/src/mono/mono/utils/mono-mmap-vita.c
++++ b/src/mono/mono/utils/mono-mmap-vita.c
+@@ -446,6 +446,9 @@
+ 	return VITA_FREE_OK;
+ }
+ 
++extern unsigned mono_vita_k14_flags;   /* (metadata/class.c, vita/patches/k14-newlib.patch) */
++const int mono_vita_k14_isafe = 1;     /* the host's row 0x400 asks for this: a runtime without it has no such row */
++
+ static void *
+ vita_valloc (void *addr, size_t length, size_t alignment, int flags, MonoMemAccountType type)
+ {
+@@ -511,7 +514,10 @@
+ 			}
+ 		} else {
+ 			n_failed++;
+-			event = "FAIL";
++			/* SHEPHERD-VITA device kit #14 integration (vita/notes/kit14-integration.md): above one block sgen's major heap asks for half as many (sgen-marksweep.c ms_get_empty_block), so
++			 * that refusal is not the end; every other refusal is news. By size alone the host cannot tell them apart (an interpreter stack is 256 KiB too): with the row on
++			 * (MONO_VITA_K14_ISAFE, 1024) the event says which it was. Off: "FAIL" for all, as before. */
++			event = (mono_vita_k14_flags & 1024u) && type == MONO_MEM_ACCOUNT_SGEN_MARKSWEEP && bytes > 16384 ? "FAIL blocks" : "FAIL";
+ 		}
+ 	} else {
+ 		n_failed++;

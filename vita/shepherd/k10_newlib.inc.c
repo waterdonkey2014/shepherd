@@ -34,6 +34,9 @@
 #ifndef SHP_K10_POOL_DEFAULT
 #define SHP_K10_POOL_DEFAULT 0          /* the shared pool's default per app (host.c DEFAULTS may set it; the env file wins) -- 0 everywhere since the review */
 #endif
+#ifndef SHP_K11_POOL_DEFAULT
+#define SHP_K11_POOL_DEFAULT SHP_K10_POOL_DEFAULT   /* kit #11 walk (host.c DEFAULTS): the play apps' pool ON; SHEPHERD_K11_WALK=0 = kit #10's default */
+#endif
 /* (both builds) the memory guard's view of a cap the pool lowered (review fix R3: k10_mem.inc.c sets it, host.c's heap_limit_cb reads it) */
 static volatile int k10_cap_drop_pending;   /* the GC heap's cap fell since the last completed major collection */
 static unsigned k10_guard_spared;           /* play-guard refusals let through because of such a drop (the K10 MEM end line) */
@@ -146,7 +149,17 @@ static int k10_pool_wanted_premain (void)
 		return 0;
 	if (k10_env_premain ("SHEPHERD_K10_POOL", v, sizeof (v)))
 		return v [0] == '1' && !v [1];
-	return SHP_K10_POOL_DEFAULT;
+	/* kit #11 walk: the app's default is SHP_K11_POOL_DEFAULT unless the env file says SHEPHERD_K11_WALK=0 (kit #10's default) */
+	if (k10_env_premain ("SHEPHERD_K11_WALK", v, sizeof (v)) && v [0] == '0' && !v [1])
+		return SHP_K10_POOL_DEFAULT;
+	return SHP_K11_POOL_DEFAULT;
+}
+
+/* kit #11 walk: the same default once the env file is applied (k10_mem_config: the read before main and main must agree) */
+static int k11_pool_default (void)
+{
+	const char *w = getenv ("SHEPHERD_K11_WALK");
+	return w && !strcmp (w, "0") ? SHP_K10_POOL_DEFAULT : SHP_K11_POOL_DEFAULT;
 }
 
 void _init_vita_heap (void);

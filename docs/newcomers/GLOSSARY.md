@@ -97,8 +97,8 @@ For example, the Mac engine against the Vita build under → vlx: the Vita must 
 **interpreter**: Mono's interpreter. It runs .NET code without compiling it: slow, but it runs anything. The game's own code runs
 here unless → game AOT or the → baseline JIT takes it.
 
-**kit (device kit #N)**: One round of changes to the first port, built, tested and measured on a real Vita. Kits 1 to 10 so far
-(see CHANGELOG and the → progress ledger). Many file and variable names carry their kit number (`k8_`, `K10Store`, ...).
+**kit (device kit #N)**: One round of changes to the first port, built, tested and measured on a real Vita. Kits 1 to 14 so far
+(see CHANGELOG and the → progress page). Many file and variable names carry their kit number (`k8_`, `K10Store`, ...).
 
 **launcher**: A tiny eboot (`vita/shepherd/launcher.c`). It shows the splash video through the hardware decoder while it loads
 the engine as a module (`shepherd.suprx`), so the screen is not black during the long load.
@@ -141,8 +141,8 @@ from one PCH-2000.
 **PCT**: Seeded thread-schedule testing. It runs the engine's threads one at a time in a reproducible random order, to make rare
 races repeatable (`vita/tests/pct`, `Shepherd.Assets/Sched.cs`).
 
-**progress ledger**: `docs/ledger/index.html`: every kit, done and planned, with each trick explained and its effect, measured or
-estimated.
+**progress page** (Shepherd Progress): the first port's page, in its own repository (https://waterdonkey2014.github.io/shepherd-progress/): every kit, done and
+planned, with each trick explained and its effect, measured or estimated.
 
 **Rewriter**: `tools/Rewriter`. It rewrites Unity's managed assemblies from your install so their → icalls go to Shepherd. With
 `--vita` it also rewrites → FMOD calls for the → Vita profile.

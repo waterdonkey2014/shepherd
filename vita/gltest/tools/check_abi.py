@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the 51 GL entry points of engine/Shepherd.Engine/Render/Gl.cs against vitaGL.h, by ABI class (arm-vita-eabi:
+"""Check the GL entry points (SHEPGL_COUNT in shepgl.h: 59 since kit #12) of engine/Shepherd.Engine/Render/Gl.cs against vitaGL.h, by ABI class (arm-vita-eabi:
 32-bit AAPCS, hard float), and against vita/gltest/shepgl/shepgl_entries.h (names, order, count).
 
 Per parameter and return value, each side is reduced to its calling-convention class:
@@ -62,8 +62,10 @@ def main():
             errors.append(f"{tw}: its SuppressGCTransition signature <{sig}> does not match {tw[:-1]}'s <{fields.get(tw[:-1])}>")
         elif not re.search(r"^\s*" + tw[:-1] + r" = \(delegate\* unmanaged<[^>]*>\)P\(\"gl\w+\"\); " + tw + r" = \(delegate\* unmanaged\[SuppressGCTransition\]<" + re.escape(sig) + r">\)" + tw[:-1] + ";", gl_cs, re.M):
             errors.append(f"{tw}: not assigned from {tw[:-1]} right after it is resolved")
-    if len(loads) != 51:
-        errors.append(f"Gl.Load resolves {len(loads)} names, expected 51")
+    m_count = re.search(r"^#define SHEPGL_COUNT (\d+)", open(f"{repo}/vita/gltest/shepgl/shepgl.h", encoding="ascii").read(), re.M)
+    want = int(m_count.group(1)) if m_count else -1   # kit #12 boot: the count is shepgl.h's (51 before kit #12, 59 with the stencil entries)
+    if len(loads) != want:
+        errors.append(f"Gl.Load resolves {len(loads)} names, expected {want} (SHEPGL_COUNT)")
     pub = lambda f: f[1].upper() + f[2:] if f.startswith("_") else f   # _viewport (a kit #5 twin pair) is the public Viewport
     if [(pub(f), n) for f, n in loads] != [(f, n) for _, f, n, _ in entries]:
         errors.append("shepgl_entries.h does not list Gl.Load's names in Gl.Load's order")

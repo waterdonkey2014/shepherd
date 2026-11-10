@@ -25,6 +25,7 @@ public static class RenderCheck
     public sealed class Rec
     {
         public readonly List<(int kind, IntPtr tex, uint blend, bool sdf, Vertex[] v, int[] idx, int x, int y, int w, int h)> E = new();
+#if SHEPHERD_EBOOT
         public void Draw(IntPtr tex, uint blend, bool sdf, Span<Vertex> v, Span<int> idx) => E.Add((0, tex, blend, sdf, v.ToArray(), idx.ToArray(), 0, 0, 0, 0));
         public void Clip(int x, int y, int w, int h) => E.Add((1, IntPtr.Zero, 0, false, null, null, x, y, w, h));
         public void NoClip() => E.Add((2, IntPtr.Zero, 0, false, null, null, 0, 0, 0, 0));
@@ -35,6 +36,25 @@ public static class RenderCheck
         /// <summary>Integration with fidelity round 1: a lit draw (the owner-local model's DrawAdd), for the stream hash only: its shaded vertices
         /// and indices (kind 6; the per-vertex added colours stay inside the owner-local code).</summary>
         public void Lit(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx) { if (!On) E.Add((6, tex, blend, false, v.ToArray(), idx.ToArray(), 0, 0, 0, 0)); }
+#else
+        // the same recorder; kit #11 measure (Diag/K11Census.cs): the pixel-contribution census reads the target back right after each event of a
+        // sampled frame's live stream (SHEPHERD_K11_CENSUS; Mac / tools builds only -- the eboots keep the lines above)
+        public void Draw(IntPtr tex, uint blend, bool sdf, Span<Vertex> v, Span<int> idx) { E.Add((0, tex, blend, sdf, v.ToArray(), idx.ToArray(), 0, 0, 0, 0)); K11(0, tex, blend, sdf, v, idx, idx.Length, 0, 0, 0, 0); }
+        public void Clip(int x, int y, int w, int h) { E.Add((1, IntPtr.Zero, 0, false, null, null, x, y, w, h)); K11(1, IntPtr.Zero, 0, false, default, default, 0, x, y, w, h); }
+        public void NoClip() { E.Add((2, IntPtr.Zero, 0, false, null, null, 0, 0, 0, 0)); K11(2, IntPtr.Zero, 0, false, default, default, 0, 0, 0, 0, 0); }
+        public void Mark(int what) { E.Add((3, IntPtr.Zero, 0, false, null, null, what, 0, 0, 0)); K11(3, IntPtr.Zero, 0, false, default, default, 0, what, 0, 0, 0); }   // 1 = EndWorldPass
+        /// <summary>Render-target operations, recorded for the stream hash only (the pre-stage-2 comparison never had them).</summary>
+        public void Target(IntPtr t) { if (!On) { E.Add((4, t, 0, false, null, null, 0, 0, 0, 0)); K11(4, t, 0, false, default, default, 0, 0, 0, 0, 0); } }
+        public void ClearTarget(float r, float g, float b, float a) { if (!On) { E.Add((5, IntPtr.Zero, 0, false, null, null, BitConverter.SingleToInt32Bits(r), BitConverter.SingleToInt32Bits(g), BitConverter.SingleToInt32Bits(b), BitConverter.SingleToInt32Bits(a))); K11(5, IntPtr.Zero, 0, false, default, default, 0, 0, 0, 0, 0); } }
+        /// <summary>Integration with fidelity round 1: a lit draw (the owner-local model's DrawAdd), for the stream hash only: its shaded vertices
+        /// and indices (kind 6; the per-vertex added colours stay inside the owner-local code).</summary>
+        public void Lit(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx) { if (!On) { E.Add((6, tex, blend, false, v.ToArray(), idx.ToArray(), 0, 0, 0, 0)); K11(6, tex, blend, false, v, idx, idx.Length, 0, 0, 0, 0); } }
+        void K11(int kind, IntPtr tex, uint blend, bool sdf, Span<Vertex> v, Span<int> idx, int nIdx, int x, int y, int w, int h)
+        {
+            if (Diag.K11Census.Live && ReferenceEquals(this, Live)) Diag.K11Census.Event(kind, tex, blend, sdf, v, idx, nIdx, x, y, w, h);
+            if (kind == 3 && x == 1 && Diag.K11Green.On && ReferenceEquals(this, Live)) Diag.K11Green.WorldPassEnded();   // (the green check's phase: a region redrawn before this is graded by the post pass)
+        }
+#endif
         /// <summary>Kit #6 gpulight: a static-mesh draw (IGpuMesh), for the stream hash only (kind 7): program, first vertex, count, the data
         /// array as a first-seen id, and the uniforms' bits as the index list.</summary>
         public void Gpu(IntPtr tex, uint blend, int program, int first, int count, float[] data, ReadOnlySpan<Sdl.FColor> u)
@@ -44,15 +64,66 @@ public static class RenderCheck
             for (int k = 0; k < u.Length; k++) { bits[k * 4] = BitConverter.SingleToInt32Bits(u[k].r); bits[k * 4 + 1] = BitConverter.SingleToInt32Bits(u[k].g); bits[k * 4 + 2] = BitConverter.SingleToInt32Bits(u[k].b); bits[k * 4 + 3] = BitConverter.SingleToInt32Bits(u[k].a); }
             int id = _dataIds.IndexOf(data) + 1; if (id == 0) { _dataIds.Add(data); id = _dataIds.Count; }
             E.Add((7, tex, blend, false, null, bits, program, first, count, id));
+#if !SHEPHERD_EBOOT
+            K11(7, tex, blend, false, default, default, count, program, first, count, id);
+#endif
         }
+        /// <summary>Kit #11 gpu2 (review fix): DrawGpuMeshTex's two extra textures and wrap bits, right after its kind-7 record (kind 9, one per
+        /// texture: the handle as a first-seen id, the wrap bits, the unit). Only that opt-in draw records them: kit #10's streams are unchanged.</summary>
+        public void GpuTex(IntPtr tex1, IntPtr tex2, int wrap) { if (On) return; E.Add((9, tex1, (uint)wrap, false, null, null, 1, 0, 0, 0)); E.Add((9, tex2, (uint)wrap, false, null, null, 2, 0, 0, 0)); }
         static readonly List<float[]> _dataIds = new();   // (first-seen ids; stream-hash runs only)
+        /// <summary>Kit #11 gpu1: a GPU-projected world draw (IK11Proj), for the stream hash only (kind 8): its world-space vertices, then as the
+        /// index list its indices followed by the bits of every vertex's world z and of the pass (view-projection, pixel rect, target height).</summary>
+        public void Proj(IntPtr tex, uint blend, Span<Vertex> v, Span<float> z, Span<int> idx, in K11ProjPass p)
+        {
+            if (On) return;
+            var bits = new int[idx.Length + z.Length + 21]; int o = 0;
+            foreach (var i in idx) bits[o++] = i;
+            foreach (var f in z) bits[o++] = BitConverter.SingleToInt32Bits(f);
+            for (int k = 0; k < 16; k++) bits[o++] = BitConverter.SingleToInt32Bits(p.Vp[k]);
+            bits[o++] = BitConverter.SingleToInt32Bits(p.X); bits[o++] = BitConverter.SingleToInt32Bits(p.Y); bits[o++] = BitConverter.SingleToInt32Bits(p.W); bits[o++] = BitConverter.SingleToInt32Bits(p.H); bits[o++] = BitConverter.SingleToInt32Bits(p.Gh);
+            E.Add((8, tex, blend, false, v.ToArray(), bits, idx.Length, 0, 0, 0));
+#if !SHEPHERD_EBOOT
+            K11(8, tex, blend, false, v, idx, idx.Length, 0, 0, 0, 0);   // (integration review: the census reads its pixels -- DrawProj ran just before; ReadPixels flushes its batch)
+#endif
+        }
+        /// <summary>Kit #13 looks (K13Looks.Persp): a perspective draw's clip w, for the stream hash only -- the bits appended to the index list of the
+        /// draw recorded at <paramref name="at"/> (-1: the last one; a lit draw's kind 6 too), the same on the single-threaded and the multicore
+        /// paths. Only a perspective draw has them: with the switch off every stream is kit #12's.</summary>
+        public void Persp(ReadOnlySpan<float> w, int at = -1)
+        {
+            if (On || E.Count == 0) return;
+            int i = at < 0 ? E.Count - 1 : at; var e = E[i]; if (e.idx == null) return;
+            var bits = new int[e.idx.Length + w.Length]; Array.Copy(e.idx, bits, e.idx.Length);
+            for (int k = 0; k < w.Length; k++) bits[e.idx.Length + k] = BitConverter.SingleToInt32Bits(w[k]);
+            e.idx = bits; E[i] = e;
+        }
+        /// <summary>Kit #13 looks (SDF exact): the last draw's per-vertex parameters, recorded as Persp records floats (r, g, b, a per vertex).</summary>
+        public void PerspF(ReadOnlySpan<Sdl.FColor> p)
+        {
+            if (On || E.Count == 0) return;
+            int i = E.Count - 1; var e = E[i]; if (e.idx == null) return;
+            var bits = new int[e.idx.Length + p.Length * 4]; Array.Copy(e.idx, bits, e.idx.Length);
+            for (int k = 0, o = e.idx.Length; k < p.Length; k++, o += 4)
+            { var c = p[k]; bits[o] = BitConverter.SingleToInt32Bits(c.r); bits[o + 1] = BitConverter.SingleToInt32Bits(c.g); bits[o + 2] = BitConverter.SingleToInt32Bits(c.b); bits[o + 3] = BitConverter.SingleToInt32Bits(c.a); }
+            e.idx = bits; E[i] = e;
+        }
         /// <summary>SHEPHERD_MT_RENDER=1: the slot of a draw the render thread builds later (kind 99 = none: the build drew nothing; not hashed).</summary>
         public int Placeholder() { E.Add((99, IntPtr.Zero, 0, false, null, null, 0, 0, 0, 0)); return E.Count - 1; }
         public void Fill(int at, IntPtr tex, uint blend, bool sdf, Span<Vertex> v, Span<int> idx) => E[at] = (0, tex, blend, sdf, v.ToArray(), idx.ToArray(), 0, 0, 0, 0);
     }
     /// <summary>The live pass's stream for the current frame (SceneRenderer records into it while <see cref="On"/>).</summary>
     public static Rec Live;
+#if SHEPHERD_EBOOT
     public static void BeginFrame() { if (On) Live = new Rec(); else if (HashFile != null) Live ??= new Rec(); }
+#else
+    public static void BeginFrame()
+    {
+        if (On) Live = new Rec(); else if (HashFile != null) Live ??= new Rec();
+        if (Diag.K11Census.On) Diag.K11Census.FrameBegin();   // kit #11 measure: a census frame's baseline readback (after Begin's clear)
+        if (Diag.K11Green.On) Diag.K11Green.FrameBegin();     // kit #11 measure: the green check's world-pass phase
+    }
+#endif
 
     // ---------------- menu-speed: SHEPHERD_STREAM_HASH=<file> ----------------
     /// <summary>SHEPHERD_STREAM_HASH=&lt;file&gt; (output-identity A/B between engine builds; check runs only): every frame, an FNV-1a 64 hash of the
@@ -61,7 +132,13 @@ public static class RenderCheck
     /// between frames, counted into the next frame) -- appended as "frame, events, draws, vertices, hash" to the file. Two builds
     /// whose files are identical handed the backend bit-identical input on every frame. Without the pre-stage-2 comparison (that is
     /// SHEPHERD_RENDER_CHECK=1; both can run together).</summary>
+#if SHEPHERD_EBOOT
     public static readonly string HashFile = Environment.GetEnvironmentVariable("SHEPHERD_STREAM_HASH") is { Length: > 0 } hf ? hf : null;
+#else
+    // kit #11 measure (Diag/K11Measure.cs; Mac / tools builds): the heat map and the census read the same per-frame stream -- with one of them
+    // on and no file asked for, HashFile is "" (the stream is recorded and handed to them, no file is written)
+    public static readonly string HashFile = Environment.GetEnvironmentVariable("SHEPHERD_STREAM_HASH") is { Length: > 0 } hf ? hf : Diag.K11Measure.StreamTap ? "" : null;
+#endif
     static StreamWriter _hashOut;
     /// <summary>Backend handles as first-seen ids: SDL's are heap pointers (different every run), GL's are object names.</summary>
     static readonly Dictionary<IntPtr, int> _texIds = new();
@@ -76,6 +153,10 @@ public static class RenderCheck
     /// the frame's recorder detached from <see cref="Live"/> when the frame was recorded and its placeholders filled.</summary>
     public static unsafe void HashRec(int frame, Rec rec)
     {
+#if !SHEPHERD_EBOOT
+        if (Diag.K11Measure.StreamTap) Diag.K11Measure.Stream(frame, rec);   // kit #11 measure: the heat map / census get the frame's stream
+        if (HashFile.Length == 0) return;
+#endif
         ulong h = 14695981039346656037UL; long draws = 0, verts = 0; int events = 0;
         static ulong Mix(ulong h, ulong v) { for (int i = 0; i < 8; i++) { h = (h ^ (v & 0xff)) * 1099511628211UL; v >>= 8; } return h; }
         foreach (var e in rec.E)
@@ -200,7 +281,7 @@ public static class RenderCheck
     static void OldDrawOverlayCanvases(Rec rec)
     {
         var roots = Objects.All.OfType<NBehaviour>().Where(cv => !cv.Destroyed && cv.Managed is Canvas && cv.Enabled && cv.Go != null && cv.Go.Scene != 0 && cv.Go.ActiveInHierarchy && RenderIcalls.RootCanvasOf(cv.Go) == cv)
-            .Where(cv => (cv.Get("renderMode") is { } rm ? Convert.ToInt32(rm) : 0) != 2)
+            .Where(cv => (cv.Get("renderMode") is { } rm ? Convert.ToInt32(rm) : 0) != 2 && !SceneRenderer.CameraCanvasHidden(cv))   // kit #13 basec: the live passes' Camera-mode rule (SHEPHERD_K13_CAMCANVAS; off: every root, as before)
             .OrderBy(cv => cv.Get("sortingOrder") is { } so ? Convert.ToInt32(so) : 0).ToList();
         foreach (var root in roots) { int depth = 0; DrawUiTree(rec, root.Go, ref depth); }
         rec.NoClip();

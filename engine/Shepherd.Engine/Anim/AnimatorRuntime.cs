@@ -32,6 +32,12 @@ public sealed class AnimatorRuntime
     }
 
     static readonly Dictionary<NObj, AnimatorRuntime> All = new();
+#if !SHEPHERD_NO_K13WALKC
+    /// <summary>Kit #13 walkc (Runtime/K13Unload.cs): the runtimes of destroyed animators leave (kit #12 kept them, and through their path maps the
+    /// destroyed scenes' transforms, for the session). Exact: the map is only looked up, by a live animator's record (a destroyed one is never
+    /// found again: Objects.Get answers null for it).</summary>
+    internal static int K13Purge() { List<NObj> dead = null; foreach (var k in All.Keys) if (k.Destroyed) (dead ??= new()).Add(k); if (dead != null) foreach (var k in dead) All.Remove(k); return dead?.Count ?? 0; }
+#endif
     public static AnimatorRuntime For(object animator) { var n = Objects.Get<NBehaviour>(animator); if (n == null) return null; if (!All.TryGetValue(n, out var r)) All[n] = r = new AnimatorRuntime(n); return r; }
     AnimatorRuntime(NBehaviour owner) { Owner = owner; }
 

@@ -1,0 +1,27 @@
+--- a/src/mono/mono/mini/aot-runtime.c
++++ b/src/mono/mono/mini/aot-runtime.c
+@@ -6160,6 +6160,24 @@
+ 		 *   (1) it's a virtual call
+ 		 *   (2) the receiver is a value type, thus needs unboxing */
+ 		g_assert (mono_use_interpreter);
++		/*
++		 * SHEPHERD-VITA device kit #14, track small (vita/patches/k14-unbox-first.patch, vita/notes/kit14-small.md): kit #9's fallback (cached per method, with a jit info
++		 * naming the method) covered the image-table branches below, not this one, and kit #9 left this branch alone because only a struct of an image with no AOT
++		 * module reached it. The kit #14 keep list rules generic instances, so a struct method of a trimmed BCL generic definition is in no image: find_aot_method fails
++		 * and it lands here. Uncached and unnamed, repeated ldvirtftn / new virtual delegates empty CoreLib's pool (the fatal "Ran out of trampolines of type 5") and a
++		 * delegate constructor over the address stops on g_assert (method || del->interp_method) -- vita/tests/il/K14Unbox.cs shows both under vlx. Through the fallback
++		 * the same method with the same address gets the same trampoline: it only unboxes `this` and jumps there, so the behaviour is the same.
++		 * SHEPHERD_K14_UNBOX_FIRST=0 (env file) = kit #13's branch, for every image.
++		 */
++		{
++			static int k14_first_on = -1;
++			if (G_UNLIKELY (k14_first_on < 0)) {
++				const char *e = getenv ("SHEPHERD_K14_UNBOX_FIRST");
++				k14_first_on = (e && (!strcmp (e, "0") || !strcmp (e, "off"))) ? 0 : 1;
++			}
++			if (k14_first_on)
++				return k9_unbox_fallback (method, addr);
++		}
+ 		return mono_aot_get_unbox_arbitrary_trampoline (addr);
+ 	}
+ 

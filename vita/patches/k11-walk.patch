@@ -1,0 +1,111 @@
+diff -ruN a/src/mono/mono/metadata/class-init.c b/src/mono/mono/metadata/class-init.c
+--- a/src/mono/mono/metadata/class-init.c
++++ b/src/mono/mono/metadata/class-init.c
+@@ -4246,4 +4246,24 @@
+ 							MONO_COUNTER_GENERICS | MONO_COUNTER_INT, &inflated_classes_size);
+ 	mono_counters_register ("MonoClass size",
+ 							MONO_COUNTER_METADATA | MONO_COUNTER_INT, &classes_size);
++}
++
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #11, track walk (vita/notes/kit11-walk.md, the C heap's census; mini-vita.c mono_vita_census): this file's size
++ * counters (maintained whether or not mono_counters is enabled) -- MonoClass bytes, inflated classes / methods bytes, and the class counts
++ * by kind. Read-only; values are approximate while another thread creates classes. */
++void mono_vita_census_class_sizes (gint64 *out);
++void
++mono_vita_census_class_sizes (gint64 *out)
++{
++	out [0] = classes_size;
++	out [1] = inflated_classes_size;
++	out [2] = mono_inflated_methods_size;
++	out [3] = class_def_count;
++	out [4] = class_gtd_count;
++	out [5] = class_ginst_count;
++	out [6] = class_gparam_count;
++	out [7] = class_array_count;
++	out [8] = class_pointer_count;
+ }
++#endif
+diff -ruN a/src/mono/mono/metadata/loader.c b/src/mono/mono/metadata/loader.c
+--- a/src/mono/mono/metadata/loader.c
++++ b/src/mono/mono/metadata/loader.c
+@@ -2176,4 +2176,18 @@
+ 		}
+ 	}
+ 	return 0;
++}
++
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #11, track walk (vita/notes/kit11-walk.md, the C heap's census; mini-vita.c mono_vita_census): this file's size
++ * counters -- MonoMethod bytes, signature bytes, inflated signature bytes, the memberref signature cache. Read-only. */
++void mono_vita_census_loader_sizes (gint64 *out);
++void
++mono_vita_census_loader_sizes (gint64 *out)
++{
++	out [0] = methods_size;
++	out [1] = signatures_size;
++	out [2] = inflated_signatures_size;
++	out [3] = memberref_sig_cache_size;
+ }
++#endif
+diff -ruN a/src/mono/mono/mini/mini-vita.c b/src/mono/mono/mini/mini-vita.c
+--- a/src/mono/mono/mini/mini-vita.c
++++ b/src/mono/mono/mini/mini-vita.c
+@@ -116,6 +116,57 @@
+ 	s->delegates_created = mono_stats.delegate_creations;
+ }
+ 
++/* SHEPHERD-VITA device kit #11, track walk (vita/notes/kit11-walk.md, "the C heap's census"): where the runtime's share of the newlib heap
++ * goes -- the mempools split by owner (every loaded image's own pool; the default load context's memory manager: generic instances,
++ * the interpreter's methods and code, vtables), its code manager, the loaded images' raw bytes (the IL the host read), and the runtime's
++ * own size counters (MonoClass, inflated classes / methods, MonoMethod, signatures). Read-only: the host calls it at its end line and at
++ * its checkpoints (no lock is held across the callbacks; the numbers are approximate while another thread loads classes). Fills up to n
++ * values (gint64) in this order and returns how many:
++ *   0 image mempools (bytes), 1 images, 2 images' raw bytes, 3 the default load context's mempool, 4 its code manager (size), 5 (used),
++ *   6 MonoClass bytes, 7 inflated classes bytes, 8 inflated methods bytes, 9..14 classes by kind (def, gtd, ginst, gparam, array, pointer),
++ *   15 MonoMethod bytes, 16 signatures, 17 inflated signatures, 18 the memberref signature cache, 19 every mempool's bytes. */
++#include <mono/metadata/metadata-internals.h>
++#include <mono/metadata/loader-internals.h>
++#include <mono/metadata/assembly-internals.h>
++#include <mono/utils/mono-codeman.h>
++void mono_vita_census_class_sizes (gint64 *out);
++void mono_vita_census_loader_sizes (gint64 *out);
++int mono_vita_census (gint64 *out, int n);
++static void
++vita_census_image (gpointer data, gpointer user)
++{
++	MonoAssembly *a = (MonoAssembly *) data;
++	gint64 *acc = (gint64 *) user;
++	if (!a || !a->image)
++		return;
++	acc [0] += a->image->mempool ? mono_mempool_get_allocated (a->image->mempool) : 0;
++	acc [1] += 1;
++	acc [2] += a->image->raw_data_len;
++}
++int
++mono_vita_census (gint64 *out, int n)
++{
++	gint64 v [20];
++	memset (v, 0, sizeof (v));
++	mono_assembly_foreach (vita_census_image, v);
++	MonoAssemblyLoadContext *alc = mono_alc_get_default ();
++	MonoMemoryManager *mm = alc ? alc->memory_manager : NULL;
++	if (mm) {
++		v [3] = mm->_mp ? mono_mempool_get_allocated (mm->_mp) : 0;
++		if (mm->code_mp) {
++			int used = 0;
++			v [4] = mono_code_manager_size (mm->code_mp, &used);
++			v [5] = used;
++		}
++	}
++	mono_vita_census_class_sizes (v + 6);
++	mono_vita_census_loader_sizes (v + 15);
++	v [19] = mono_mempool_get_bytes_allocated ();
++	int k = n < 20 ? (n < 0 ? 0 : n) : 20;
++	memcpy (out, v, (size_t) k * sizeof (gint64));
++	return k;
++}
++
+ #else
+ 
+ #include <mono/utils/mono-compiler.h>

@@ -341,7 +341,7 @@ static unsafe class ShepAudio
     public static uint Create(int ev)
     {
         uint h = _create(_sys, ev);
-        if (h != 0 && _muted[ev]) _setVolume(_sys, h, 0f);
+        if (h != 0 && (_muted[ev] || (Shepherd.Engine.Runtime.K12BootSeq.On && Shepherd.Engine.Runtime.K12BootSeq.Muted(ev)))) _setVolume(_sys, h, 0f);   // (kit #12 boot: the skipped splash's sounds at volume 0)
         if (h != 0) { Events[ev].Created++; Log2("create", ev, h, ""); if (Trace && Environment.GetEnvironmentVariable("SHEPHERD_AUDIO_TRACE_STACKS") == "1") Log.Info("[audio]   at " + string.Join(" <- ", new StackTrace(2, false).GetFrames().Take(14).Select(f => f.GetMethod()).Where(m => m != null).Select(m => m.DeclaringType?.Name + "." + m.Name))); }
         return h;
     }

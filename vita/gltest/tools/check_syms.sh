@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Symbol checks for the GL glue (arm-vita-eabi-nm), run by build.sh after the Vita build:
-#  1. every one of Gl.cs's 51 names is a defined function (T) in libvitaGL.a; size <= 16 bytes is listed as a possible stub
+#  1. every one of Gl.cs's SHEPGL_COUNT names (59 since kit #12) is a defined function (T) in libvitaGL.a; size <= 16 bytes is listed as a possible stub
 #  2. every symbol libshepgl.a needs is defined by vitaGL / vitaShaRK / newlib / the SceLibKernel and SceKernelThreadMgr stubs
 #     (the thread manager: shepgl ends vitaGL's splash after a failed init with the same semaphore calls vitaGL's scene_reset makes)
 #  3. the linked gltest ELF has no undefined symbols and keeps sceUserMainThreadStackSize + _newlib_heap_size_user
@@ -15,7 +15,8 @@ out=()
 echo() { out+=("$*"); }   # collect lines; printed (and saved) at the end, in this shell (no subshell: fail must survive)
   echo "check_syms: libvitaGL.a sha256 $(shasum -a 256 "$L/libvitaGL.a" | cut -c1-16), libvitashark.a $(shasum -a 256 "$L/libvitashark.a" | cut -c1-16)"
   names=(${(f)"$(sed -nE 's/^SHEPGL_E\( *[0-9]+, *[A-Za-z0-9]+, *(gl[A-Za-z0-9]+),.*/\1/p' "$HERE/../shepgl/shepgl_entries.h")"})
-  [[ ${#names} -eq 51 ]] || { echo "ERROR shepgl_entries.h lists ${#names} names, expected 51"; fail=1; }
+  want=$(sed -nE 's/^#define SHEPGL_COUNT ([0-9]+).*/\1/p' "$HERE/../shepgl/shepgl.h")   # (kit #12 boot: shepgl.h's count)
+  [[ ${#names} -eq $want ]] || { echo "ERROR shepgl_entries.h lists ${#names} names, expected $want"; fail=1; }
   defs="$($NM -S -g --defined-only "$L/libvitaGL.a" 2>/dev/null | awk 'NF==4 && $3=="T" {print $4, $2}')"
   missing=0; small=()
   for n in $names; do
@@ -24,7 +25,7 @@ echo() { out+=("$*"); }   # collect lines; printed (and saved) at the end, in th
     sz=$((16#${line#* }))
     (( sz <= 16 )) && small+=("$n=${sz}B")
   done
-  echo "1. libvitaGL.a defines $((51-missing))/51 of Gl.cs's entry points; <= 16 bytes (check for stubs): ${small[*]:-none}"
+  echo "1. libvitaGL.a defines $((want-missing))/$want of Gl.cs's entry points; <= 16 bytes (check for stubs): ${small[*]:-none}"
   # 2. libshepgl's own undefined symbols
   und=(${(f)"$($NM -u "$LIBSHEPGL" | awk '$1=="U" {print $2}' | sort -u)"})
   have="$( { $NM -g --defined-only "$L/libvitaGL.a" "$L/libvitashark.a" "$L/libc.a" "$L/libSceLibKernel_stub.a" "$L/libSceKernelThreadMgr_stub.a" 2>/dev/null; } | awk 'NF>=3 {print $3}' | sort -u)"

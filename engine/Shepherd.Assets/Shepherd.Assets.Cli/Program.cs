@@ -224,7 +224,7 @@ public static class Program
                 {
                     total++;
                     var (tf, to) = db.Resolve(f, p);
-                    if (to == null)
+                    if (to.IsNull)
                     {
                         unresolved++;
                         string target = p.FileId == 0 ? f.Name : p.FileId <= f.Externals.Count ? f.Externals[p.FileId - 1].PathName : $"fileId {p.FileId}?";
@@ -282,7 +282,7 @@ public static class Program
             foreach (var p in ptrs)
             {
                 var (tf, to) = db.Resolve(f, p);
-                if (to == null) continue;
+                if (to.IsNull) continue;
                 if (visited.Add((tf.Name, to.PathId))) queue.Enqueue((tf, to));
             }
         }
@@ -381,7 +381,7 @@ public static class Program
         foreach (var f in files)
         {
             var o = f.GetObject(pathId);
-            if (o == null) continue;
+            if (o.IsNull) continue;
             Console.WriteLine($"{f.Name} #{pathId}: {ClassIds.Name(o.ClassId)} (class {o.ClassId}), {o.ByteSize} bytes @ {o.ByteStart}");
             var t = TypeTreeReader.Read(f, o);
             if (t.BytesRead != o.ByteSize) Console.WriteLine($"(note: type tree consumed {t.BytesRead} of {o.ByteSize} bytes)");
@@ -613,8 +613,8 @@ public static class Program
     {
         using var db = new AssetDatabase(Data);
         var gm = db.GetFile("globalgamemanagers");
-        var o = gm?.ObjectsOfClass(19).FirstOrDefault();
-        if (o == null) { Console.Error.WriteLine("phys2d: no Physics2DSettings record in globalgamemanagers"); return 1; }
+        var o = gm != null ? gm.ObjectsOfClass(19).FirstOrDefault() : default;
+        if (o.IsNull) { Console.Error.WriteLine("phys2d: no Physics2DSettings record in globalgamemanagers"); return 1; }
         var b = gm.GetObjectBytes(o).ToArray();
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outPath)));
         File.WriteAllBytes(outPath, b);

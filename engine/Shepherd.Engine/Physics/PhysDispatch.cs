@@ -330,9 +330,16 @@ public static class PhysDispatch
     }
     static Bound[] Handlers(NMono m)
     {
+#if !SHEPHERD_K10_RECORDS
+        if (m.TrigNone) return _none;   // kit #11 walk review fix: the type has none (a byte in the record, no side-table entry)
+#endif
         if (m.TrigD is Bound[] b) return b;
         var ti = InfoOf(m.Managed.GetType());
+#if SHEPHERD_K10_RECORDS
         if (ti.Mask == 0) { m.TrigD = _none; return _none; }
+#else
+        if (ti.Mask == 0) { m.TrigNone = true; return _none; }
+#endif
         b = new Bound[6];
         for (int k = 0; k < 6; k++)
         {

@@ -335,6 +335,8 @@ public static class K10Cache
         /// <summary>0 idle, 1 running, 2 done (<see cref="Result"/>, <see cref="Ok"/>).</summary>
         public static volatile int State;
         public static string Result; public static bool Ok;
+        /// <summary>Kit #11 device: the core's result object (PackVerify.Result) of the last check, null before one / when it could not run.</summary>
+        public static object ResultObj;
         static void Look()
         {
             if (_looked) return; _looked = true;
@@ -359,6 +361,7 @@ public static class K10Cache
                         args[i] = ps[i].ParameterType == typeof(bool) ? false   // (deep: no)
                                 : _stopType != null && ps[i].ParameterType.IsAssignableFrom(_stopType) ? Activator.CreateInstance(_stopType) : null;   // (progress: the stop, when merged)
                     var r = _run.Invoke(null, args);
+                    ResultObj = r;   // (kit #11 device: the window's short line is read from it -- Runtime/VitaToggles.cs VerifyShort)
                     Result = r?.GetType().GetMethod("Summary", Type.EmptyTypes)?.Invoke(r, null) as string ?? "done";
                     Ok = r?.GetType().GetField("Ok")?.GetValue(r) is true;
                     Stopped = r?.GetType().GetField("Stopped")?.GetValue(r) is true;
@@ -373,7 +376,7 @@ public static class K10Cache
         public static bool Begin()
         {
             if (!Available || State == 1) return false;
-            State = 1; Result = null; StopWanted = false; Stopped = false;
+            State = 1; Result = null; ResultObj = null; StopWanted = false; Stopped = false;
             Enqueue(new VerifyJob());
             return true;
         }

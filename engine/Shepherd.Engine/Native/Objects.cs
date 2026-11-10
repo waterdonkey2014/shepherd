@@ -8,19 +8,54 @@ namespace Shepherd.Engine.Native;
 /// block (kit6 mem L4d: 16 bytes; 32 before) whose int at +8 is the instance id (Unity's GetInstanceID reads it from there).</summary>
 public class NObj
 {
+    // Device kit #11, track walk -- the engine records diet (vita/notes/kit11-walk.md): NObj is 56 bytes on the Vita (was 64), so NComponent
+    // is 64 (72), NGameObject and NMono 80 (96: SGen's 96 class -> its 80 class) and NTransform 160 (200). 32-bit Mono's auto layout: the
+    // references first, then the other fields in declaration order at their own alignment (PathId's long at an 8-aligned offset; the class
+    // rounded to 8) -- vita/notes/kit10-memory.md section 4, kit #9's tools/fields. Two int / reference fields left the record: HideFlags (a
+    // byte in the padding after DontDestroy -- review fix: no side table for the values Unity's HideFlags use; any other int in the side
+    // table) and Data (the source TypeTree: only with SHEPHERD_KEEP_TREES=1, a test switch; side table). Both are properties with the same
+    // values as the fields had (a record never written reads 0 / null). Any field added to NObj, NComponent, NBehaviour, NMono, NGameObject or
+    // NTransform must be checked with tools/fields: one more word moves a record a whole size class up. The build switch back to kit #10's
+    // layouts: vita/shepherd/build.sh SHEPHERD_K11_RECORDS=0 (-p:ShepherdK11Records=0, compile symbol SHEPHERD_K10_RECORDS) -- a field
+    // layout is fixed when Mono loads the class, so it has no env-file switch.
+#if SHEPHERD_K10_RECORDS
     public int InstanceId; public IntPtr Ptr; public UObject Managed; public int HideFlags;
+#else
+    public int InstanceId; public IntPtr Ptr; public UObject Managed;
+    /// <summary>Object.hideFlags. Kit #11 walk: 0..254 in the record itself (<see cref="_hf"/>, a byte in NObj's padding: Unity's HideFlags
+    /// bits make 0..63); any other int moves the record's value to its <see cref="Cold"/> for good (255 marks that). Reads exactly what was last
+    /// written (0 before), as the field did.</summary>
+    public int HideFlags
+    {
+        get => _hf != HfCold ? _hf : ColdOf.TryGetValue(this, out var c) ? c.HideFlags : 0;
+        set { if (_hf != HfCold && (uint)value < HfCold) _hf = (byte)value; else { _hf = HfCold; MakeCold().HideFlags = value; } }
+    }
+#endif
     /// <summary>The object's name. menu-speed (top hotspots): a bound, live GameObject's name is counted in Objects' name filter (GameObject.Find's
     /// exact miss test), so a rename moves it there.</summary>
     public string Name { get => _name; set { if (Slot >= 0 && !Destroyed && this is NGameObject) { Objects.GoNameRemove(_name); Objects.GoNameAdd(value); } _name = value; } }
     string _name = "";
     public bool Destroyed; public bool DontDestroy;
+#if !SHEPHERD_K10_RECORDS
+    byte _hf;   // kit #11 walk: HideFlags (above) -- at offset 34, in the 2 bytes of padding before Slot: NObj stays 56 bytes
+#endif
     /// <summary>Where this record sits in Objects.ById's enumeration order (Registry); -1 before Bind.</summary>
     public int Slot = -1; internal int RegMask;
     /// <summary>The generic property bag (auto get_/set_ icalls): null, or a <see cref="PropBag"/> shaped bag (object[]: slot 0 its shared
     /// <see cref="PropShape"/>, then the values in key order), or a Dictionary&lt;string, object&gt; (kit #5's bag: SHEPHERD_PROPS_SHAPED=0, or a
     /// bag after its first removal). Read and written only through Get / Set / RemoveProp / ReplaceProps / <see cref="PropBag"/>.</summary>
     public object Props;
+#if SHEPHERD_K10_RECORDS
     public object Data;                                    // source asset data (TypeTreeObject) when loaded from disk — only kept with SHEPHERD_KEEP_TREES=1; read it through SourceTree()
+#else
+    /// <summary>Source asset data (TypeTreeObject) when loaded from disk -- only kept with SHEPHERD_KEEP_TREES=1; read it through SourceTree().
+    /// Kit #11 walk: kept in <see cref="Cold"/> (null for every record that never got one).</summary>
+    public object Data
+    {
+        get => _dataAny && ColdOf.TryGetValue(this, out var c) ? c.Data : null;
+        set { if (_dataAny && ColdOf.TryGetValue(this, out var c)) c.Data = value; else if (value != null) { _dataAny = true; MakeCold().Data = value; } }
+    }
+#endif
     public bool HasSource;                                 // created from a source TypeTree (SourceFile + PathId name it), whether or not Data is kept
     public object SourceFile;                              // SerializedFile it came from
     public long PathId;
@@ -41,6 +76,19 @@ public class NObj
     /// <summary>Loader.SeedProps: the keys and values in order, as that many Set calls would leave them (one array; PropsVer counted per key).</summary>
     public void SetMany(PropBag.Pending kv) { if (kv.Count == 0) return; Props = PropBag.SetMany(Props, kv); if (this is NRenderer r) r.PropsVer += kv.Count; }
     public override string ToString() => $"{GetType().Name}({Name}#{InstanceId})";
+
+#if !SHEPHERD_K10_RECORDS
+    // ---- kit #11 walk: the cold fields' side table (Data; HideFlags only for a value outside 0..254) ----
+    /// <summary>A record's rarely set fields, made on its first write that needs it and kept for the record's life (a later write of the
+    /// default is stored here too: each property reads exactly what was last written, as the field did). Weakly keyed: it goes with the record.
+    /// Each entry is a weak-table handle (on Mono an ephemeron the GC walks at every collection): review fix -- HideFlags no longer makes one
+    /// (the walk made 1,071 for it), so only SHEPHERD_KEEP_TREES=1 (a test switch) or an out-of-range hideFlags value does.</summary>
+    internal sealed class Cold { public int HideFlags; public object Data; }
+    static readonly ConditionalWeakTable<NObj, Cold> ColdOf = new();
+    static volatile bool _dataAny;   // false until the first non-null Data: its getter answers null without a lookup
+    const byte HfCold = 255;         // _hf's mark: this record's HideFlags is in its Cold
+    Cold MakeCold() => ColdOf.GetValue(this, static _ => new Cold());
+#endif
 }
 
 /// <summary>kit6 mem, lever L4a (vita/notes/kit6-mem.md): the property bags as shaped arrays. A record's bag was a Dictionary&lt;string, object&gt;
@@ -148,7 +196,13 @@ public sealed class NGameObject : NObj
     /// stamps are checked against (<see cref="NTransform.HierEpoch"/>). The value itself is the same bool as before.</summary>
     public bool ActiveSelf { get => _activeSelf; set { if (_activeSelf != value) { _activeSelf = value; if (Components.Count > 0 && Components[0] is NTransform t) t.HierChangedHere(); else NTransform.HierChanged(); } } }
     bool _activeSelf = true;
+    // (kit #11 walk, the records diet: IsStatic declared beside _activeSelf -- the two bools share one word before Layer -- so the record is 80
+    // bytes, SGen's 80 class; in the old order IsStatic took a word of its own after Layer; SHEPHERD_K10_RECORDS: the old order)
+#if SHEPHERD_K10_RECORDS
     public int Layer; public bool IsStatic;
+#else
+    public bool IsStatic; public int Layer;
+#endif
     /// <summary>Kit #8 speed track: a property (was a field) so that a change moves the record in the tag index (Runtime/K8Speed.cs TagIndex;
     /// SHEPHERD_K8_TAGS=0: the index is not kept). The value itself is the same string as before.</summary>
     public string Tag { get => _tag; set { var old = _tag; _tag = value; if (old != value) Runtime.TagIndex.Moved(this, old, value); } }
@@ -190,16 +244,49 @@ public class NBehaviour : NComponent
     /// again): 0 lets StopCoroutine / StopAllCoroutines / CancelInvoke / IsInvoking skip the search of every live one. Declared here, in the padding
     /// after Enabled (NBehaviour's fields end at 73 and round to 80), so NMono stays 96 bytes on the Vita (in NMono it was 104 = SGen's 128 class).</summary>
     internal byte CoN, InvN;
+#if !SHEPHERD_K10_RECORDS
+    // Kit #11 walk (the records diet): NMono's four flags are declared here, in the same word as Enabled / CoN / InvN (NBehaviour's fields end
+    // at 71 and round to 72 now that NObj is 56), so NMono is 80 bytes (SGen's 80 class; it was 96). They belong to NMono's use only.
+    public bool Awoken, Started, IsEnabledCalled;    // (NMono) IsEnabledCalled: OnEnable delivered and not yet matched by OnDisable
+    /// <summary>(NMono) kit3 (sub-menus): Lifecycle queued it for Start at least once (only such a behaviour can be in its PendingStart list).</summary>
+    public bool StartQueued;
+    /// <summary>(NMono) kit #11 walk review fix: what <see cref="NMono.TrigD"/> holds -- 0 nothing yet, 1 the type has no trigger / collision
+    /// handlers (Physics/PhysDispatch.cs answers its shared empty table: nothing stored for this behaviour), 2 the bound table is in the side
+    /// table. The byte at offset 71, NBehaviour's last byte of padding: the class stays 72 bytes and NMono 80.</summary>
+    internal byte TrigK;
+#endif
 }
 public sealed class NMono : NBehaviour
 {
+#if SHEPHERD_K10_RECORDS
     public bool Awoken, Started, IsEnabledCalled;    // IsEnabledCalled: OnEnable delivered and not yet matched by OnDisable
     // (kit #9 engine: CoN / InvN, the wheel's per-behaviour counts, are declared in NBehaviour: the object's size)
     /// <summary>kit3 (sub-menus): Lifecycle queued it for Start at least once (only such a behaviour can be in its PendingStart list).</summary>
     public bool StartQueued;
+#else
+    // (kit #9 engine: CoN / InvN, the wheel's per-behaviour counts, are declared in NBehaviour: the object's size; kit #11 walk: Awoken, Started,
+    // IsEnabledCalled and StartQueued too)
+#endif
     internal object LifecycleMsgs;                   // Lifecycle's message table of the managed type (stage 2)
     internal object PhaseD;                          // menu-speed: Lifecycle's phase-message delegates bound to Managed (made on first use): an Action[3] (FixedUpdate, Update, LateUpdate), or the Action itself when the type has one of them
+#if SHEPHERD_K10_RECORDS
     internal object TrigD;                           // physics Stage 2 (Physics/PhysDispatch.cs): the trigger handlers' closed delegates bound to Managed (made on first use)
+#else
+    /// <summary>physics Stage 2 (Physics/PhysDispatch.cs): the trigger handlers' closed delegates bound to Managed (made on first use). Kit #11
+    /// walk (the records diet): kept in a side table, so NMono is 80 bytes; the value read is exactly the one last written (null before).
+    /// Review fix: only behaviours whose type HAS handlers get an entry (a weak-table handle: on Mono an ephemeron the GC walks at every
+    /// collection, and a lookup per message) -- a type without any is marked in <see cref="NBehaviour.TrigK"/> (no entry, no lookup).</summary>
+    internal object TrigD
+    {
+        get => TrigK == 2 && TrigOf.TryGetValue(this, out var b) ? b.V : null;
+        set { if (TrigK == 2 && TrigOf.TryGetValue(this, out var b)) b.V = value; else if (value != null) { TrigOf.GetValue(this, static _ => new TrigBox()).V = value; TrigK = 2; } }
+    }
+    /// <summary>Kit #11 walk review fix: this behaviour's type has no trigger / collision handlers (PhysDispatch's answer, kept in a byte of
+    /// padding instead of a side-table entry holding the shared empty table).</summary>
+    internal bool TrigNone { get => TrigK == 1; set { if (value && TrigK == 0) TrigK = 1; } }
+    sealed class TrigBox { public object V; }
+    static readonly ConditionalWeakTable<NMono, TrigBox> TrigOf = new();
+#endif
     public MonoBehaviour MB => (MonoBehaviour)Managed;
 }
 
@@ -333,7 +420,30 @@ public class NTransform : NComponent
     // (menu-speed hop fix: the initial values are field stores, not Unity's Quaternion.identity / Vector3.one / Vector2 constructor;
     // the same values: (0,0,0,1), (1,1,1), (0.5,0.5), (100,100))
     NTransform _parent; Vector3 _lp; Quaternion _lr = Um.QIdentity; Vector3 _ls = Um.One3;
-    bool _isRect; bool _hc = true; Vector2 _aMin = Um.V2(0.5f, 0.5f), _aMax = Um.V2(0.5f, 0.5f), _aPos, _sd = Um.V2(100f, 100f), _piv = Um.V2(0.5f, 0.5f);
+    bool _isRect; bool _hc = true;
+    // ---- kit #11 walk, the records diet (vita/notes/kit11-walk.md): the RectTransform's five vectors (anchorMin, anchorMax, anchoredPosition,
+    // sizeDelta, pivot: 40 bytes) in a side object, made on the first write that changes one of them (Bits.Same, as the setters always
+    // tested); until then every read answers Unity's defaults from one shared, never-written instance. With NObj at 56 bytes this makes
+    // NTransform 160 bytes (SGen's 160 class; 200 before). Only RectTransforms whose values differ from the defaults pay the 48-byte part.
+    // SHEPHERD_K11_RECDIET=0 (env file) = every transform makes its part at creation (no shared instance in use: kit #10's eager state).
+    // The build switch SHEPHERD_K10_RECORDS (build.sh SHEPHERD_K11_RECORDS=0) = kit #10's record: the five vectors as fields of the transform
+    // in kit #10's order and types, named as the part's (_rect / RectW are then the transform itself, so the code below is the same).
+#if SHEPHERD_K10_RECORDS
+    Vector2 AMin = Um.V2(0.5f, 0.5f), AMax = Um.V2(0.5f, 0.5f), APos, Sd = Um.V2(100f, 100f), Piv = Um.V2(0.5f, 0.5f);
+    NTransform _rect => this;
+    NTransform RectW => this;
+#else
+    sealed class RectPart
+    {
+        public Vector2 AMin = Um.V2(0.5f, 0.5f), AMax = Um.V2(0.5f, 0.5f), APos, Sd = Um.V2(100f, 100f), Piv = Um.V2(0.5f, 0.5f);
+    }
+    static readonly RectPart RectDefaults = new();
+    internal static readonly bool RecDiet = Environment.GetEnvironmentVariable("SHEPHERD_K11_RECDIET") != "0" && Environment.GetEnvironmentVariable("SHEPHERD_K11_WALK") != "0";
+    RectPart _rect = RecDiet ? RectDefaults : new RectPart();
+    RectPart RectW => ReferenceEquals(_rect, RectDefaults) ? _rect = new RectPart() : _rect;   // the record's own part, for a write
+    /// <summary>Kit #11 walk (MemReport): this transform has its own rect part (a RectTransform with non-default values).</summary>
+    internal bool HasRectPart => !ReferenceEquals(_rect, RectDefaults);
+#endif
     public NTransform Parent { get => _parent; set { if (_parent != value) { if (HcLazy) HcRebase(); if (PhysDesc != 0) Physics.PhysWorld.ParentChanging(this, _parent, value); _parent = value; HierChangedHere(); Changed(); } } }
     // ---- kit #9 engine (SHEPHERD_K9_STAMPS): activeInHierarchy from a stamp ----
     // NGameObject.ActiveInHierarchy walked the chain up to the root on every read (every world renderer per camera pass, every UI node, every
@@ -376,15 +486,15 @@ public class NTransform : NComponent
     /// 2D colliders; PhysDesc = the interested transforms in this subtree, itself included (kept through attach / detach / reparent /
     /// destroy; Stage 7 walks MarkChanged only into PhysDesc > 0); PhysDirty = in the sync check's dirty set. Always 0 at SHEPHERD_PHYS=none.</summary>
     public int PhysInterest, PhysDesc; internal bool PhysDirty;
-    public Vector3 LocalPosition { get => _lp; set { if (!Bits.Same(_lp, value)) { _lp = value; Changed(); } } }
-    public Quaternion LocalRotation { get => _lr; set { if (!Bits.Same(_lr, value)) { _lr = value; Changed(); } } }
-    public Vector3 LocalScale { get => _ls; set { if (!Bits.Same(_ls, value)) { _ls = value; Changed(); } } }
+    public Vector3 LocalPosition { get => _lp; set { if (!Bits.Same(_lp, value)) { _lp = value; ChangedPose(); } } }
+    public Quaternion LocalRotation { get => _lr; set { if (!Bits.Same(_lr, value)) { _lr = value; ChangedPose(); } } }
+    public Vector3 LocalScale { get => _ls; set { if (!Bits.Same(_ls, value)) { _ls = value; ChangedPose(); } } }
     public bool IsRect { get => _isRect; set { if (_isRect != value) { _isRect = value; Changed(); } } }
-    public Vector2 AnchorMin { get => _aMin; set { if (!Bits.Same(_aMin, value)) { _aMin = value; Changed(); } } }
-    public Vector2 AnchorMax { get => _aMax; set { if (!Bits.Same(_aMax, value)) { _aMax = value; Changed(); } } }
-    public Vector2 AnchoredPosition { get => _aPos; set { if (!Bits.Same(_aPos, value)) { _aPos = value; Changed(); } } }
-    public Vector2 SizeDelta { get => _sd; set { if (!Bits.Same(_sd, value)) { _sd = value; Changed(); } } }
-    public Vector2 Pivot { get => _piv; set { if (!Bits.Same(_piv, value)) { _piv = value; Changed(); } } }
+    public Vector2 AnchorMin { get => _rect.AMin; set { if (!Bits.Same(_rect.AMin, value)) { RectW.AMin = value; Changed(); } } }
+    public Vector2 AnchorMax { get => _rect.AMax; set { if (!Bits.Same(_rect.AMax, value)) { RectW.AMax = value; Changed(); } } }
+    public Vector2 AnchoredPosition { get => _rect.APos; set { if (!Bits.Same(_rect.APos, value)) { RectW.APos = value; ChangedPose(); } } }
+    public Vector2 SizeDelta { get => _rect.Sd; set { if (!Bits.Same(_rect.Sd, value)) { RectW.Sd = value; if (RectNegCtl) ChangedPose(); else Changed(); } } }
+    public Vector2 Pivot { get => _rect.Piv; set { if (!Bits.Same(_rect.Piv, value)) { RectW.Piv = value; ChangedPose(); } } }
 
     // ---- memo (allocated for the transforms whose derived values are asked for, and their ancestors) ----
     sealed class Memo
@@ -403,6 +513,13 @@ public class NTransform : NComponent
     /// no transform's own version and no parent link has changed, so a world stamp validated at this value is still valid.</summary>
     static long _writes;
     void Changed() { _writes++; if (_m != null) _m.Ver = ++_clock; NrcDirty(); }   // without a memo, nothing was derived from this record yet
+    /// <summary>Kit #13 speed (Render/K13Speed.cs, SHEPHERD_K13_RECTDIRTY): a write that cannot change any rect's SIZE (local position,
+    /// rotation, scale, anchored position, pivot) -- the same version / stamp bump as <see cref="Changed"/>, without NotifyRectChanges' queue
+    /// (switch off: <see cref="Changed"/>, kit #12).</summary>
+    void ChangedPose() { if (!RectDirty) { Changed(); return; } _writes++; if (_m != null) _m.Ver = ++_clock; PoseWrites++; }
+    static readonly bool RectDirty = Shepherd.Engine.Render.K13Speed.RectDirty, RectNegCtl = Shepherd.Engine.Render.K13Speed.RectNegCtl;
+    /// <summary>Kit #13 speed: pose writes that did not queue their transform (the [k13] line).</summary>
+    internal static long PoseWrites;
     // ---- menu-speed (top hotspots): SceneRenderer.NotifyRectChanges' dirty queue ----
     /// <summary>Transforms that may need NotifyRectChanges' size comparison: queued by every state change (Changed: own state, parent link,
     /// IsRect), by Bind (a new registry member) and by a change of its GameObject's scene; the walk compares the queued transforms and
@@ -479,7 +596,7 @@ public class NTransform : NComponent
     {
         var pr = ParentRectF;
         // Vector2 -: (aMax.x - aMin.x, ...); Vector2.Scale(a, b): a.x * b.x with b = rect.size = (m_Width, m_Height); Vector2 +: sd.x + that
-        x = _sd.x + (_aMax.x - _aMin.x) * pr.W; y = _sd.y + (_aMax.y - _aMin.y) * pr.H;
+        var q = _rect; x = q.Sd.x + (q.AMax.x - q.AMin.x) * pr.W; y = q.Sd.y + (q.AMax.y - q.AMin.y) * pr.H;
         if (HopCheck.On) HopCheck.V2(HopCheck.NtSize, Um.V2(x, y), SizeDelta + Vector2.Scale(AnchorMax - AnchorMin, ParentRect.size));
     }
     /// <summary>The rect (Unity's struct, for the icalls and the reference passes), from <see cref="RectF"/>.</summary>
@@ -490,7 +607,7 @@ public class NTransform : NComponent
         get
         {
             var m = M_(); long k = WorldStamp(); if (m.RectKey == k) return m.Rect;
-            SizeF(out var sx, out var sy); var r = new RectF(-_piv.x * sx, -_piv.y * sy, sx, sy);
+            SizeF(out var sx, out var sy); var pv = _rect.Piv; var r = new RectF(-pv.x * sx, -pv.y * sy, sx, sy);
             if (HopCheck.On) HopCheck.R(HopCheck.NtRect, r, new Rect(-Pivot.x * sx, -Pivot.y * sy, sx, sy));
             m.Rect = r; m.RectKey = k; return r;
         }
@@ -502,8 +619,8 @@ public class NTransform : NComponent
             if (!IsRect) return LocalPosition;
             var pr = ParentRectF;
             // Mathf.LerpUnclamped(a, b, t) = a + (b - a) * t; then rect.x + rect.width * ax + AnchoredPosition.x (x = m_XMin, width = m_Width)
-            float ax = Um.LerpUnclamped(_aMin.x, _aMax.x, _piv.x), ay = Um.LerpUnclamped(_aMin.y, _aMax.y, _piv.y);
-            var r = Um.V3(pr.X + pr.W * ax + _aPos.x, pr.Y + pr.H * ay + _aPos.y, _lp.z);
+            var q = _rect; float ax = Um.LerpUnclamped(q.AMin.x, q.AMax.x, q.Piv.x), ay = Um.LerpUnclamped(q.AMin.y, q.AMax.y, q.Piv.y);
+            var r = Um.V3(pr.X + pr.W * ax + q.APos.x, pr.Y + pr.H * ay + q.APos.y, _lp.z);
             if (HopCheck.On) HopCheck.V3(HopCheck.NtElp, r, OldEffectiveLocalPosition());
             return r;
         }
@@ -511,7 +628,7 @@ public class NTransform : NComponent
         {
             if (!IsRect) { LocalPosition = value; return; }
             var pr = ParentRectF;
-            float ax = Um.LerpUnclamped(_aMin.x, _aMax.x, _piv.x), ay = Um.LerpUnclamped(_aMin.y, _aMax.y, _piv.y);
+            var q = _rect; float ax = Um.LerpUnclamped(q.AMin.x, q.AMax.x, q.Piv.x), ay = Um.LerpUnclamped(q.AMin.y, q.AMax.y, q.Piv.y);
             var ap = Um.V2(value.x - (pr.X + pr.W * ax), value.y - (pr.Y + pr.H * ay));
             if (HopCheck.On)
             {
@@ -674,15 +791,63 @@ public static class Objects
     static NObj[] _byIdx = new NObj[1024]; static int _idxUsed; static readonly Stack<int> _idxFree = new();
     static Dictionary<IntPtr, NObj> _rebound;
     static int _nextRuntimeId = -2, _nextAssetId = 2;
+#if !SHEPHERD_NO_K13WALKC
+    public static int LiveCount => ById.Count - _k13Tombs;
+
+    // ---- kit #13 walkc: Unity's UnloadUnusedAssets (Runtime/K13Unload.cs). A released asset record leaves a TOMBSTONE in ById: its key and
+    // its entry stay (the shared, never bound, destroyed record below), so no Dictionary entry is freed and every later Bind takes the slot it
+    // took in kit #12 (ById's enumeration order -- FindObjectsOfType's -- unchanged). When the game asks for that asset again, the new record
+    // takes the tombstone's id and entry back (K13Rekey): Unity keeps a persistent object's instance id across an unload and a reload. Every
+    // enumeration of ById already skips destroyed records; LiveCount does not count tombstones. (No string literal here: Assets/Diet.cs.) ----
+    internal static readonly NObj K13Tomb = new() { Destroyed = true };
+    static int _k13Tombs;
+    internal static int K13Tombs => _k13Tombs;
+    /// <summary>A candidate leaves ById / the block index for one collection (its entry keeps the tombstone): the block index slot, or -1.</summary>
+    internal static int K13Detach(NObj n)
+    {
+        ById[n.InstanceId] = K13Tomb;   // (an existing key: the entry is written in place, its index unchanged)
+        if (!PtrIndex || n.Ptr == IntPtr.Zero) return -1;
+        int i; unsafe { i = *(int*)(n.Ptr + IdxAt); }
+        if ((uint)i < (uint)_idxUsed && ReferenceEquals(_byIdx[i], n)) { _byIdx[i] = null; return i; }
+        return -1;
+    }
+    /// <summary>The candidate is still reached: back exactly where it was.</summary>
+    internal static void K13Restore(NObj n, int idx) { ById[n.InstanceId] = n; if (idx >= 0) _byIdx[idx] = n; }
+    /// <summary>The candidate's record and managed object were collected: its tombstone stays in ById, its block index and native block are
+    /// freed (nothing can point at the block: its managed object is gone), its name leaves the GameObject name filter.</summary>
+    internal static void K13Drop(int idx, IntPtr ptr, string goName)
+    {
+        _k13Tombs++;
+        if (idx >= 0) _idxFree.Push(idx);
+        if (goName != null) GoNameRemove(goName);
+        if (ptr != IntPtr.Zero) GiveBlock(ptr);
+    }
+    /// <summary>A released asset made again (Loader.LiveSet refills its live place): the record bound a moment ago under a new id moves to
+    /// the tombstone's id and entry. Its fresh entry goes back exactly as Kill frees one (the Dictionary's free list and the slot mirror
+    /// agree: the next Bind takes that entry, which is the one it would have taken without this Bind), and the id counter steps back when
+    /// that id was the last one handed out -- so ids, entries and slots are kit #12's (a record never released). 0 = done.</summary>
+    internal static int K13Rekey(NObj n, int id, int slot)
+    {
+        if (n.Destroyed || n.Slot < 0 || !ById.TryGetValue(id, out var t) || !ReferenceEquals(t, K13Tomb) || !ById.TryGetValue(n.InstanceId, out var cur) || !ReferenceEquals(cur, n)) return -1;
+        int fresh = n.InstanceId;
+        if (ById.Remove(fresh)) _freeSlots.Push(n.Slot);
+        if (fresh == _nextAssetId) _nextAssetId -= 2; else if (fresh == _nextRuntimeId) _nextRuntimeId += 2;
+        ById[id] = n; _k13Tombs--;
+        n.InstanceId = id; n.Slot = slot;
+        if (n.Ptr != IntPtr.Zero) unsafe { *(int*)(n.Ptr + 8) = id; }
+        return 0;
+    }
+#else
     public static int LiveCount => ById.Count;
+#endif
 
     public static T Bind<T>(UObject managed, T n, bool asset = false) where T : NObj
     {
         if (n.Slot >= 0) SlotsExact = false;   // bound twice: its old id stays in ById, which the slot mirror does not model
         n.InstanceId = asset ? (_nextAssetId += 2) : (_nextRuntimeId -= 2);
         if (PtrIndex && n.Ptr != IntPtr.Zero) (_rebound ??= new())[n.Ptr] = n;   // bound twice: the earlier block keeps finding n (ByPtr never dropped it)
-        n.Ptr = BlockRecycle && _freeBlocks.Count > 0 ? TakeBlock() : Marshal.AllocHGlobal(BlockBytes);   // kit #9 engine (SHEPHERD_K9_RECYCLE): a dead record's block first (cleared below, as a new one)
-        unsafe { new Span<byte>((void*)n.Ptr, BlockBytes).Clear(); *(int*)(n.Ptr + 8) = n.InstanceId; }
+        n.Ptr = BlockRecycle && _freeBlocks.Count > 0 ? TakeBlock() : NewBlock();   // kit #9 engine (SHEPHERD_K9_RECYCLE): a dead record's block first (cleared below, as a new one)
+        unsafe { if (BlockSlab) *(long*)(n.Ptr + 8) = 0; else new Span<byte>((void*)n.Ptr, BlockBytes).Clear(); *(int*)(n.Ptr + 8) = n.InstanceId; }
         n.Managed = managed; CachedPtr(managed) = n.Ptr;
         if (PtrIndex)
         {
@@ -761,7 +926,7 @@ public static class Objects
         if (ById.Remove(n.InstanceId)) _freeSlots.Push(n.Slot);
         Registry.Killed(n);
         if (n is NTransform kt) kt.RecycleMemo();   // kit #9 engine (SHEPHERD_K9_RECYCLE)
-        if (BlockRecycle && _freeBlocks.Count < 8192) _freeBlocks.Push(n.Ptr); else Marshal.FreeHGlobal(n.Ptr);
+        GiveBlock(n.Ptr);
         n.Ptr = IntPtr.Zero;
     }
     // ---- kit #9 engine (SHEPHERD_K9_RECYCLE): a dead record's native block serves the next record bound ----
@@ -769,14 +934,31 @@ public static class Objects
     // clears the block, and a dead record's managed object no longer points at it (Kill clears m_CachedPtr first): handing the block to the
     // next Bind is what malloc may do with it anyway (Get's rule already covers a reused block), without the malloc / free pair. At most 8,192
     // blocks wait (196 KiB of newlib); the purgeable arena frees them on a scene load.
-    static readonly bool BlockRecycle = Runtime.K9Engine.Recycle;
+    static readonly bool BlockRecycle = Runtime.K9Engine.Recycle || (Runtime.K14Newlib.Blocks && BlockBytes == 16);   // (kit #14: BlockSlab's blocks are never freed: they come back here whatever SHEPHERD_K9_RECYCLE says)
     static readonly Stack<IntPtr> _freeBlocks = new();
     static IntPtr TakeBlock() { Runtime.K9Engine.Recycled++; return _freeBlocks.Pop(); }
+    // ---- kit #14 newlib (vita/notes/kit14-newlib.md, SHEPHERD_K14_BLOCKS): 8 bytes per record out of 64-KiB slabs. Only +8 and +12 of a block are ever
+    // read (the kit #9 note above; L4d's scan of the game's DLLs), so a block is those two ints: the pointer handed out is the slab position - 8.
+    // A malloc(16) took a 24-byte newlib chunk: 190,000 records on the walk, 4.6 MiB; here 1.5 MiB. A freed block waits for the next Bind, whatever
+    // SHEPHERD_K9_RECYCLE says (no cap: a slab never goes back). Nothing reads a pointer's value but Get and the managed m_CachedPtr's "is it zero" and + 8. Off = kit #13's malloc.
+    static readonly bool BlockSlab = Runtime.K14Newlib.Blocks && BlockBytes == 16;
+    const int SlabBytes = 65536;
+    static IntPtr _slabNext, _slabEnd;
+    static IntPtr NewBlock()
+    {
+        if (!BlockSlab) return Marshal.AllocHGlobal(BlockBytes);
+        if (_slabNext == _slabEnd) { _slabNext = Marshal.AllocHGlobal(SlabBytes); _slabEnd = _slabNext + SlabBytes; }
+        var p = _slabNext - 8; _slabNext += 8; return p;
+    }
+    static void GiveBlock(IntPtr p)
+    {
+        if (BlockSlab || (BlockRecycle && _freeBlocks.Count < 8192)) _freeBlocks.Push(p); else Marshal.FreeHGlobal(p);
+    }
     /// <summary>The purgeable arena: the waiting blocks back to newlib, the snapshot buffers and transform memos dropped (rebuilt on next use).</summary>
     internal static long PurgeCaches(bool all, int frame)
     {
         long bytes = 0;
-        if (all) { while (_freeBlocks.Count > 0) { Marshal.FreeHGlobal(_freeBlocks.Pop()); bytes += 24; } bytes += NTransform.PurgeMemos() * 368L; }
+        if (all) { while (!BlockSlab && _freeBlocks.Count > 0) { Marshal.FreeHGlobal(_freeBlocks.Pop()); bytes += 24; } bytes += NTransform.PurgeMemos() * 368L; }
         lock (SnapPool)
         {
             if (all || frame - _bigRent > 300) while (SnapPool.Count > 0) bytes += 16 + 4L * SnapPool.Pop().Length;

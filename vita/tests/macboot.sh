@@ -12,7 +12,7 @@
 setopt pipe_fail
 T="${0:A:h}"; REPO="${T:h:h}"; R="$REPO/runtime"
 export TMPDIR=${SHEPHERD_TMPDIR:-${SHEPHERD_WORK:-$HOME/shepherd-work}/kit7/tests-work/tmp} DOTNET_ROOT=$HOME/.dotnet PATH="$HOME/.dotnet:$PATH" DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
-mkdir -p $TMPDIR
+mkdir -p $TMPDIR; export TMPPREFIX=$TMPDIR/zsh   # (kit #11 integration: zsh here-documents next to the temp files, never /tmp)
 O=${1:?out dir}; O=${O:a}; FR=${2:?frames}; shift 2
 BIN=${MACBOOT_BIN:-$REPO/engine/Shepherd.Engine/bin/Debug/net8.0}; HOSTBIN=${MACBOOT_HOSTBIN:-$REPO/vita/tests/TestHost/bin/Debug/net8.0}
 host=0 keep=0 pad= cachein=

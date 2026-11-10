@@ -19,6 +19,9 @@ static class MemReportKit4
     public static readonly HashSet<string> NamedTypes = new((Environment.GetEnvironmentVariable("SHEPHERD_CENSUS_NAMED") ?? "")
         .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.Ordinal);
     public static readonly bool DupArrays = Environment.GetEnvironmentVariable("SHEPHERD_CENSUS_DUPARRAYS") == "1";
+    /// <summary>Kit #13 basec: SHEPHERD_CENSUS_DUPSTRINGS=&lt;n&gt; -- the duplicate strings (&lt;= 512 chars) by the field that reached them, and the n most
+    /// duplicated values (Mac census only; unset: nothing extra).</summary>
+    public static readonly int DupStrings = int.TryParse(Environment.GetEnvironmentVariable("SHEPHERD_CENSUS_DUPSTRINGS"), out var ds) ? ds : 0;
 
     public static string NamedLabel(string typeName, object o)
     {

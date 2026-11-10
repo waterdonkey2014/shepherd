@@ -109,7 +109,8 @@ public static class VideoIcalls
     {
         if (!States.TryGetValue(v, out var s)) States[v] = s = new VState { V = v };
         s.TimeRef = v.Get("timeReference") is { } tr ? Convert.ToInt32(tr) : 0;
-        if (K6Engine.VideoLength(ClipKey(v)) is { } l) { s.Frames = l.Frames; s.Rate = l.Rate; s.Length = l.Frames / l.Rate; s.Listed = true; }
+        if (K12BootSeq.On && K12BootSeq.SkipClip(ClipKey(v))) { s.Frames = 0; s.Rate = 30; s.Length = 0; s.Listed = false; Log.Info("[k12] boot sequence: '" + ClipKey(v) + "' is a 0-second clip (the launcher showed it): it ends in the video update it starts in"); }   // kit #12 boot
+        else if (K6Engine.VideoLength(ClipKey(v)) is { } l) { s.Frames = l.Frames; s.Rate = l.Rate; s.Length = l.Frames / l.Rate; s.Listed = true; }
         else { s.Rate = 30; s.Length = StandInSeconds; s.Frames = (long)(StandInSeconds * 30); s.Listed = false; }
         return s;
     }
@@ -169,7 +170,7 @@ public static class VideoIcalls
             // kit #8 review fix: the real video's clip opens BEFORE the clip's clock starts (Unity plays a prepared clip from its first frame): the
             // open reads the .shv into VRAM on this thread, and on the wall clock (the play apps) that read ran on the clip's own clock, so its
             // first ~15 frames were decoded in one burst and never shown. On the frame clock (vlx) Clock() is the frame's either way.
-            if (s.Phase == VPhase.Preparing) { s.Prepared = true; s.Phase = VPhase.Playing; if (K10Boot.On) K10Boot.FirstContent(ClipKey(v)); if (K8Video.On) K8Video.Start(v, ClipKey(v)); s.Start = s.Clock(); s.Held = 0; if (Diag.K7.BootOn) Diag.K7.Splash(ClipKey(v), true, s.Length); Fire(Started, v, "started"); }
+            if (s.Phase == VPhase.Preparing) { s.Prepared = true; s.Phase = VPhase.Playing; if (K10Boot.On) K10Boot.FirstContent(ClipKey(v)); if (K8Video.On && !(K12BootSeq.On && K12BootSeq.SkipClip(ClipKey(v)))) K8Video.Start(v, ClipKey(v)); s.Start = s.Clock(); s.Held = 0; if (Diag.K7.BootOn) Diag.K7.Splash(ClipKey(v), true, s.Length); Fire(Started, v, "started"); }   // (kit #12 boot: no decoder for a skipped clip)
             if (K8Video.On && s.Phase == VPhase.Playing) K8Video.Frame(v, (long)K6Frame(v));   // kit #8: the picture of this frame's clip time (the frame get_frame answers)
 #else
             if (s.Phase == VPhase.Preparing) { s.Prepared = true; s.Phase = VPhase.Playing; if (K10Boot.On) K10Boot.FirstContent(ClipKey(v)); s.Start = s.Clock(); s.Held = 0; if (Diag.K7.BootOn) Diag.K7.Splash(ClipKey(v), true, s.Length); Fire(Started, v, "started"); }   // (kit #10: the boot screen's fallback end in the eboot apps too)

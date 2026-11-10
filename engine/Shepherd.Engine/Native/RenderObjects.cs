@@ -129,7 +129,13 @@ public sealed class NCanvasRenderer : NComponent
 {
     public Vector3[] Pos = Array.Empty<Vector3>(); public Color32[] Col; public Vector4[] Uv0; public int[] Idx = Array.Empty<int>(); public Vector4[] Tan;
     public Color Color = Color.white; public NMaterial[] Materials = new NMaterial[1]; public int MaterialCount = 1; public NTexture Texture; public NTexture AlphaTexture;
-    public bool RectClipping; public Rect ClipRect; public bool Cull; public bool CullTransparent; public int AbsoluteDepth;
+    // (kit #11 walk, the records diet: the three bools declared together so they share one word -- 144 bytes on the Vita, one of the play
+    // apps' extra slot sizes (kit #10's SHEPHERD_K10_SIZES list); in the old order ClipRect sat between them: 152 bytes in a 160-byte slot)
+#if SHEPHERD_K10_RECORDS
+    public bool RectClipping; public Rect ClipRect; public bool Cull; public bool CullTransparent; public int AbsoluteDepth;   // (kit #10's order: build.sh SHEPHERD_K11_RECORDS=0)
+#else
+    public bool RectClipping; public bool Cull; public bool CullTransparent; public Rect ClipRect; public int AbsoluteDepth;
+#endif
     /// <summary>menu-speed: the UI pass's cached vertex / index block of this renderer and the exact inputs it was built from
     /// (Render/SceneRenderer.UiCache.cs); null while the renderer is not drawn.</summary>
     internal Shepherd.Engine.Render.SceneRenderer.UiGeom UiGeom;

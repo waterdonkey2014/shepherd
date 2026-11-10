@@ -4,7 +4,7 @@ namespace Shepherd.Engine.Render;
 /// from exactly the same scene state, so the difference is the backends' and nothing else (no run-to-run animation noise).
 /// Screenshots write &lt;f&gt;.png (A), &lt;f&gt;-sdl.png (B), &lt;f&gt;-diff.png (|A-B| x8) and log a [compare] line.</summary>
 [ProfileOnly]
-public sealed class TeeBackend : IRenderBackend, ICompressedUpload
+public sealed class TeeBackend : IRenderBackend, ICompressedUpload, IK12Stencil
 {
     public readonly IRenderBackend A, B;
     readonly List<(IntPtr a, IntPtr b)> _h = new() { (IntPtr.Zero, IntPtr.Zero) };
@@ -52,6 +52,8 @@ public sealed class TeeBackend : IRenderBackend, ICompressedUpload
     public void ClearTarget(float r, float g, float b, float a) { A.ClearTarget(r, g, b, a); B.ClearTarget(r, g, b, a); }
     public void Clip(int x, int y, int w, int h) { A.Clip(x, y, w, h); B.Clip(x, y, w, h); }
     public void NoClip() { A.NoClip(); B.NoClip(); }
+    /// <summary>Kit #12 boot: the GL half gets the stencil state (the SDL reference has no stencil: its masks stay unmasked there).</summary>
+    public void Stencil(in K12StencilState s) { (A as IK12Stencil)?.Stencil(s); (B as IK12Stencil)?.Stencil(s); }
     public void Draw(IntPtr tex, uint blend, bool sdf, Span<Sdl.Vertex> v, Span<int> idx)
     {
         var (a, b) = Map(tex); A.Draw(a, blend, sdf, v, idx); B.Draw(b, blend, sdf, v, idx);

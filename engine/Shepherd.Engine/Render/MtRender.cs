@@ -112,9 +112,26 @@ public static class MtRender
             SceneRenderer.LastDraws++; SceneRenderer.LastTris += ni / 3;
             if (c.Live >= 0) L.Live.Fill(c.Live, c.Tex, blend, sdf, vs, ix);
         }
+        /// <summary>Kit #13 looks (K13Looks.Persp, WorldEmitter.Out): a world draw built here with each vertex's clip w. The check mode's reference
+        /// (SHEPHERD_MT_CHECK) records it as a plain draw, as the executed side does (the w is not compared there).</summary>
+        public void DrawW(Vertex[] v, int nv, int[] ib, int ni, uint blend, float[] w)
+        {
+            if (Capture || B.R is not IK13Persp) { K13Looks.PerspFallback++; Draw(v, nv, ib, ni, blend, false); return; }
+            if (ni - ni % 3 < 3) return;
+            ni -= ni % 3;
+            var vs = new Span<Vertex>(v, 0, nv); var ix = new Span<int>(ib, 0, ni);
+            if (_enc.Length < nv) _enc = new FColor[Math.Max(nv, _enc.Length * 2)];
+            var enc = new Span<FColor>(_enc, 0, nv); K13Looks.EncW(new ReadOnlySpan<float>(w, 0, nv), enc);
+            ref var c = ref L[I];
+            if (Direct) B.CallEnc(L, c.Tex, blend, vs, ix, enc, false);
+            else { c.Out = true; c.A = L.PutV(vs); c.B = nv; c.C = L.PutI(ix); c.D = ni; c.E = L.PutF(enc) + 1; }
+            SceneRenderer.LastDraws++; SceneRenderer.LastTris += ni / 3;
+            if (c.Live >= 0) { L.Live.Fill(c.Live, c.Tex, blend, false, vs, ix); L.Live.Persp(new ReadOnlySpan<float>(w, 0, nv), c.Live); }
+        }
+        FColor[] _enc = new FColor[64];
     }
 
-    internal enum K : byte { Begin, Clear, Clip, NoClip, Target, Draw, Destroy, EndWorld, Stylize, EndFrame, Present, Sprite, Mesh, Glow, Dropped, DrawAdd, Lut, GpuMesh, GpuRelease }
+    internal enum K : byte { Begin, Clear, Clip, NoClip, Target, Draw, Destroy, EndWorld, Stylize, EndFrame, Present, Sprite, Mesh, Glow, Dropped, DrawAdd, Lut, GpuMesh, GpuRelease, Stencil /* kit #12 boot: last, the others keep their values */, DrawW, DrawAddW /* kit #13 looks: perspective draws (X / E: the folded w stream in the colour arena) */, DrawSdfX /* kit #13 looks: a TMP text's exact draw (X / E: its parameters) */ }
 
     /// <summary>One recorded backend call or captured world draw (48 bytes, native). No references: a captured draw's inputs are in
     /// <see cref="Cap"/> and its arrays in <see cref="CmdList.Refs"/>.</summary>
@@ -310,7 +327,7 @@ internal static class Pool<T>
 
 /// <summary>The proxy backend of the multicore pipeline (see the notes at the top of this file).</summary>
 [ProfileOnly]
-internal class MtBackend : IRenderBackend
+internal class MtBackend : IRenderBackend, IK12Stencil
 {
     internal readonly IRenderBackend R;
     /// <summary>True: the render thread calls the backend. False: it builds the world vertices only; the main thread calls the backend.</summary>
@@ -389,6 +406,9 @@ internal class MtBackend : IRenderBackend
     static (float, float, float, float) Colour(in MtRender.Cmd c) => (BitConverter.Int32BitsToSingle(c.A), BitConverter.Int32BitsToSingle(c.B), BitConverter.Int32BitsToSingle(c.C), BitConverter.Int32BitsToSingle(c.D));
     public void Clip(int x, int y, int w, int h) { ref var c = ref Rec(MtRender.K.Clip); c.A = x; c.B = y; c.C = w; c.D = h; Ref(MtCheck.Clip, x, y, w, h); }
     public void NoClip() { Rec(MtRender.K.NoClip); Ref(MtCheck.NoClip); }
+    /// <summary>Kit #12 boot (IK12Stencil, SHEPHERD_K12_STENCIL=1): the UI draws' stencil state, recorded like a clip and handed to the backend in order
+    /// (a backend without it ignores it). Not in MtCheck's reference stream (its compare mode with the stencil switch on does not see these calls).</summary>
+    public void Stencil(in K12StencilState s) { ref var c = ref Rec(MtRender.K.Stencil); c.A = s.Pack1(); c.B = s.Pack2(); }
     public void SetTarget(IntPtr target) { ref var c = ref Rec(MtRender.K.Target); c.Tex = target; Ref(MtCheck.Target, tex: target); }
     public void DestroyTexture(IntPtr tex) { ref var c = ref Rec(MtRender.K.Destroy); c.Tex = tex; Ref(MtCheck.Destroy, tex: tex); _handles.Remove(tex); }
     public void Draw(IntPtr tex, uint blend, bool sdf, Span<Vertex> v, Span<int> idx)
@@ -441,12 +461,12 @@ internal class MtBackend : IRenderBackend
         _gpuNames.Add(name); _gpuIds.Add(id); return id;
     }
     int ApiGpuProgram(string name, string vs, string fs) { int r = 0; OnApi(() => r = ((IGpuMesh)R).GpuProgram(name, vs, fs)); return r; }
-    protected void GpuMeshRec(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, uint blend)
+    protected void GpuMeshRec(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, uint blend, IntPtr[] more = null)
     {
         ref var c = ref Rec(MtRender.K.GpuMesh); var L = _rec; c.Tex = tex; c.Blend = blend; c.A = program; c.B = first; c.C = count; c.D = stride;
         c.E = uniforms.Length; c.Live = L.PutF(uniforms);   // (Live: the uniforms' offset in the colour arena; this command has no stream-hash slot)
-        L.AddCap(out c.X, data, null, null, null);
-        if (L.Ref != null) L.Ref.AddGpu(program, data, stride, first, count, uniforms, tex, blend);
+        L.AddCap(out c.X, data, more, null, null);   // (kit #11 gpu2: DrawGpuMeshTex's two textures + wrap bits ride in the second slot)
+        if (L.Ref != null) L.Ref.AddGpu(program, data, stride, first, count, uniforms, tex, blend, more);
     }
     protected void GpuReleaseRec(float[] data)
     {
@@ -772,7 +792,7 @@ internal class MtBackend : IRenderBackend
                             else if (c.K == MtRender.K.Mesh) _rep.EmitMesh(Unsafe.As<Vector3[]>(r.A), Unsafe.As<Color32[]>(r.B), Unsafe.As<Vector4[]>(r.C), Unsafe.As<int[]>(r.D), in w.Lw, in p.Vp, in p.Pr, p.Gh, null, w.Tint, c.Blend, w.SkipZero);
                             else _rep.EmitGlow(Unsafe.As<Vector3[]>(r.A), Unsafe.As<Vector3[]>(r.B), w.CMin, w.CMax, Unsafe.As<int[]>(r.C), in w.Lw, in p.Vp, in p.Pr, p.Gh, w.Tint, w.Cam, c.Blend, null);
                         }
-                        else if (backend && c.Out) Call(L, MtCheck.Draw, c.Tex, c.Blend, c.Sdf, L.Vs(c.A, c.B), L.Is(c.C, c.D));
+                        else if (backend && c.Out) { if (c.E > 0) CallEnc(L, c.Tex, c.Blend, L.Vs(c.A, c.B), L.Is(c.C, c.D), L.Fs(c.E - 1, c.B), false); else Call(L, MtCheck.Draw, c.Tex, c.Blend, c.Sdf, L.Vs(c.A, c.B), L.Is(c.C, c.D)); }   // (kit #13 looks: E = a perspective draw's w)
                         break;
                     default:
                         if (backend) Do(L, ref c);
@@ -797,6 +817,19 @@ internal class MtBackend : IRenderBackend
             case MtRender.K.Clear: { var (r, g, b, a) = Colour(in c); X?.Add(MtCheck.Clear, IntPtr.Zero, 0, false, 0, 0, 0, 0, (r, g, b, a)); R.ClearTarget(r, g, b, a); break; }
             case MtRender.K.Clip: X?.Add(MtCheck.Clip, IntPtr.Zero, 0, false, c.A, c.B, c.C, c.D); R.Clip(c.A, c.B, c.C, c.D); break;
             case MtRender.K.NoClip: X?.Add(MtCheck.NoClip); R.NoClip(); break;
+            case MtRender.K.Stencil: (R as IK12Stencil)?.Stencil(K12StencilState.Unpack(c.A, c.B)); break;   // kit #12 boot
+            case MtRender.K.DrawW: case MtRender.K.DrawAddW: CallEnc(L, c.Tex, c.Blend, L.Vs(c.A, c.B), L.Is(c.C, c.D), L.Fs(c.X, c.E), c.K == MtRender.K.DrawAddW); break;   // kit #13 looks
+            case MtRender.K.DrawSdfX:
+            {   // kit #13 looks: the exact draw (X: its parameters, then the colours it had before the provider rewrote them; E: its blend before);
+                // refused at replay (no program) = the SDF draw as before: those colours put back, that blend
+                var v = L.Vs(c.A, c.B); var ix = L.Is(c.C, c.D); var pa = L.Fs(c.X, c.B);
+                L.Exec?.Add(MtCheck.Draw, c.Tex, c.Blend, true, v: v, idx: ix);
+                if (R is IK13Sdf rs && rs.DrawSdfX(c.Tex, c.Blend, v, ix, pa, default, (uint)c.E)) break;
+                var bc = L.Fs(c.X + c.B, c.B);
+                for (int i = 0; i < v.Length; i++) v[i].color = bc[i];
+                R.Draw(c.Tex, (uint)c.E, true, v, ix);
+                break;
+            }
             case MtRender.K.Target: X?.Add(MtCheck.Target, c.Tex); R.SetTarget(c.Tex); break;
             case MtRender.K.Destroy: X?.Add(MtCheck.Destroy, c.Tex); R.DestroyTexture(c.Tex); break;
             case MtRender.K.Draw: Call(L, MtCheck.Draw, c.Tex, c.Blend, c.Sdf, L.Vs(c.A, c.B), L.Is(c.C, c.D)); break;
@@ -818,9 +851,10 @@ internal class MtBackend : IRenderBackend
             }
             case MtRender.K.GpuMesh:
             {
-                var data = Unsafe.As<float[]>(L.Refs(c.X).A); var u = L.Fs(c.Live, c.E);
-                X?.AddGpu(c.A, data, c.D, c.B, c.C, u, c.Tex, c.Blend);
-                ((IGpuMesh)R).DrawGpuMesh(c.A, data, c.D, c.B, c.C, u, c.Tex, c.Blend);
+                ref var rr = ref L.Refs(c.X); var data = Unsafe.As<float[]>(rr.A); var u = L.Fs(c.Live, c.E);
+                X?.AddGpu(c.A, data, c.D, c.B, c.C, u, c.Tex, c.Blend, rr.B as IntPtr[]);
+                if (rr.B is IntPtr[] more) ((IGpuMesh)R).DrawGpuMeshTex(c.A, data, c.D, c.B, c.C, u, c.Tex, more[0], more[1], (int)more[2], c.Blend);
+                else ((IGpuMesh)R).DrawGpuMesh(c.A, data, c.D, c.B, c.C, u, c.Tex, c.Blend);
                 break;
             }
             case MtRender.K.GpuRelease: { var data = Unsafe.As<float[]>(L.Refs(c.X).A); X?.AddGpu(-1, data, 0, 0, 0, default, IntPtr.Zero, 0); ((IGpuMesh)R).ReleaseGpuMesh(data); break; }
@@ -841,6 +875,34 @@ internal class MtBackend : IRenderBackend
         L.Exec?.Add(kind, tex, blend, sdf, v: v, idx: idx);
         R.Draw(tex, blend, sdf, v, idx);
     }
+    /// <summary>Kit #13 looks: a perspective draw with its folded w stream (the check mode's executed stream records it as a plain draw / lit draw).</summary>
+    internal void CallEnc(MtRender.CmdList L, IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> enc, bool add)
+    {
+        L.Exec?.Add(add ? MtCheck.DrawAdd : MtCheck.Draw, tex, blend, false, v: v, idx: idx);
+        if (R is IK13Persp p) p.DrawEnc(tex, blend, v, idx, enc, add); else R.Draw(tex, blend, false, v, idx);
+    }
+    /// <summary>Kit #13 looks (IK13Persp, MtBackendGpu): a perspective draw recorded with copies of its vertices, indices and folded w stream.</summary>
+    protected void DrawEncRec(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> enc, bool add)
+    {
+        if ((_rec.NV + v.Length > MtRender.CmdList.VCap || _rec.NI + idx.Length > MtRender.CmdList.ICap) && _rec.NV + _rec.NI > 0) Spill();
+        ref var c = ref Rec(add ? MtRender.K.DrawAddW : MtRender.K.DrawW); var L = _rec; c.Tex = tex; c.Blend = blend;
+        c.A = L.PutV(v); c.B = v.Length; c.C = L.PutI(idx); c.D = idx.Length; c.X = L.PutF(enc); c.E = enc.Length;
+        _copiedV += v.Length; _copiedI += idx.Length;
+        if (L.Ref != null) L.Ref.Add(add ? MtCheck.DrawAdd : MtCheck.Draw, tex, blend, false, v: v, idx: idx);
+    }
+    protected bool SdfRec(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> param, Span<Vertex> before, uint beforeBlend)
+    {
+        if (before.Length < v.Length) return false;   // (no draw as before to fall back on: the caller draws it now)
+        if ((_rec.NV + v.Length > MtRender.CmdList.VCap || _rec.NI + idx.Length > MtRender.CmdList.ICap) && _rec.NV + _rec.NI > 0) Spill();
+        ref var c = ref Rec(MtRender.K.DrawSdfX); var L = _rec; c.Tex = tex; c.Blend = blend; c.Sdf = true;
+        var bc = EncRec(v.Length); for (int i = 0; i < v.Length; i++) bc[i] = before[i].color;   // (the colours before: the replay's fallback)
+        c.A = L.PutV(v); c.B = v.Length; c.C = L.PutI(idx); c.D = idx.Length; c.X = L.PutF(param.Slice(0, v.Length)); L.PutF(bc); c.E = (int)beforeBlend;
+        _copiedV += v.Length; _copiedI += idx.Length;
+        if (L.Ref != null) L.Ref.Add(MtCheck.Draw, tex, blend, true, v: v, idx: idx);
+        return true;
+    }
+    protected FColor[] _encRec = new FColor[64];
+    protected Span<FColor> EncRec(int n) { if (_encRec.Length < n) _encRec = new FColor[Math.Max(n, _encRec.Length * 2)]; return new Span<FColor>(_encRec, 0, n); }
 
     // ---------------- SHEPHERD_MT_CHECK=1 recording ----------------
     void Ref(int kind, int a = 0, int b = 0, int c = 0, int d = 0, IntPtr tex = default, (float, float, float, float) colour = default, byte[] bytes = null)
@@ -875,7 +937,7 @@ internal class MtBackend : IRenderBackend
 
 /// <summary>The proxy for the backends with the GPU Stylizer and the compressed / alpha8 uploads (null, GL).</summary>
 [ProfileOnly]
-internal sealed class MtBackendGpu : MtBackend, ICompressedUpload, ICompressedUploadPtr, IGpuStylizer, IAlphaUpload, IAlphaUploadPtr, IGpuPost, IAddDraw, IGpuMesh
+internal sealed class MtBackendGpu : MtBackend, ICompressedUpload, ICompressedUploadPtr, IGpuStylizer, IAlphaUpload, IAlphaUploadPtr, IGpuPost, IAddDraw, IGpuMesh, IK13Persp, IK13Sdf
 #if !SHEPHERD_NO_K8
     , IVideoTexture
 #endif
@@ -888,7 +950,26 @@ internal sealed class MtBackendGpu : MtBackend, ICompressedUpload, ICompressedUp
     internal MtBackendGpu(IRenderBackend r, bool workerSubmits) : base(r, workerSubmits) { }
     /// <summary>Fidelity round 1 (owner-local lit model): the backend's own answer (a constant: its program set is built with the backend).</summary>
     public bool SupportsAdd => R is IAddDraw a && a.SupportsAdd;
-    public void DrawAdd(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> add) => DrawAddRec(tex, blend, v, idx, add);
+    public void DrawAdd(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> add)
+    {
+        if (SceneRenderer.LitW is { } lw && K13Looks.Persp && R is IK13Persp) { DrawAddW(tex, blend, v, idx, add, lw); return; }   // kit #13 looks (null: as before)
+        DrawAddRec(tex, blend, v, idx, add);
+    }
+    /// <summary>Kit #13 looks (IK13Persp): recorded with the w folded into a copy of the stream; refused by the backend at replay = drawn without w.</summary>
+    public void DrawW(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, ReadOnlySpan<float> w)
+    {
+        if (R is not IK13Persp || w.Length < v.Length) { Draw(tex, blend, false, v, idx); return; }
+        var enc = EncRec(v.Length); K13Looks.EncW(w.Slice(0, v.Length), enc); DrawEncRec(tex, blend, v, idx, enc, false);
+    }
+    public void DrawAddW(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> add, ReadOnlySpan<float> w)
+    {
+        var enc = EncRec(v.Length);
+        if (R is not IK13Persp || w.Length < v.Length || add.Length < v.Length || !K13Looks.EncAddW(add.Slice(0, v.Length), w.Slice(0, v.Length), enc)) { DrawAddRec(tex, blend, v, idx, add); return; }
+        DrawEncRec(tex, blend, v, idx, enc, true);
+    }
+    public void DrawEnc(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> enc, bool add) => DrawEncRec(tex, blend, v, idx, enc, add);
+    /// <summary>Kit #13 looks (IK13Sdf): recorded with copies of its vertices, indices and parameters (the backend decides at replay).</summary>
+    public bool DrawSdfX(IntPtr tex, uint blend, Span<Vertex> v, Span<int> idx, Span<FColor> param, Span<Vertex> before, uint beforeBlend) => R is IK13Sdf && SdfRec(tex, blend, v, idx, param, before, beforeBlend);
     public bool RunLut(in LutArgs a) => RunLutRec(in a);
     public bool Dxt => R is ICompressedUpload c && c.Dxt;
     public IntPtr CreateCompressedTexture(int w, int h, int unityFormat, byte[] topDownBlocks, bool linear, Func<byte[]> rgba) => CreateCompressed(w, h, unityFormat, topDownBlocks, linear, rgba);
@@ -899,5 +980,7 @@ internal sealed class MtBackendGpu : MtBackend, ICompressedUpload, ICompressedUp
     /// <summary>Kit #6 gpulight: only when the backend behind it has static-mesh programs (GL, null).</summary>
     public int GpuProgram(string name, string vertexFile, string fragmentFile) => R is IGpuMesh ? GpuProgramRec(name, vertexFile, fragmentFile) : 0;
     public void DrawGpuMesh(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, uint blend) => GpuMeshRec(program, data, stride, first, count, uniforms, tex, blend);
+    public void DrawGpuMeshTex(int program, float[] data, int stride, int first, int count, ReadOnlySpan<FColor> uniforms, IntPtr tex, IntPtr tex1, IntPtr tex2, int wrap, uint blend)
+        => GpuMeshRec(program, data, stride, first, count, uniforms, tex, blend, new[] { tex1, tex2, (IntPtr)wrap });
     public void ReleaseGpuMesh(float[] data) => GpuReleaseRec(data);
 }

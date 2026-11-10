@@ -13,21 +13,13 @@ exactly like the original; anything that deviates is opt-in.
 > and build scripts that grew on one machine.
 
 ## Where it stands
-The first game is **Cult of the Lamb** (Unity, macOS build as the source). On one PS Vita (PCH-2000, firmware 3.65 + Enso):
+Shepherd is for any Unity game; its first port is **Cult of the Lamb** (Unity, macOS build as the source), on one PS Vita (PCH-2000,
+firmware 3.65 + Enso). On the device today: boot, title, Main Menu (~25 fps idle at 444 MHz, from 2.3 fps at kit 1), Settings,
+Credits, New Game to the opening, touch and pad input, audio, video, sandboxed saves, 2D physics matching Unity on the tested scenes;
+boot to the Main Menu ~1.7 minutes. Not yet: gameplay on the device, gameplay frame rates, whole games. The tricks, gotchas and ideas
+behind it, for any game, are in the companion Claude plugin below.
 
-| | Kit 1 (Oct 8) | Now (kit 10, Oct 29) |
-|---|---|---|
-| Idle Main Menu | 2.3 fps | ~25 fps at 444 MHz, ~27 fps at ~500 MHz |
-| Boot to Main Menu | ~6 minutes | ~1.7-2.3 minutes (fastest app 104.5 s) |
-| Picture | -- | the Vita build hands the GPU the same draw stream as the Mac engine, frame by frame (checked off-device) |
-
-Working: boot, title, Main Menu, Settings, Credits, New Game to the opening, touch and pad input, audio, saves (sandboxed), 2D physics
-(matching Unity on the tested scenes). Video playback works on the device (both logos to their last frame, kit 10). Not yet: real gameplay frame rates, the whole game, the DLCs. The full plan, with every
-idea labelled, lives in the companion Claude plugin's idea catalog.
-
-**Progress ledger:** every kit, done and planned, each trick with a plain explanation and its measured or estimated effect --
-[docs/ledger/](docs/ledger/index.html) (served by GitHub Pages from `docs/` once the repository is public). Kits that ran are measured
-on the hardware; everything else is an estimate and says so.
+That port's kit-by-kit page, **Shepherd Progress**, lives in its own repository: [https://waterdonkey2014.github.io/shepherd-progress/](https://waterdonkey2014.github.io/shepherd-progress/).
 
 ## You need
 - **Your own copy of the game** you port. Shepherd never ships game files, and its build reads them only from your own install.
@@ -53,12 +45,16 @@ See [BUILD.md](BUILD.md) for the steps.
 | `vita/audio` | The native audio engine |
 | `vita/vlx` | Off-device harness: the Vita build's own objects relinked for ARM Linux and run under QEMU |
 | `vita/tests`, `vita/gameaot`, ... | Tests, the game-AOT pipeline, probes, devlog, smaller experiments |
-| `docs/` | [Architecture](docs/ARCHITECTURE.md), [porting another game](docs/PORTING-ANOTHER-GAME.md), [progress ledger](docs/ledger/index.html) |
+| `docs/` | [Architecture](docs/ARCHITECTURE.md), [porting another game](docs/PORTING-ANOTHER-GAME.md), [newcomers](docs/newcomers/) |
 
 ## The companion Claude plugin
 The knowledge behind this engine -- measured Vita hardware facts, gotchas that cost device runs, proven and failed techniques, a
 labelled idea catalog, and portable tools (import checker for `0x8002D003` module loads, VPK checker, run history, log puller) -- is a
-Claude Code plugin: **Shepherd for PS Vita** (marketplace `shepherd-vita`, plugin `shepherd`).
+Claude Code plugin: **Shepherd for PS Vita** (marketplace `shepherd-vita`, plugin `shepherd`). In Claude Code:
+```
+/plugin marketplace add waterdonkey2014/shepherd-vita-plugin
+/plugin install shepherd@shepherd-vita
+```
 
 ## Contributing
 Read [CONTRIBUTING.md](CONTRIBUTING.md). The two hard rules: **no game files and no decompiled code in this repository** (ports of a

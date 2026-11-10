@@ -31,6 +31,10 @@ managed/ DLLs, kit #9).
                                                     assemblies, assemblies with nothing to cut and the Shepherd.* DLLs -- the derived
                                                     module is rebuilt with every eboot); writes <out dir>/ILZ-MANIFEST.txt
   k10_ilz.py hot <out.tsv> <prof-calls.tsv ...>     the hot list: every (image, token) of the first-call traces (any kind: A or I)
+  k10_ilz.py stagevpk <bcl dir> <out dir> [hot.tsv] [--block N]   (kit #12 walkb) stage for the VPK's OWN DLLs at build time (build.sh
+                                                    SHEPHERD_K12_VPKILZ=1 -> the VPK's managed-ilz/): as stage, but the Shepherd.* DLLs too --
+                                                    they and the eboot are one build's output, packed together (no stale pair is possible);
+                                                    every file is verified as stage does, a FAIL ends with exit 1
 """
 import sys, os, struct, zlib, hashlib, collections
 
@@ -732,7 +736,7 @@ def main(argv):
         bad, n = verify(open(args[0], 'rb').read(), open(args[1], 'rb').read())
         print(('VERIFY OK: %d method bodies identical, metadata streams identical except the RVA columns, MVID, field data, resources' % n) if not bad else 'VERIFY FAIL: ' + '; '.join(bad))
         return 0 if not bad else 1
-    elif cmd == 'stage':
+    elif cmd in ('stage', 'stagevpk'):
         src, dst = args[0], args[1]
         hotf = args[2] if len(args) > 2 else None
         os.makedirs(dst, exist_ok=True)
@@ -742,7 +746,7 @@ def main(argv):
         for fn in sorted(os.listdir(src)):
             if not fn.endswith('.dll'):
                 continue
-            if fn.startswith('Shepherd.'):   # (the build's own DLLs -- Shepherd.Engine.Derived.dll is rebuilt with every eboot: never staged)
+            if fn.startswith('Shepherd.') and cmd == 'stage':   # (the build's own DLLs -- Shepherd.Engine.Derived.dll is rebuilt with every eboot: never staged)
                 lines.append('skip %s: a Shepherd DLL (built with each eboot)' % fn); continue
             data = open(os.path.join(src, fn), 'rb').read()
             try:

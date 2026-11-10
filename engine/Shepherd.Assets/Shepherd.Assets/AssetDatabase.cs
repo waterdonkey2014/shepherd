@@ -326,19 +326,41 @@ public sealed class AssetDatabase : IDisposable
         }
     }
 
+#if !SHEPHERD_K11_TOC
+    /// <summary>Follow a PPtr. Returns (null, <see cref="ObjectInfo.None"/>) when the pointer is null or its target file/object is unavailable
+    /// (use <see cref="GetExternalFile"/> to tell a missing file from a missing object). (Kit #12 walkb: the entry is a view; kit #11: (null, null).)</summary>
+#else
     /// <summary>Follow a PPtr. Returns (null, null) when the pointer is null or its target file/object is unavailable
     /// (use <see cref="GetExternalFile"/> to tell a missing file from a missing object).</summary>
+#endif
     public (SerializedFile file, ObjectInfo obj) Resolve(SerializedFile from, PPtr p)
     {
+#if !SHEPHERD_K11_TOC
+        if (p.IsNull || p.PathId == 0) return (null, default);
+#else
         if (p.IsNull || p.PathId == 0) return (null, null);
+#endif
         var f = GetExternalFile(from, p.FileId);
+#if !SHEPHERD_K11_TOC
+        var o = f != null ? f.GetObject(p.PathId) : default;
+        if (o.IsNull && f?.Pack != null && !f.Pack.IsAbsentObject(f, p.PathId))
+#else
         var o = f?.GetObject(p.PathId);
         if (o == null && f?.Pack != null && !f.Pack.IsAbsentObject(f, p.PathId))
+#endif
         {
             PackMiss?.Invoke($"object {f.Name} #{p.PathId} (from {from?.Name})");
+#if !SHEPHERD_K11_TOC
+            if (PackFallback && OriginalFile(f.Name) is { } orig && orig.GetObject(p.PathId) is { IsNull: false } oo) return (orig, oo);
+#else
             if (PackFallback && OriginalFile(f.Name) is { } orig && orig.GetObject(p.PathId) is { } oo) return (orig, oo);
+#endif
         }
+#if !SHEPHERD_K11_TOC
+        if (o.IsNull) { Interlocked.Increment(ref _unresolved); return (null, default); }
+#else
         if (o == null) { Interlocked.Increment(ref _unresolved); return (null, null); }
+#endif
         return (f, o);
     }
 
@@ -346,7 +368,11 @@ public sealed class AssetDatabase : IDisposable
     public (SerializedFile file, ObjectInfo obj, TypeTreeObject data) ResolveRead(SerializedFile from, PPtr p)
     {
         var (f, o) = Resolve(from, p);
+#if !SHEPHERD_K11_TOC
+        if (o.IsNull) return (f, default, null);
+#else
         if (o == null) return (f, null, null);
+#endif
         if (!f.HasTree(o)) return (f, o, null);
         return (f, o, TypeTreeReader.Read(f, o));
     }
@@ -448,7 +474,11 @@ public sealed class AssetDatabase : IDisposable
     {
         var scriptPtr = ReadMonoBehaviourScriptPPtr(file, mb);
         var (sf, so) = Resolve(file, scriptPtr);
+#if !SHEPHERD_K11_TOC
+        if (so.IsNull) return null;
+#else
         if (so == null) return null;
+#endif
         lock (_lock)
         {
             if (_scriptCache.TryGetValue((sf, so.PathId), out var cached)) return cached;

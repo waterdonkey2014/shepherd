@@ -34,19 +34,266 @@ public sealed class SerializedType
     public string OldTypeHashHex => OldTypeHash == null ? null : Convert.ToHexString(OldTypeHash).ToLowerInvariant();
 }
 
+#if SHEPHERD_K11_TOC
+// Kit #12 walkb review fix: the build switch SHEPHERD_K12_TOC_CODE=0 (vita/shepherd/build.sh -> -p:ShepherdK12TocCode=0 -> compile symbol
+// SHEPHERD_K11_TOC) compiles kit #11's index entries, verbatim (one ObjectInfo object per entry, kit #11's callers): kit #11's eboot span
+// as well as its memory. The view's struct costs AOT code (its generic instantiations) whatever the env file says. Default: the view (#else).
 public sealed class ObjectInfo
 {
+    // Device kit #11, track walk (the engine records diet; vita/notes/kit11-walk.md): 40 bytes on the Vita (was 48). 32-bit Mono's auto
+    // layout puts the reference first (Type at 8), then the other fields in declaration order at their own alignment: TypeIndex fills the
+    // 4 bytes before the first long (PathId at 16, ByteStart at 24, ByteSize at 32, LivePos at 36). ClassId was a copy of Type.ClassId in
+    // both makers (SerializedFile's object table, VitaPack's TOC): it is read from Type now. 148,226 entries on the intro walk: -1.1 MiB.
+    // The build switch back (Shepherd.Engine's build.sh SHEPHERD_K11_RECORDS=0: compile symbol SHEPHERD_K10_RECORDS) = kit #10's 48-byte entry.
+#if SHEPHERD_K10_RECORDS
     public long PathId;
     public long ByteStart;     // absolute offset in the file data (data offset already added)
     public uint ByteSize;
     public int TypeIndex;
     public int ClassId;
     public SerializedType Type;
+#else
+    public int TypeIndex;
+    public long PathId;
+    public long ByteStart;     // absolute offset in the file data (data offset already added)
+    public uint ByteSize;
+    public SerializedType Type;
+    /// <summary>The object's Unity class id: its <see cref="Type"/>'s (every maker sets Type; the field it replaces always held the same value).</summary>
+    public int ClassId => Type.ClassId;
+#endif
     /// <summary>kit6 mem L4c (Shepherd.Engine Assets/Loader.cs): 1 + this object's position in the loader's ordered list of live records, 0
     /// = none (the loader's (file name, path id) map kept on the index entry itself; on 32-bit Mono it fills the entry's alignment pad).</summary>
     public int LivePos;
     public override string ToString() => $"{ClassIds.Name(ClassId)} #{PathId}";
 }
+
+#else
+/// <summary>Device kit #12, track walkb (the load-only index entries as a TOC view; vita/notes/kit12-walkb.md): one entry of a serialized file's
+/// object table -- a VIEW (its table + its index: 8 bytes, no object of its own) over the table's 32-byte records. A pack file's table is a
+/// slice of the pack's TOC itself (which the reader keeps whole anyway: <see cref="PackReader"/>'s object TOC), so an opened file costs no
+/// per-object memory -- kit #11 made one 40-byte ObjectInfo object per entry (148,226 on the intro walk: 5.7 MiB of GC heap + their lists),
+/// alive as long as the file. Every value is read from the record exactly as kit #11's makers copied it (PathId, ByteStart = the pack's
+/// payload offset + the record's, ByteSize, the class id, the pack's flags in TypeIndex); the loader's live-record position
+/// (<see cref="LivePos"/>) lives in the table (an int per entry, made when the first record of the file is registered).
+/// Absent = <see cref="None"/> (<see cref="IsNull"/>), where kit #11 returned null. Two views of the same entry are equal.
+/// SHEPHERD_K12_TOC=0 (env file; or SHEPHERD_K12_WALKB=0) = kit #11's memory: every entry made as its own 40-byte object when the file opens
+/// (<see cref="ObjectEntry"/>, kit #11's ObjectInfo layout), the views reading those objects.</summary>
+public struct ObjectInfo : IEquatable<ObjectInfo>
+{
+    readonly ObjectTable _t;
+    readonly int _i;
+    internal ObjectInfo(ObjectTable t, int i) { _t = t; _i = i; }
+    /// <summary>No entry (kit #11's null).</summary>
+    public static ObjectInfo None => default;
+    public bool IsNull => _t == null;
+    internal ObjectTable Table => _t;
+    internal int Index => _i;
+    public long PathId => _t.PathId(_i);
+    /// <summary>Absolute offset in the file data (data offset already added); for a pack file: in the pack.</summary>
+    public long ByteStart => _t.ByteStart(_i);
+    public uint ByteSize => _t.ByteSize(_i);
+    public int TypeIndex => _t.TypeIndex(_i);
+    public SerializedType Type => _t.Type(_i);
+    /// <summary>The object's Unity class id (= its <see cref="Type"/>'s: every maker sets them equal).</summary>
+    public int ClassId => _t.ClassId(_i);
+    /// <summary>kit6 mem L4c (Shepherd.Engine Assets/Loader.cs): 1 + this object's position in the loader's ordered list of live records, 0
+    /// = none (the loader's (file name, path id) map kept on the index entry itself -- in the table since kit #12).</summary>
+    public int LivePos { get => _t.GetLive(_i); set => _t.SetLive(_i, value); }
+    public bool Equals(ObjectInfo o) => ReferenceEquals(_t, o._t) && _i == o._i;
+    public override bool Equals(object obj) => obj is ObjectInfo o && Equals(o);
+    public override int GetHashCode() => _t == null ? 0 : (_t.Id * 397) ^ _i;
+    public override string ToString() => _t == null ? "(no object)" : $"{ClassIds.Name(ClassId)} #{PathId}";
+}
+
+/// <summary>SHEPHERD_K12_TOC=0 (kit #11's memory): one table entry as its own object -- kit #11's ObjectInfo, field for field (40 bytes on the
+/// Vita; the build switch SHEPHERD_K11_RECORDS=0 = kit #10's 48-byte layout).</summary>
+public sealed class ObjectEntry
+{
+#if SHEPHERD_K10_RECORDS
+    public long PathId;
+    public long ByteStart;
+    public uint ByteSize;
+    public int TypeIndex;
+    public int ClassId;
+    public SerializedType Type;
+#else
+    public int TypeIndex;
+    public long PathId;
+    public long ByteStart;
+    public uint ByteSize;
+    public SerializedType Type;
+#endif
+    public int LivePos;
+}
+
+/// <summary>A serialized file's object table (kit #12 walkb): <see cref="Count"/> records of 32 bytes in <see cref="Toc"/> from byte
+/// <c>first * 32</c> -- the pack TOC's layout (i64 pathId, u64 offset, u32 size, i32 classId, u16 file, u16 flags, u32 0); a loose file's
+/// own table is written in the same layout when it is parsed (offset absolute, the type index in the last word). Read-only after it is made,
+/// except the live positions.</summary>
+public sealed class ObjectTable : IReadOnlyList<ObjectInfo>
+{
+    /// <summary>The view (kit #12) or kit #11's per-entry objects (SHEPHERD_K12_TOC=0 or SHEPHERD_K12_WALKB=0), for every table made from now on.</summary>
+    public static bool View = Environment.GetEnvironmentVariable("SHEPHERD_K12_TOC") != "0" && Environment.GetEnvironmentVariable("SHEPHERD_K12_WALKB") != "0";
+    static int s_ids;
+    internal readonly int Id = Interlocked.Increment(ref s_ids);
+    readonly byte[] _toc;
+    readonly int _base;          // byte offset of the first record
+    readonly long _bias;         // added to every record's offset (the pack's payload offset; 0 for a loose file)
+    readonly bool _loose;        // a loose file: TypeIndex = the last word, Type = the file's type list
+    readonly List<SerializedType> _types;           // loose files
+    readonly Func<int, SerializedType> _typeOfClass; // pack files: the reader's one SerializedType per class id
+    int[] _live;
+    readonly ObjectEntry[] _mat; // SHEPHERD_K12_TOC=0
+    /// <summary>null when the path ids ascend strictly (binary search over the records), else the entries' indexes ordered by path id, one per
+    /// path id -- the LAST entry of a path id, as kit #11's Dictionary&lt;long, ObjectInfo&gt; kept it (no dictionary: no generic code for it in
+    /// the AOT image either).</summary>
+    readonly int[] _sorted;
+    public int Count { get; }
+    /// <summary>The records' sizes added up.</summary>
+    public long TotalBytes { get; }
+    /// <summary>The largest record end (ByteStart + ByteSize).</summary>
+    public long MaxEnd { get; }
+
+    ObjectTable(byte[] toc, int first, int count, long bias, bool loose, List<SerializedType> types, Func<int, SerializedType> typeOfClass)
+    {
+        _toc = toc; _base = checked(first * 32); Count = count; _bias = bias; _loose = loose; _types = types; _typeOfClass = typeOfClass;
+        if ((long)_base + (long)count * 32 > toc.Length) throw new InvalidDataException($"object table: {count} records from {first} do not fit a {toc.Length}-byte table");
+        long prev = long.MinValue, total = 0, maxEnd = 0;
+        bool asc = true;
+        for (int i = 0; i < count; i++)
+        {
+            long p = PathIdRaw(i);
+            if (asc && i > 0 && p <= prev) asc = false;
+            prev = p;
+            uint sz = ByteSizeRaw(i);
+            total += sz;
+            maxEnd = Math.Max(maxEnd, ByteStartRaw(i) + sz);
+        }
+        TotalBytes = total; MaxEnd = maxEnd;
+        if (!asc) _sorted = SortedIndex();
+        if (!View)
+        {
+            _mat = new ObjectEntry[count];
+            for (int i = 0; i < count; i++)
+            {
+                var e = new ObjectEntry { PathId = PathIdRaw(i), ByteStart = ByteStartRaw(i), ByteSize = ByteSizeRaw(i), TypeIndex = TypeIndexRaw(i) };
+                e.Type = TypeRaw(i);
+#if SHEPHERD_K10_RECORDS
+                e.ClassId = ClassIdRaw(i);
+#endif
+                _mat[i] = e;
+            }
+        }
+    }
+
+    /// <summary>A pack file's table: the pack TOC's records [first, first + count), offsets relative to <paramref name="payloadOffset"/>.</summary>
+    internal static ObjectTable FromPackToc(byte[] toc, int first, int count, long payloadOffset, Func<int, SerializedType> typeOfClass) =>
+        new(toc, first, count, payloadOffset, false, null, typeOfClass);
+
+    /// <summary>A loose file's table: <paramref name="count"/> records the parser wrote with <see cref="WriteRow"/> (the TOC layout).</summary>
+    internal static ObjectTable FromRows(byte[] rows, int count, List<SerializedType> types) => new(rows, 0, count, 0, true, types, null);
+    internal static void WriteRow(byte[] rows, int i, long pathId, long byteStart, uint byteSize, int classId, int typeIndex)
+    {
+        var e = rows.AsSpan(i * 32, 32);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(e, pathId);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(e[8..], byteStart);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(e[16..], byteSize);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(e[20..], classId);
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(e[28..], typeIndex);
+    }
+
+    /// <summary>The entries' indexes by (path id, index), a stable bottom-up merge sort (no generic code), then one per path id: the last.</summary>
+    int[] SortedIndex()
+    {
+        int n = Count;
+        var keys = new long[n]; var a = new int[n]; var b = new int[n];
+        for (int i = 0; i < n; i++) { keys[i] = PathIdRaw(i); a[i] = i; }
+        for (int w = 1; w < n; w *= 2)
+        {
+            for (int lo = 0; lo < n; lo += 2 * w)
+            {
+                int mid = Math.Min(lo + w, n), hi = Math.Min(lo + 2 * w, n), x = lo, y = mid, k = lo;
+                while (x < mid && y < hi) b[k++] = keys[a[y]] < keys[a[x]] ? a[y++] : a[x++];   // (ties: the left run first -- stable)
+                while (x < mid) b[k++] = a[x++];
+                while (y < hi) b[k++] = a[y++];
+            }
+            var t = a; a = b; b = t;
+        }
+        int m = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (i + 1 < n && keys[a[i + 1]] == keys[a[i]]) continue;   // (a later entry of the same path id follows: it wins, as the dictionary's overwrite)
+            a[m++] = a[i];
+        }
+        if (m < n) Array.Resize(ref a, m);
+        return a;
+    }
+
+    long PathIdRaw(int i) => System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(new ReadOnlySpan<byte>(_toc, _base + i * 32, 8));
+    long ByteStartRaw(int i) => _bias + System.Buffers.Binary.BinaryPrimitives.ReadInt64LittleEndian(new ReadOnlySpan<byte>(_toc, _base + i * 32 + 8, 8));
+    uint ByteSizeRaw(int i) => System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(new ReadOnlySpan<byte>(_toc, _base + i * 32 + 16, 4));
+    int ClassIdRaw(int i) => System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(new ReadOnlySpan<byte>(_toc, _base + i * 32 + 20, 4));
+    int TypeIndexRaw(int i) => _loose ? System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(new ReadOnlySpan<byte>(_toc, _base + i * 32 + 28, 4))
+                                      : System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(new ReadOnlySpan<byte>(_toc, _base + i * 32 + 26, 2));
+    SerializedType TypeRaw(int i) => _loose ? _types[TypeIndexRaw(i)] : _typeOfClass(ClassIdRaw(i));
+
+    internal long PathId(int i) => _mat != null ? _mat[i].PathId : PathIdRaw(i);
+    internal long ByteStart(int i) => _mat != null ? _mat[i].ByteStart : ByteStartRaw(i);
+    internal uint ByteSize(int i) => _mat != null ? _mat[i].ByteSize : ByteSizeRaw(i);
+#if SHEPHERD_K10_RECORDS
+    internal int ClassId(int i) => _mat != null ? _mat[i].ClassId : ClassIdRaw(i);
+#else
+    internal int ClassId(int i) => _mat != null ? _mat[i].Type.ClassId : ClassIdRaw(i);
+#endif
+    internal int TypeIndex(int i) => _mat != null ? _mat[i].TypeIndex : TypeIndexRaw(i);
+    internal SerializedType Type(int i) => _mat != null ? _mat[i].Type : TypeRaw(i);
+    internal int GetLive(int i) => _mat != null ? _mat[i].LivePos : _live != null ? _live[i] : 0;
+    internal void SetLive(int i, int v)
+    {
+        if (_mat != null) { _mat[i].LivePos = v; return; }
+        if (_live == null) { if (v == 0) return; _live = new int[Count]; }
+        _live[i] = v;
+    }
+
+    public ObjectInfo this[int index] => (uint)index < (uint)Count ? new ObjectInfo(this, index) : throw new ArgumentOutOfRangeException(nameof(index));
+    /// <summary>The entry with this path id, or <see cref="ObjectInfo.None"/>.</summary>
+    public ObjectInfo Find(long pathId)
+    {
+        if (_sorted != null)
+        {
+            int l = 0, h = _sorted.Length - 1;
+            while (l <= h)
+            {
+                int mid = (l + h) >> 1; long p = PathId(_sorted[mid]);
+                if (p == pathId) return new ObjectInfo(this, _sorted[mid]);
+                if (p < pathId) l = mid + 1; else h = mid - 1;
+            }
+            return default;
+        }
+        int lo = 0, hi = Count - 1;
+        while (lo <= hi)
+        {
+            int mid = (lo + hi) >> 1; long p = PathId(mid);
+            if (p == pathId) return new ObjectInfo(this, mid);
+            if (p < pathId) lo = mid + 1; else hi = mid - 1;
+        }
+        return default;
+    }
+    public Enumerator GetEnumerator() => new(this);
+    IEnumerator<ObjectInfo> IEnumerable<ObjectInfo>.GetEnumerator() => GetEnumerator();
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    public struct Enumerator : IEnumerator<ObjectInfo>
+    {
+        readonly ObjectTable _t; int _i;
+        internal Enumerator(ObjectTable t) { _t = t; _i = -1; }
+        public ObjectInfo Current => new(_t, _i);
+        object System.Collections.IEnumerator.Current => Current;
+        public bool MoveNext() => ++_i < _t.Count;
+        public void Reset() => _i = -1;
+        public void Dispose() { }
+    }
+}
+#endif
 
 public sealed class FileIdentifier
 {
@@ -97,8 +344,12 @@ public sealed class SerializedFile
     /// <summary>Called after a lazy file's buffer was loaded: (file, bytes, isReload).</summary>
     public static Action<SerializedFile, int, bool> OnLoad;
     private readonly List<SerializedType> _types = new();
+#if !SHEPHERD_K11_TOC
+    private ObjectTable _table;   // kit #12 walkb: the object table (a view over the pack's TOC, or the parsed table of a loose file)
+#else
     private readonly List<ObjectInfo> _objects = new();
     private Dictionary<long, ObjectInfo> _byPathId;   // null when _objects is strictly ascending by PathId (binary search instead)
+#endif
     private readonly List<FileIdentifier> _externals = new();
     private readonly List<SerializedType> _refTypes = new();
     private readonly List<ScriptReference> _scriptTypes = new();
@@ -112,9 +363,16 @@ public sealed class SerializedFile
     public long DataOffset { get; private set; }
     public string UserInformation { get; private set; }
     public IReadOnlyList<SerializedType> Types => _types;
+#if !SHEPHERD_K11_TOC
+    public IReadOnlyList<ObjectInfo> Objects => _table;
+    /// <summary>The file's object with this path id, or <see cref="ObjectInfo.None"/> -- without <see cref="AssetTrace"/>'s lookup hooks (kit #11's
+    /// ObjectsByPathId.TryGetValue; kit #12 walkb: the table's own search, no dictionary per file).</summary>
+    public ObjectInfo FindQuiet(long pathId) => _table.Find(pathId);
+#else
     public IReadOnlyList<ObjectInfo> Objects => _objects;
     public IReadOnlyDictionary<long, ObjectInfo> ObjectsByPathId => _byPathId ??= BuildIndex();
     private Dictionary<long, ObjectInfo> BuildIndex() { var d = new Dictionary<long, ObjectInfo>(_objects.Count); foreach (var o in _objects) d[o.PathId] = o; return d; }
+#endif
     public IReadOnlyList<FileIdentifier> Externals => _externals;
     public IReadOnlyList<SerializedType> RefTypes => _refTypes;
     public IReadOnlyList<ScriptReference> ScriptTypes => _scriptTypes;
@@ -157,11 +415,19 @@ public sealed class SerializedFile
     public int PackSourceCount(int classId) => _packSourceClasses != null && _packSourceClasses.TryGetValue(classId, out var n) ? n : 0;
     private Dictionary<int, int> _packSourceClasses;
 
+#if !SHEPHERD_K11_TOC
+    internal static SerializedFile FromPack(string name, PackReader pack, int index, List<FileIdentifier> externals, ObjectTable objects, Dictionary<int, int> sourceClasses)
+#else
     internal static SerializedFile FromPack(string name, PackReader pack, int index, List<FileIdentifier> externals, List<ObjectInfo> objects, Dictionary<int, int> sourceClasses)
+#endif
     {
         var f = new SerializedFile(name, null, null, metadataOnly: true) { Pack = pack, PackFileIndex = index, _packSourceClasses = sourceClasses };
         f.FormatVersion = 22; f.EnableTypeTree = false; f.UnityVersion = "pack";
         f._externals.AddRange(externals);
+#if !SHEPHERD_K11_TOC
+        f._table = objects;
+        f._length += objects.TotalBytes;
+#else
         f._objects.Capacity = objects.Count;
         foreach (var o in objects)
         {
@@ -170,6 +436,7 @@ public sealed class SerializedFile
             if (f._byPathId != null) f._byPathId[o.PathId] = o;
             f._length += o.ByteSize;
         }
+#endif
         return f;
     }
 
@@ -305,6 +572,16 @@ public sealed class SerializedFile
         offset = (int)o.ByteStart; return Data();
     }
 
+#if !SHEPHERD_K11_TOC
+    /// <summary>The file's object with this path id, or <see cref="ObjectInfo.None"/> (<see cref="ObjectInfo.IsNull"/>; kit #11: null).</summary>
+    public ObjectInfo GetObject(long pathId)
+    {
+        var o = _table.Find(pathId);
+        if (AssetTrace.ObjectLookup != null && !o.IsNull) AssetTrace.ObjectLookup(this, o);
+        if (AssetTrace.ObjectAbsent != null && o.IsNull) AssetTrace.ObjectAbsent(this, pathId);
+        return o;
+    }
+#else
     public ObjectInfo GetObject(long pathId)
     {
         var o = Find(pathId);
@@ -325,12 +602,17 @@ public sealed class SerializedFile
         }
         return null;
     }
+#endif
 
     public IEnumerable<ObjectInfo> ObjectsOfClass(int classId)
     {
         if (Pack != null)
         {
+#if !SHEPHERD_K11_TOC
+            var l = new List<ObjectInfo>(); foreach (var o in _table) if (o.ClassId == classId) l.Add(o);
+#else
             var l = new List<ObjectInfo>(); foreach (var o in _objects) if (o.ClassId == classId) l.Add(o);
+#endif
             Pack.CheckEnumeration(this, classId, l.Count);
             return l;
         }
@@ -338,7 +620,11 @@ public sealed class SerializedFile
     }
     private IEnumerable<ObjectInfo> Iterate(int classId)
     {
+#if !SHEPHERD_K11_TOC
+        foreach (var o in _table) if (o.ClassId == classId) yield return o;
+#else
         foreach (var o in _objects) if (o.ClassId == classId) yield return o;
+#endif
     }
 
     private void Parse()
@@ -373,25 +659,51 @@ public sealed class SerializedFile
         for (int i = 0; i < typeCount; i++) _types.Add(ReadType(ref r, isRefType: false));
 
         int objectCount = r.I32();
+#if !SHEPHERD_K11_TOC
+        var rows = new byte[checked(objectCount * 32)];   // (kit #12 walkb: written straight into the table's layout)
+#else
         _objects.Capacity = objectCount;
+#endif
         for (int i = 0; i < objectCount; i++)
         {
+#if !SHEPHERD_K11_TOC
+            long pathId;
+            if (FormatVersion >= 14) { r.Align(4); pathId = r.I64(); }
+            else pathId = r.I32();
+            long byteStart = (FormatVersion >= 22 ? r.I64() : r.U32()) + DataOffset;
+            uint byteSize = r.U32();
+            int typeIndex = r.I32();
+#else
             var o = new ObjectInfo();
             if (FormatVersion >= 14) { r.Align(4); o.PathId = r.I64(); }
             else o.PathId = r.I32();
             o.ByteStart = (FormatVersion >= 22 ? r.I64() : r.U32()) + DataOffset;
             o.ByteSize = r.U32();
             o.TypeIndex = r.I32();
+#endif
             if (FormatVersion < 17) throw new NotSupportedException($"{Name}: pre-2017 serialized files not supported");
-            o.Type = _types[o.TypeIndex];
+#if !SHEPHERD_K11_TOC
+            int classId = _types[typeIndex].ClassId;   // (kit #11: o.Type = _types[o.TypeIndex] -- an index out of range fails here, as it did)
+            if (!_metadataOnly && byteStart + byteSize > _data.Length)
+                throw new InvalidDataException($"{Name}: object {pathId} extends past end of file");
+            _maxObjectEnd = Math.Max(_maxObjectEnd, byteStart + byteSize);
+            ObjectTable.WriteRow(rows, i, pathId, byteStart, byteSize, classId, typeIndex);
+#else
+            o.Type = _types[o.TypeIndex];   // (ClassId = Type.ClassId: kit #11 walk)
+#if SHEPHERD_K10_RECORDS
             o.ClassId = o.Type.ClassId;
+#endif
             if (!_metadataOnly && o.ByteStart + o.ByteSize > _data.Length)
                 throw new InvalidDataException($"{Name}: object {o.PathId} extends past end of file");
             _maxObjectEnd = Math.Max(_maxObjectEnd, o.ByteStart + o.ByteSize);
             if (_byPathId == null && _objects.Count > 0 && o.PathId <= _objects[^1].PathId) _byPathId = BuildIndex();   // not strictly ascending: hash index
             _objects.Add(o);
             if (_byPathId != null) _byPathId[o.PathId] = o;
+#endif
         }
+#if !SHEPHERD_K11_TOC
+        _table = ObjectTable.FromRows(rows, objectCount, _types);
+#endif
 
         if (FormatVersion >= 11)
         {
@@ -497,7 +809,11 @@ public sealed class SerializedFile
         return _share ? TypeTreeShare.Share(nodes) : nodes;
     }
 
+#if !SHEPHERD_K11_TOC
+    public override string ToString() => $"{Name} (v{FormatVersion}, {UnityVersion}, {_table?.Count ?? 0} objects, typetree={EnableTypeTree})";
+#else
     public override string ToString() => $"{Name} (v{FormatVersion}, {UnityVersion}, {_objects.Count} objects, typetree={EnableTypeTree})";
+#endif
 }
 
 /// <summary>Process-wide pool of distinct type trees (see <see cref="SerializedFile.ShareTypeTrees"/>). Weak: the pool

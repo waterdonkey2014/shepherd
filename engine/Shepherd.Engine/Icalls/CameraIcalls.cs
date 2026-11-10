@@ -69,9 +69,17 @@ public static class CameraIcalls
     {
         if (c.Get("__proj") is Matrix4x4 custom) return custom;
         float n = F(c, "nearClipPlane", 0.3f), f = F(c, "farClipPlane", 1000f), asp = Aspect(c);
+#if SHEPHERD_NO_K12MENUSB
         if (B(c, "orthographic", false)) { float s = F(c, "orthographicSize", 5f); return MathIcalls.Ortho(-s * asp, s * asp, -s, s, n, f); }
         return MathIcalls.Perspective(F(c, "fieldOfView", 60f), asp, n, f);
     }
+#else
+        var p = B(c, "orthographic", false) ? OrthoOf(c, asp, n, f) : MathIcalls.Perspective(F(c, "fieldOfView", 60f), asp, n, f);
+        if (Runtime.K12View.CamK != 1f && ReferenceEquals(c, Runtime.K12View.CamObj)) { p.m00 *= Runtime.K12View.CamK; p.m11 *= Runtime.K12View.CamK; }   // kit #12: Camera Closer / Closest (the projection only)
+        return p;
+    }
+    static Matrix4x4 OrthoOf(NObj c, float asp, float n, float f) { float s = F(c, "orthographicSize", 5f); return MathIcalls.Ortho(-s * asp, s * asp, -s, s, n, f); }
+#endif
     public static Vector3 WorldToScreen(NComponent c, Vector3 w)
     {
         var v = M.Point(View(c), w); var p = Proj(c);

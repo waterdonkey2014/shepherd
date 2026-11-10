@@ -106,8 +106,13 @@ public static class Physics2DSettings
         try
         {
             var gm = Assets.Loader.Db?.GetFile("globalgamemanagers");
+#if !SHEPHERD_K11_TOC
+            var o = gm != null ? gm.ObjectsOfClass(19).FirstOrDefault() : default;   // (kit #12 walkb: an index entry is a view -- IsNull, kit #11's null)
+            if (o.IsNull) { Log.Warn("[physics2d] no Physics2DSettings record in globalgamemanagers: Unity's defaults (every layer collides with every layer, callbacksOnDisable on)"); return; }
+#else
             var o = gm?.ObjectsOfClass(19).FirstOrDefault();
             if (o == null) { Log.Warn("[physics2d] no Physics2DSettings record in globalgamemanagers: Unity's defaults (every layer collides with every layer, callbacksOnDisable on)"); return; }
+#endif
             var b = gm.GetObjectBytes(o);
             if (!Decode(b, out var why)) { Log.Warn($"[physics2d] Physics2DSettings ({b.Length} B, Unity {gm.UnityVersion}) is not in the 2022.3 layout ({why}): Unity's defaults (every layer collides, callbacksOnDisable on)"); return; }
             Source = "project";

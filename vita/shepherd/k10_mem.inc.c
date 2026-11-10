@@ -10,7 +10,10 @@
  *                                  follows the floor (the arena's room above it - card table - interpreter stacks - slack, kit #9's formula).
  *   SHEPHERD_K10_EVAC=<pct>        sgen's major-block EVACUATION threshold (MONO_GC_PARAMS evacuation-threshold=; sgen's default 66): a block
  *                                  size class whose blocks are less than <pct> % full is compacted by the next major collection (its objects
- *                                  copied into fewer blocks, the emptied blocks freed). Only where objects live changes.
+ *                                  copied into fewer blocks, the emptied blocks freed). Only where objects live changes. 0 / unset = no
+ *                                  parameter (sgen's 66 %: kit #10's default everywhere, kit #11's too after its review); off = 0 % (no size
+ *                                  class evacuated: kit #11 walk review fix -- with the concurrent collector a failed evacuation copy reaches
+ *                                  sgen's pin_major_object, which asserts, so "off" is the arm without that path).
  *   SHEPHERD_K10_SIZES=a,b,...     extra slot sizes for the major heap's blocks (the size-class audit; up to 32, multiples of 8 below 8000),
  *                                  joined to sgen's 26 at its init (k10-memory.patch). Only where objects live changes. Default: the play
  *                                  apps' twelve (host.c DEFAULTS: the walk census's pick), none elsewhere; =0 = sgen's 26 (kit #9).
@@ -86,6 +89,24 @@ static int k10_env_list (const char *k, unsigned *out, int max, int lo, int hi) 
 #ifndef SHP_K10_SIZES_DEFAULT
 #define SHP_K10_SIZES_DEFAULT ""   /* (the play apps' list: host.c DEFAULTS) */
 #endif
+#ifndef SHP_K11_EVAC_DEFAULT
+#define SHP_K11_EVAC_DEFAULT 0     /* kit #11 walk review fix: 0 everywhere (= kit #10: sgen's own threshold, 66 %); 90 % is opt-in (SHEPHERD_K10_EVAC=90) */
+#endif
+static int k11_evac_default (void)
+{
+	const char *w = getenv ("SHEPHERD_K11_WALK");
+	return w && !strcmp (w, "0") ? 0 : SHP_K11_EVAC_DEFAULT;
+}
+/* SHEPHERD_K10_EVAC: <pct> 1..100 = evacuation-threshold=<pct> | 0 or unset = no parameter: sgen's own 66 % (kit #10; sgen still evacuates a
+ * size class whose blocks are less than 66 % full) | off = evacuation-threshold=0 (kit #11 walk review fix: no size class is ever evacuated --
+ * the A/B arm that takes the evacuation path out entirely). Returns <pct>, 0, or -1 for off. */
+static int k10_evac_env (void)
+{
+	const char *e = getenv ("SHEPHERD_K10_EVAC");
+	if (e && !strcmp (e, "off"))
+		return -1;
+	return (int) k10_env_u ("SHEPHERD_K10_EVAC", 0, 100, k11_evac_default ());
+}
 /* main, right after the env file (before the partition) */
 static void k10_mem_config (void)
 {
@@ -97,7 +118,7 @@ static void k10_mem_config (void)
 		 * turns off (SHEPHERD_K10_POOL=0 / SHEPHERD_K10_MEM=0) is not used (newlib gets its kit #9 share in a second block: the partition is
 		 * kit #9's); a pool asked for after newlib's whole heap was made cannot be used (kit #9 as it is). */
 		const char *pe = getenv ("SHEPHERD_K10_POOL");
-		int want = k10m.on && (pe ? !strcmp (pe, "1") : SHP_K10_POOL_DEFAULT);
+		int want = k10m.on && (pe ? !strcmp (pe, "1") : k11_pool_default ());   /* kit #11 walk: the play apps' default ON */
 		if (k10_pool_req && !want) {
 			k10m.pool = 0;
 			k10m.pool_why = k10m.on ? "the env file says SHEPHERD_K10_POOL is not 1, but the read before main saw it on" : "SHEPHERD_K10_MEM=0";
@@ -110,7 +131,8 @@ static void k10_mem_config (void)
 	k10m.reserve_mb = k10_env_u ("SHEPHERD_K10_POOL_RESERVE_MB", 4, 64, 8);
 	k10m.memlog = k10m.on ? k10_env_u ("SHEPHERD_K10_MEMLOG", 1, 1000000, 0) : 0;
 	k10m.census = k10m.on && k10_env_u ("SHEPHERD_K10_CENSUS", 0, 1, 0) == 1;
-	k10m.evac = k10m.on ? (int) k10_env_u ("SHEPHERD_K10_EVAC", 1, 100, 0) : 0;
+	/* kit #11 walk (review fix): the default is kit #10's (0: sgen's own 66 %) in every app; SHEPHERD_K10_EVAC=90 opt-in, =off no evacuation */
+	k10m.evac = k10m.on ? k10_evac_env () : 0;
 	unsigned sz [32];
 	/* SHEPHERD_K10_SIZES=0 = sgen's own 26 sizes (kit #9); unset = the app's default list (host.c DEFAULTS: the play apps' twelve, else none) */
 	k10m.nsizes = k10m.on ? k10_env_list_def ("SHEPHERD_K10_SIZES", sz, 32, 16, 7999, SHP_K10_SIZES_DEFAULT) : 0;
@@ -143,8 +165,10 @@ static void k10_mem_config (void)
 	char sl [200] = "", ev [40] = "sgen's (66 %)";
 	for (int i = 0, o = 0; i < k10m.nsizes && o < (int) sizeof sl - 8; i++)
 		o += snprintf (sl + o, sizeof sl - o, "%s%d", i ? "," : "", k10m.sizes [i]);
-	if (k10m.evac)
+	if (k10m.evac > 0)
 		snprintf (ev, sizeof ev, "%d %%", k10m.evac);
+	else if (k10m.evac < 0)
+		snprintf (ev, sizeof ev, "OFF (0 %%: none evacuated)");
 	LOG ("K10 MEM (kit #10 memory track; SHEPHERD_K10_MEM=0 = kit #9): shared pool %s (reserve %u MiB) | evacuation threshold %s | extra size classes %s | "
 	     "pressure ladder %s (GC heap headroom %u/%u/%u/%u/%u MiB, newlib %u/%u/%u/%u/%u MiB%s) | memory timeline %s | size-class census %s",
 	     !k10m.on ? "off (SHEPHERD_K10_MEM=0)" : k10m.pool ? "ON (SHEPHERD_K10_POOL=1, set up at the partition)" : "off (kit #9: the 116 MiB newlib heap, the IL pool, the arena apart)",
@@ -205,16 +229,34 @@ static int k10_il_vram_alloc (char **pool, unsigned *size)
 	if (!k10m.il_vram_mb)
 		return -1;
 	unsigned bytes = (k10m.il_vram_mb * MiB + 256u * 1024u - 1) & ~(256u * 1024u - 1);
-	SceUID b = sceKernelAllocMemBlock ("shepherd-il-pool-vram", SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, bytes, NULL);
+	/* kit #13 walkc (k13_walkc.inc.c, SHEPHERD_K13_IL_CACHED): the cached CDRAM type first (the CPU's L1 caches it), kit #12's uncached type if
+	 * the kernel refuses it; SHEPHERD_K13_IL_CACHED=0 = kit #12's type only */
+	unsigned type = k13_il_vram_type ();
+	SceUID b = sceKernelAllocMemBlock ("shepherd-il-pool-vram", type, bytes, NULL);
 	void *base = NULL;
+	if (type != SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW && (b < 0 || sceKernelGetMemBlockBase (b, &base) < 0)) {
+		LOG ("WARN K13 WALKC the cached video-memory type 0x%08x was refused for the IL pool (0x%08x): kit #12's uncached USER_CDRAM_RW instead", type, (unsigned) b);
+		if (b >= 0)
+			sceKernelFreeMemBlock (b);
+		type = SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW;
+		base = NULL;
+		b = sceKernelAllocMemBlock ("shepherd-il-pool-vram", type, bytes, NULL);
+	}
+	if (b >= 0 && type != SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW && base && k13_il_coherence (base) != 0) {   /* (kit #13 walkc: the cached block's cross-core check) */
+		sceKernelFreeMemBlock (b);
+		type = SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW;
+		base = NULL;
+		b = sceKernelAllocMemBlock ("shepherd-il-pool-vram", type, bytes, NULL);
+	}
 	if (b < 0 || sceKernelGetMemBlockBase (b, &base) < 0) {
 		LOG ("WARN K10 MEM the %u MiB IL pool in video memory could not be allocated (0x%08x): the IL images go to the newlib heap", k10m.il_vram_mb, (unsigned) b);
 		return -1;
 	}
 	*pool = (char *) base;
 	*size = bytes;
-	LOG ("H2 IL pool: %u MiB USER_CDRAM_RW at %p (kit #10: video memory -- IL images read here first, then the newlib heap; SHEPHERD_K10_IL_VRAM_MB unset = kit #9's main-RAM pool)",
-	     k10m.il_vram_mb, base);
+	k13_il_vram_used (type == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW ? 1 : 2);
+	LOG ("H2 IL pool: %u MiB %s at %p (kit #10: video memory -- IL images read here first, then the newlib heap; SHEPHERD_K10_IL_VRAM_MB unset = kit #9's main-RAM pool)",
+	     k10m.il_vram_mb, type == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW ? "USER_CDRAM_RW" : "USER_CDRAM_L1WBWA_RW (kit #13 walkc: cached by the CPU's L1)", base);
 	return 0;
 #else
 	(void) pool; (void) size; return -1;
@@ -226,7 +268,7 @@ static unsigned k10_pool_cap_mb (void)
 {
 #if !defined (SHEPHERD_MAC_CHECK)
 	size_t room = k10_pool_bytes > k10_nl_floor ? k10_pool_bytes - k10_nl_floor : 0;
-	unsigned over = SHP_CARD_TABLE_MB + SHP_INTERP_STACKS_MB + SHP_ARENA_SLACK_MB;
+	unsigned over = k14_cap_over ();   /* kit #14 newlib (k14_newlib.inc.c): what the arena really holds besides the GC heap; SHEPHERD_K14_OFF=0x8000 (or SHEPHERD_K14_NEWLIB=0) = kit #9's formula, 22 */
 	unsigned r = (unsigned) (room / MiB);
 	return r > over + 16 ? r - over : 16;
 #else
@@ -356,7 +398,7 @@ static void k10_gc_params_tail (char *gcp, size_t n)
 {
 	size_t l = strlen (gcp);
 	if (k10m.evac && l + 32 < n)
-		snprintf (gcp + l, n - l, ",evacuation-threshold=%d", k10m.evac);
+		snprintf (gcp + l, n - l, ",evacuation-threshold=%d", k10m.evac > 0 ? k10m.evac : 0);   /* (-1 = SHEPHERD_K10_EVAC=off: 0, sgen never evacuates) */
 }
 /* mono_thread_body, after the H4 line (review fix R7): in the pool, an env-file MONO_GC_PARAMS that setenv (..., 0) kept in force -- its
  * max-heap-size (g_max_heap_mb as H4 parsed it) becomes the ceiling of the floor's cap instead of being overwritten without a word */
@@ -403,7 +445,7 @@ static void k10_after_runtime (void)
 	if (k10_pool_live)
 		LOG ("K10 POOL the runtime is up: GC heap cap %u MiB (soft %u) = the arena's room above the floor (%u KiB) - %u MiB card table, interpreter "
 		     "stacks, slack", g_max_heap_mb, g_max_heap_mb > SHP_SOFT_MARGIN_MB ? g_max_heap_mb - SHP_SOFT_MARGIN_MB : 0, (unsigned) (k10_nl_floor / 1024),
-		     SHP_CARD_TABLE_MB + SHP_INTERP_STACKS_MB + SHP_ARENA_SLACK_MB);
+		     k14_cap_over ());
 #endif
 }
 

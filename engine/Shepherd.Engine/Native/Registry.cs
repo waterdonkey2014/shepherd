@@ -74,9 +74,15 @@ public sealed class Registry
         int end = _logBase + Log.Count, min = end;
         foreach (var r in All) if (r._used) min = Math.Min(min, r._cursor);
         int drop = min - _logBase; if (drop <= 0) return;
-        if (drop == Log.Count) Log.Clear(); else Log.RemoveRange(0, drop);
+        if (drop == Log.Count) { Log.Clear(); if (LogTrim && Log.Capacity > LogKeepMax) Log.Capacity = LogKeep; } else Log.RemoveRange(0, drop);
         _logBase = min;
     }
+    /// <summary>Kit #11 walk (the intro's load peak; vita/notes/kit11-walk.md): a frame that binds a scene's worth of records (the intro's load:
+    /// ~250 k) grows the bind log to 262,144 entries -- a 1 MiB array that List.Clear kept for the rest of the session. When the log is empty
+    /// and its array is above 256 KiB it is cut back to 32 KiB (the log's contents and order are untouched: only its spare room goes).
+    /// SHEPHERD_K11_TRIM=0 (or SHEPHERD_K11_WALK=0) = kit #10 (the array kept).</summary>
+    static readonly bool LogTrim = Environment.GetEnvironmentVariable("SHEPHERD_K11_TRIM") != "0" && Environment.GetEnvironmentVariable("SHEPHERD_K11_WALK") != "0";
+    const int LogKeepMax = 65536, LogKeep = 8192;
     /// <summary>fid1-fixup D2: the end of every frame (Lifecycle.Frame). Every list read at least once classifies the frame's new
     /// records (exactly what its next read would do: the members, their order and the type tests are the same), then the log is
     /// emptied, so no list can keep destroyed records alive past a frame however rarely it is read. Without the slot mirror every
@@ -115,6 +121,22 @@ public sealed class Registry
         foreach (var r in All) if (r._used) r.Drain();   // (after the joint pass the per-type lists have nothing left: each drain only counts towards the Trim cadence, as before)
         Trim();
     }
+#if !SHEPHERD_NO_K13WALKC
+    /// <summary>Kit #13 walkc (Runtime/K13Unload.cs): for one collection no list may hold an asset record the release tests (a list would keep it
+    /// alive): every list is emptied and the bind log dropped -- the state the slot mirror's full-scan path starts from -- and the lists that had
+    /// been read are rebuilt from the full scan right after the collection (<see cref="K13Rebuild"/>): the same members in the same order,
+    /// minus the released records (their tombstones are destroyed). Returns the lists to rebuild.</summary>
+    internal static Registry[] K13Detach()
+    {
+        int k = 0; foreach (var r in All) if (r._used) k++;
+        var used = new Registry[k]; k = 0;
+        foreach (var r in All) { if (r._used) used[k++] = r; foreach (var n in r._items) n.RegMask &= ~r._bit; r._items.Clear(); r._version++; }
+        _logBase += Log.Count; Log.Clear();
+        foreach (var r in All) r._cursor = _logBase;
+        return used;
+    }
+    internal static void K13Rebuild(Registry[] used) { foreach (var r in used) if (r._used) r.Rebuild(); }
+#endif
     internal static void Killed(NObj n)
     {
         if (n.RegMask == 0) return;

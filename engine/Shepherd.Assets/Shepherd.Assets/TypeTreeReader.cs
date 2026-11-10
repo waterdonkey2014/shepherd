@@ -361,7 +361,7 @@ public static class TypeTreeReader
             case K.F32: v = r.F32(); break;
             case K.F64: v = r.F64(); break;
             case K.String:
-                v = r.LenString();
+                v = StringPool.Intern(r.LenString(), StringPool.Site.Tree);   // kit #13 basec: one copy per value while data is read (SHEPHERD_K13_STRPOOL=0: off)
                 if (c.ArrayAlign) r.Align(4);
                 break;
             case K.PPtr:

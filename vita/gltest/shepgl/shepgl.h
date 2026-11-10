@@ -1,7 +1,7 @@
 /* shepgl -- the GL host layer for Shepherd's GlBackend on the PS Vita (vitaGL), as a static library (libshepgl.a).
  *
  * What it gives the C# side:
- *   1. the 51 entry points of engine/Shepherd.Engine/Render/Gl.cs under stable names, resolved at LINK time (a missing one is
+ *   1. the 59 entry points of engine/Shepherd.Engine/Render/Gl.cs under stable names, resolved at LINK time (a missing one is
  *      a link error, not a run-time surprise). Gl.Load takes a Func<string, IntPtr>; on the Vita that is shepgl_proc:
  *        [DllImport("__Internal")] static extern IntPtr shepgl_proc(string name);      // UTF-8 marshalling (V5 checked it)
  *        var missing = Gl.Load(shepgl_proc, core: false);                              // 0 missing == every entry bound
@@ -40,10 +40,10 @@ extern "C" {
 #endif
 
 #define SHEPGL_ABI_VERSION 1
-#define SHEPGL_COUNT 51
+#define SHEPGL_COUNT 59   /* kit #12 boot: 51 + the 8 stencil / renderbuffer entries (Render/K12Stencil.cs) */
 
 /* ---- entry-point table (Gl.cs order) ---- */
-int shepgl_count(void);                    /* 51 */
+int shepgl_count(void);                    /* 59 */
 const char *shepgl_name(int index);        /* "glGetString" ... ; NULL out of range */
 void *shepgl_fn(int index);                /* the function to call; NULL out of range */
 int shepgl_is_wrapped(int index);          /* 1 = the table hands out a shepgl fix-up wrapper for this name */

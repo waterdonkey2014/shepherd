@@ -149,6 +149,9 @@ static uint64_t g_boot_us;
 static unsigned g_disp_sets, g_disp_nulls; static uint32_t g_disp_hash = 2166136261u; static uint32_t g_disp_last;
 static void disp_line (const char *why);
 static int g_avc_mod; static unsigned g_avc_fail_at;
+/* kit #13 bootc (vita/notes/kit13-bootc.md section 1): VLX_DEVADDR=0 -- no device-address model (kit #12's vlx: CDRAM / PHYCONT blocks wherever
+ * mmap puts them); VLX_AVC_CHECK=0 -- sceAvcdecCreateDecoder without the work-area checks (kit #12's stand-in). Both default ON. */
+static int g_devaddr = 1, g_avc_check = 1;
 /* kit #9 device track: the decoder's output delay (VLX_AVC_DELAY; kit #10 boot track: default 4 = the device's, MEASURED by kit #9's run
  * on both logos -- kit #9's default was 1), the library's PHYCONT (VLX_AVC_LIB_KIB, default 6144), a suspension (VLX_SUSPEND=<at s>:<for s>,
  * VLX_SUSPEND_CLK=0 keeps the clocks) -- the sections below */
@@ -236,6 +239,7 @@ typedef struct vobj {
 	/* mutex / lwmutex */ struct vthread *owner;
 	/* evf */ unsigned pattern;
 	/* memblock */ void *base; unsigned size, mtype, kind;
+	/* kit #13 bootc: the block's modelled DEVICE address (CDRAM / PHYCONT; 0 = none: main RAM, or VLX_DEVADDR=0) */ unsigned dev;
 } vobj;
 typedef struct vthread {
 	vobj o;
@@ -712,10 +716,79 @@ int sceKernelReceiveMsgPipe (SceUID uid, void *message, SceSize size, int unk1, 
 
 /* ------------------------------------------------------------------ memory blocks */
 static unsigned g_budget [3] = { 333824u * 1024u, 112640u * 1024u, 26624u * 1024u }, g_used [3];   /* user, cdram, phycont */
-static int mem_kind (unsigned type) { return type == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW ? 1 : (type == SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_RW || type == SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW) ? 2 : 0; }
+/* kit #13 walkc: USER_CDRAM_L1WBWA_RW (the cached video-memory type, 0x09404060) is video memory too -- before, it was booked as main RAM;
+ * VLX_REFUSE_MEMTYPE=<hex> (TEST ONLY, the negative control of the host's fallback): that type is refused (0x80020000 + ILLEGAL_MEMBLOCK_TYPE) */
+#ifndef SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_L1WBWA_RW
+#define SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_L1WBWA_RW 0x09404060
+#endif
+static unsigned g_refuse_type;
+static int mem_kind (unsigned type) { return (type == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW || type == SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_L1WBWA_RW) ? 1 : (type == SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_RW || type == SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW) ? 2 : 0; }
+/* kit #12 walka (vita/notes/kit12-walka.md section 2), OPT-IN: VLX_HIADDR=1 places every main-RAM user block (kind 0) at device-like addresses,
+ * bumping up from 0x88000000 (the device's user memory lies at 0x81000000 and up; the vlx ELF itself is linked at 0x81000000). Without it
+ * (default, every earlier kit) mmap places blocks below the shim's mmap base, at 0x48..0x6d, where ASCII text (lowercase letters as the high
+ * byte) and the stack paint 0x5A5AA5A5 are valid heap addresses -- sgen's conservative stack scan then keeps dead objects that the device
+ * (no such alias at 0x81..0x9f) frees.
+ * Checked, never silent (kit #12 walka review fix): a hint the kernel does not honour (qemu-user then takes the first free range at or above
+ * it) is logged ("[vlx] VLX_HIADDR: block ... not at its hint") and the bump moves past the block; a block that lands below 0x81000000 --
+ * where the device has no user memory and ASCII text / the stack paint can alias it -- STOPS the run ("[vlx] VLX_HIADDR FAIL", exit 97,
+ * before the app's END line: the run FAILS -- its memory numbers could not be device-like); the bump restarts at the base before a block
+ * could pass 0xfe000000 (no 32-bit wrap; the kernel then finds the first free range above the base), and a refused mmap gives its range
+ * back; the exit line counts the blocks, the misses and the restarts. VLX_HIADDR_BASE=<hex> (TEST ONLY, the negative controls: 0x50000000
+ * = blocks honoured below the device's floor -> the FAIL; 0x81000000 = the hint taken by the vlx ELF itself -> the miss line, still
+ * device-like) moves the start. */
+#define HI_FLOOR 0x81000000u   /* the device's user memory starts here (the eboot is linked at it) */
+#define HI_CEIL  0xfe000000u   /* the bump never passes this (qemu-user's commpage / the 32-bit top above) */
+static int g_hiaddr;
+static uintptr_t g_hi_base = 0x88000000u, g_hi_next = 0x88000000u;
+static unsigned g_hi_blocks, g_hi_missed, g_hi_restarts;
+/* kit #13 bootc (vita/notes/kit13-bootc.md section 1): THE DEVICE'S CDRAM / PHYCONT ADDRESSES, modelled. Kit #12's device run: the launcher's second clip
+ * was refused by sceAvcdecCreateDecoder (0x80620009 INVALID_POINTER) where vlx's stand-in took it -- vlx placed CDRAM blocks wherever mmap put them
+ * (page-aligned), so nothing depended on where a block lands. The device places user CDRAM blocks first-fit from 0x61000000 in 256 KiB granules
+ * (its logs: a start's first CDRAM block at 0x61000000; a 256 KiB block after a 2 MiB one at 0x61200000). Each CDRAM / PHYCONT block now gets that
+ * DEVICE address (first fit over a modelled range: CDRAM from 0x61000000, PHYCONT -- base unknown, 1 MiB granules -- from 0x70000000; the opt's
+ * alignment honoured), and its host mapping is placed at the same address modulo 16 MiB, so any alignment the program computes on its pointers
+ * (up to 16 MiB) is the device's. sceAvcdecCreateDecoder then checks its work area against it (below). VLX_DEVADDR=0 = kit #12's placement. */
+#define DEV_MAXR 512
+static struct { unsigned lo, hi; } g_devr [3][DEV_MAXR];
+static int g_devn [3];
+static const unsigned g_devbase [3] = { 0u, 0x61000000u, 0x70000000u }, g_devspan [3] = { 0u, 0x0c000000u, 0x04000000u };
+static unsigned g_dev_blocks, g_dev_said;
+static unsigned dev_take (int kind, unsigned size, unsigned align)   /* (under klock) the block's device address, 0 = no room in the model */
+{
+	unsigned a = g_devbase [kind], end = g_devbase [kind] + g_devspan [kind];
+	for (int i = 0; ; i++) {
+		a = (a + align - 1u) & ~(align - 1u);
+		unsigned lim = i < g_devn [kind] ? g_devr [kind][i].lo : end;
+		if (a >= g_devbase [kind] && a + size > a && a + size <= lim) {
+			if (g_devn [kind] >= DEV_MAXR) return 0;
+			for (int j = g_devn [kind]; j > i; j--) g_devr [kind][j] = g_devr [kind][j - 1];
+			g_devr [kind][i].lo = a; g_devr [kind][i].hi = a + size; g_devn [kind]++;
+			return a;
+		}
+		if (i >= g_devn [kind]) return 0;
+		if (g_devr [kind][i].hi > a) a = g_devr [kind][i].hi;
+	}
+}
+static void dev_give (int kind, unsigned lo)   /* (under klock) */
+{
+	for (int i = 0; i < g_devn [kind]; i++) if (g_devr [kind][i].lo == lo) {
+		for (int j = i; j + 1 < g_devn [kind]; j++) g_devr [kind][j] = g_devr [kind][j + 1];
+		g_devn [kind]--; return;
+	}
+}
+/* kit #13 fix (vita/vlx/vramcheck.inc.c): anonymous memory for a checker's own views, outside every modelled budget and address model (never a Vita block) */
+void *vlx_host_map (unsigned size)
+{
+	long r = sys6 (NR_mmap2, 0, size, 3, 0x22, -1, 0);
+	return r < 0 && r > -4096 ? NULL : (void *) r;
+}
+/* (kit #14 integration: under qemu-user mincore says yes for a reserved, unmapped guest page, so a stack scan off the top of a shallow stack crashed at the walk's exit at device-like addresses; access(2) on the page
+ * goes through qemu's own page flags: -EFAULT = not readable. A page with no NUL before an unreadable one reads as unmapped: the scan just stops early.) */
+int vlx_host_mapped (unsigned page) { return sys6 (33 /* access */, page & ~0xFFFu, 0, 0, 0, 0, 0) != -14; }
 SceUID sceKernelAllocMemBlock (const char *name, SceKernelMemBlockType type, SceSize size, SceKernelAllocMemBlockOpt *opt)
 {
 	int kind = mem_kind ((unsigned) type);
+	if (g_refuse_type && (unsigned) type == g_refuse_type) { vlog ("[vlx] sceKernelAllocMemBlock('%s', type 0x%08x): REFUSED (VLX_REFUSE_MEMTYPE, test)\n", name ? name : "?", (unsigned) type); return (SceUID) 0x8002000b; }
 	unsigned gran = kind == 1 ? 0x40000 : kind == 2 ? 0x100000 : 0x1000;
 	if (!size || (size & (gran - 1))) return fail ("sceKernelAllocMemBlock(size)", SCE_KERNEL_ERROR_ILLEGAL_SIZE);
 	unsigned align = (opt && (opt->attr & SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT) && opt->alignment > 0x1000) ? opt->alignment : 0x1000;
@@ -723,16 +796,46 @@ SceUID sceKernelAllocMemBlock (const char *name, SceKernelMemBlockType type, Sce
 	if (g_used [kind] + size > g_budget [kind] || g_used [kind] + size < g_used [kind]) { kunlock (); return fail ("sceKernelAllocMemBlock(budget)", SCE_KERNEL_ERROR_NO_MEMORY); }
 	g_used [kind] += size;
 	kunlock ();
-	unsigned msz = size + (align > 0x1000 ? align : 0);
-	char *m = (char *) sys6 (NR_mmap2, 0, msz, 3 /* RW, never X */, 0x22, -1, 0);
-	if ((unsigned long) m > 0xfffff000ul) { klock (); g_used [kind] -= size; kunlock (); return fail ("sceKernelAllocMemBlock(mmap)", SCE_KERNEL_ERROR_NO_MEMORY); }
+	unsigned dev = 0;
+	if (g_devaddr && kind) {   /* kit #13 bootc: the device address first (the host mapping follows it modulo 16 MiB) */
+		unsigned dal = align > (kind == 1 ? 0x40000u : 0x100000u) ? align : (kind == 1 ? 0x40000u : 0x100000u);
+		klock (); dev = dev_take (kind, size, dal); if (dev) g_dev_blocks++; kunlock ();
+		if (!dev) vlog ("[vlx] VLX_DEVADDR: block '%s' (%u KiB) found no room in the modelled %s range: placed as kit #12's vlx\n", name ? name : "?", size / 1024, kind == 1 ? "CDRAM" : "PHYCONT");
+		else if (!g_dev_said++) vlog ("[vlx] VLX_DEVADDR: CDRAM / PHYCONT blocks at the device's addresses (CDRAM first fit from 0x61000000, 256 KiB granules; the host mapping at the same address modulo 16 MiB): first block '%s' %u KiB at 0x%08x (VLX_DEVADDR=0 = kit #12's vlx)\n", name ? name : "?", size / 1024, dev);
+	}
+	unsigned msz = size + (dev ? 0x1000000u : align > 0x1000 ? align : 0);
+	uintptr_t hint = 0, hend = 0;
+	if (g_hiaddr && kind == 0) {   /* (VLX_HIADDR=1) */
+		klock ();
+		if (g_hi_next < g_hi_base || msz > HI_CEIL - g_hi_base || g_hi_next > HI_CEIL - msz) { g_hi_next = g_hi_base; g_hi_restarts++; }
+		hint = g_hi_next; hend = g_hi_next = (hint + msz + 0xfffffu) & ~(uintptr_t) 0xfffffu;
+		kunlock ();
+	}
+	char *m = (char *) sys6 (NR_mmap2, hint, msz, 3 /* RW, never X */, 0x22, -1, 0);
+	if ((unsigned long) m > 0xfffff000ul) { klock (); g_used [kind] -= size; if (hint && g_hi_next == hend) g_hi_next = hint; if (dev) dev_give (kind, dev); kunlock (); return fail ("sceKernelAllocMemBlock(mmap)", SCE_KERNEL_ERROR_NO_MEMORY); }
+	if (hint) {   /* (VLX_HIADDR=1: checked) */
+		uintptr_t got = (uintptr_t) m;
+		klock ();
+		g_hi_blocks++;
+		if (got != hint) { g_hi_missed++; if (got >= HI_FLOOR && got <= HI_CEIL - msz && got + msz > g_hi_next) g_hi_next = (got + msz + 0xfffffu) & ~(uintptr_t) 0xfffffu; }
+		kunlock ();
+		if (got != hint) vlog ("[vlx] VLX_HIADDR: block '%s' (%u KiB) at 0x%08x, not at its hint 0x%08x%s\n", name ? name : "?", size / 1024, (unsigned) got, (unsigned) hint, got >= HI_FLOOR ? " (still at device-like addresses)" : "");
+		if (got < HI_FLOOR) {
+			vlog ("[vlx] VLX_HIADDR FAIL: block '%s' (%u KiB) at 0x%08x is below 0x%08x, where the device has no user memory (ASCII text and the stack paint alias it): this run's memory numbers cannot be device-like -- stopping the run (exit 97)\n", name ? name : "?", size / 1024, (unsigned) got, HI_FLOOR);
+			sys1 (NR_exit_group, 97); for (;;) ;
+		}
+	}
 	char *base = m;
-	if (align > 0x1000) {
+	if (dev) {   /* kit #13 bootc: base = m + ((dev - m) mod 16 MiB): the host pointer has the device address's low 24 bits */
+		base = m + ((dev - (unsigned) (uintptr_t) m) & 0xFFFFFFu);
+		if (base > m) sys2 (NR_munmap, m, base - m);
+		char *end = base + size, *mend = m + msz; if (mend > end) sys2 (NR_munmap, end, mend - end);
+	} else if (align > 0x1000) {
 		base = (char *) (((uintptr_t) m + align - 1) & ~(uintptr_t) (align - 1));
 		if (base > m) sys2 (NR_munmap, m, base - m);
 		char *end = base + size, *mend = m + msz; if (mend > end) sys2 (NR_munmap, end, mend - end);
 	}
-	klock (); vobj *o = obj_new (T_MEMBLOCK, name); o->base = base; o->size = size; o->mtype = (unsigned) type; o->kind = (unsigned) kind; kunlock ();
+	klock (); vobj *o = obj_new (T_MEMBLOCK, name); o->base = base; o->size = size; o->mtype = (unsigned) type; o->kind = (unsigned) kind; o->dev = dev; kunlock ();
 	return o->uid;
 }
 int sceKernelGetMemBlockBase (SceUID uid, void **basep)
@@ -819,6 +922,7 @@ int sceKernelFreeMemBlock (SceUID uid)
 {
 	klock (); vobj *o = obj_get (uid, T_MEMBLOCK); if (!o) { kunlock (); return fail ("sceKernelFreeMemBlock", SCE_KERNEL_ERROR_UNKNOWN_UID); }
 	if (o->mtype == FORVM_MTYPE) g_forvm_used -= o->size;
+	if (o->dev) { dev_give ((int) o->kind, o->dev); o->dev = 0; }   /* kit #13 bootc */
 	sys2 (NR_munmap, o->base, o->size); g_used [o->kind] -= o->size; o->type = T_FREE; kunlock (); return 0;
 }
 int sceKernelGetFreeMemorySize (SceKernelFreeMemorySizeInfo *info)
@@ -1137,7 +1241,7 @@ int scePowerSetArmClockFrequency (int freq) { if (freq > (g_arm500 ? 500 : 444))
 int scePowerSetBusClockFrequency (int freq) { g_clk [1] = freq; return 0; }
 int scePowerSetGpuClockFrequency (int freq) { g_clk [2] = freq; return 0; }
 int scePowerSetGpuXbarClockFrequency (int freq) { g_clk [3] = freq; return 0; }
-int sceKernelExitProcess (int res) { if (g_disp_sets || g_disp_nulls) disp_line ("process exit"); prof_dump (); stack_report_all ("exit"); if (g_vmdom_opens || g_forvm_used) vlog ("[vlx] ForVM at exit: %u KiB in blocks, %u Opens, %u Syncs, %u FORVM RULE lines, domain %s\n", g_forvm_used / 1024, g_vmdom_opens, g_vmdom_syncs, g_vmdom_rule, g_vmdom_open ? "OPEN" : "closed"); vlog ("[vlx] sceKernelExitProcess(%d) after %u ms\n", res, (unsigned) ((mono_us () - g_boot_us) / 1000)); sys1 (NR_exit_group, res & 0xff); for (;;) ; }
+int sceKernelExitProcess (int res) { if (g_disp_sets || g_disp_nulls) disp_line ("process exit"); prof_dump (); stack_report_all ("exit"); if (g_vmdom_opens || g_forvm_used) vlog ("[vlx] ForVM at exit: %u KiB in blocks, %u Opens, %u Syncs, %u FORVM RULE lines, domain %s\n", g_forvm_used / 1024, g_vmdom_opens, g_vmdom_syncs, g_vmdom_rule, g_vmdom_open ? "OPEN" : "closed"); if (g_hiaddr) vlog ("[vlx] VLX_HIADDR at exit: %u main-RAM block(s) placed from 0x%08x up, %u not at their hint, %u restart(s) of the bump, none below 0x%08x (device-like addresses)\n", g_hi_blocks, (unsigned) g_hi_base, g_hi_missed, g_hi_restarts, HI_FLOOR); vlog ("[vlx] sceKernelExitProcess(%d) after %u ms\n", res, (unsigned) ((mono_us () - g_boot_us) / 1000)); sys1 (NR_exit_group, res & 0xff); for (;;) ; }
 int sceKernelGetRandomNumber (void *output, SceSize size)
 {
 	char *p = output; while (size) { long r = sys3 (NR_getrandom, p, size, 0); if (r <= 0) return fail ("sceKernelGetRandomNumber", SCE_KERNEL_ERROR_ERROR); p += r; size -= (SceSize) r; } return 0;
@@ -1300,6 +1404,33 @@ int sceAvcdecCreateDecoder (SceVideodecType codec, SceAvcdecCtrl *c, const SceAv
 {
 	if (!g_avc_lib || !c || !q || !c->frameBuf.pBuf || c->frameBuf.size < g_avc_need) return fail ("sceAvcdecCreateDecoder", (int) 0x80620002);
 	(void) codec;
+	if (g_avc_check && g_devaddr) {
+		/* kit #13 bootc (vita/notes/kit13-bootc.md section 1): THE WORK AREA, checked as the device does. The decoder works in physically contiguous
+		 * memory (CDRAM / PHYCONT), the whole area inside ONE block, starting on a 1 MiB boundary of the DEVICE's address -- the rule INFERRED from
+		 * kit #12's run (vita/shepherd/k8_avc.h "THE WORK AREA": the second clip's area at 0x61180000 refused 0x80620009, the first clip's at
+		 * 0x61500000 and the engine's 1 MiB-aligned VRAM areas taken). Refused like the device: INVALID_POINTER, or NOT_PHY_CONTINUOUS_MEMORY for
+		 * main RAM. VLX_AVC_CHECK=0 = kit #12's stand-in (no check). */
+		const char *p = (const char *) c->frameBuf.pBuf; vobj *mb = 0;
+		klock ();
+		for (int i = 0; i < MAX_OBJ && !mb; i++) { vobj *o = &g_obj [i]; if (o->type == T_MEMBLOCK && p >= (const char *) o->base && p < (const char *) o->base + o->size) mb = o; }
+		unsigned mbase = mb ? (unsigned) (uintptr_t) mb->base : 0, msize = mb ? mb->size : 0, mkind = mb ? mb->kind : 0, mdev = mb ? mb->dev : 0;
+		kunlock ();
+		unsigned off = (unsigned) ((uintptr_t) p - mbase), devp = mdev ? mdev + off : 0;
+		if (!mb || off + c->frameBuf.size > msize || off + c->frameBuf.size < off) {
+			vlog ("[vlx] sceAvcdecCreateDecoder: INVALID_POINTER (0x80620009) -- the work area %p (%u KiB) is not inside one memory block\n", c->frameBuf.pBuf, c->frameBuf.size / 1024u);
+			return (int) 0x80620009;
+		}
+		if (!mkind) {
+			vlog ("[vlx] sceAvcdecCreateDecoder: NOT_PHY_CONTINUOUS_MEMORY (0x80620007) -- the work area %p is in main RAM (a USER_RW block), not CDRAM / PHYCONT\n", c->frameBuf.pBuf);
+			return (int) 0x80620007;
+		}
+		if (devp & 0xFFFFFu) {
+			vlog ("[vlx] sceAvcdecCreateDecoder: INVALID_POINTER (0x80620009) -- the work area starts at device address 0x%08x (%u KiB into its %s block at 0x%08x), not on a 1 MiB boundary "
+			      "(the device refused kit #12's second clip the same way; VLX_AVC_CHECK=0 = kit #12's stand-in)\n", devp, off / 1024u, mkind == 1 ? "CDRAM" : "PHYCONT", mdev);
+			return (int) 0x80620009;
+		}
+		if (!devp) vlog ("[vlx] sceAvcdecCreateDecoder: the work area's block has no modelled device address (the model's range was full): not checked\n");
+	}
 	if (g_avc_dec_kib) {   /* kit #9 review (finding 4) */
 		unsigned need = g_avc_dec_kib * 1024u;
 		klock ();
@@ -1467,10 +1598,31 @@ SceUID sceKernelLoadStartModule (const char *path, SceSize args, void *argp, int
 	if (status) *status = r;
 	return 0x40030001;
 }
+/* kit #12 boot: VLX_CTRL="<from ms>-<to ms>:<buttons hex>[;...]" -- the buttons held while the process time is in a window (the launcher's
+ * Cross skip reads sceCtrl before the engine's SHEPHERD_PAD script exists); without it nothing is held, as before */
+static char g_ctrl_script [256];
+static unsigned ctrl_script_buttons (uint64_t now_us)
+{
+	unsigned ms = (unsigned) (now_us / 1000u), held = 0;
+	for (const char *p = g_ctrl_script; *p; ) {
+		unsigned a = 0, b = 0, m = 0;
+		while (*p >= '0' && *p <= '9') a = a * 10u + (unsigned) (*p++ - '0');
+		if (*p == '-') p++;
+		while (*p >= '0' && *p <= '9') b = b * 10u + (unsigned) (*p++ - '0');
+		if (*p == ':') p++;
+		if (p [0] == '0' && (p [1] == 'x' || p [1] == 'X')) p += 2;
+		for (;; p++) { unsigned d = *p >= '0' && *p <= '9' ? (unsigned) (*p - '0') : (*p | 0x20) >= 'a' && (*p | 0x20) <= 'f' ? (unsigned) ((*p | 0x20) - 'a' + 10) : 16u; if (d > 15u) break; m = m * 16u + d; }
+		if (ms >= a && ms < b) held |= m;
+		while (*p && *p != ';') p++;
+		if (*p == ';') p++;
+	}
+	return held;
+}
 int sceCtrlPeekBufferPositive (int port, SceCtrlData *pad_data, int count)
 {
 	(void) port; for (int i = 0; i < count; i++) { vmemset (&pad_data [i], 0, sizeof (pad_data [i])); pad_data [i].timeStamp = sceKernelGetProcessTimeWide ();
-		pad_data [i].lx = pad_data [i].ly = pad_data [i].rx = pad_data [i].ry = 128; }
+		pad_data [i].lx = pad_data [i].ly = pad_data [i].rx = pad_data [i].ry = 128;
+		if (g_ctrl_script [0]) pad_data [i].buttons = ctrl_script_buttons (pad_data [i].timeStamp); }
 	return count;
 }
 /* kit #5 touch: the front panel (host.c shepherd_vita_touch_read). Without VLX_TOUCH: sampling accepted, a PCH-2000-like panel info
@@ -1568,11 +1720,22 @@ void vlx_boot (uint32_t *sp0)
 		else if (!vstrncmp (*v, "VLX_ARM500=", 11)) g_arm500 = (*v) [11] == '1';
 		else if (!vstrncmp (*v, "VLX_STACK_REPORT=", 17)) g_stack_report = (*v) [17] == '1';
 		else if (!vstrncmp (*v, "VLX_STACK_ACCOUNT=", 18)) g_stack_account = (*v) [18] == '1';
+		else if (!vstrncmp (*v, "VLX_HIADDR=", 11)) g_hiaddr = (*v) [11] == '1';   /* kit #12 walka (opt-in): device-like block addresses */
+		else if (!vstrncmp (*v, "VLX_HIADDR_BASE=", 16)) {                                            /* kit #12 walka review (TEST ONLY): <hex>, the first hint */
+			const char *q = *v + 16; unsigned x = 0;
+			if (q [0] == '0' && (q [1] == 'x' || q [1] == 'X')) q += 2;
+			for (;; q++) { int d = *q >= '0' && *q <= '9' ? *q - '0' : *q >= 'a' && *q <= 'f' ? *q - 'a' + 10 : *q >= 'A' && *q <= 'F' ? *q - 'A' + 10 : -1; if (d < 0) break; x = x * 16 + (unsigned) d; }
+			if (x) g_hi_base = g_hi_next = x & ~0xfffffu;
+		}
 		else if (!vstrncmp (*v, "VLX_TOUCH=", 10)) vstrlcpy (g_touch_script, *v + 10, sizeof (g_touch_script));
+		else if (!vstrncmp (*v, "VLX_CTRL=", 9)) vstrlcpy (g_ctrl_script, *v + 9, sizeof (g_ctrl_script));   /* kit #12 boot */
 		else if (!vstrncmp (*v, "VLX_MEASURED_ARM=", 17)) g_measured_arm = (int) parse_kib (*v + 17);   /* kit #8 play */
 		else if (!vstrncmp (*v, "VLX_TOUCH_BACK=", 15)) vstrlcpy (g_touch_back_script, *v + 15, sizeof (g_touch_back_script));   /* kit #8 play */
 		else if (!vstrncmp (*v, "VLX_USER_KIB=", 13)) g_budget [0] = parse_kib (*v + 13) * 1024u;
 		else if (!vstrncmp (*v, "VLX_CDRAM_KIB=", 14)) g_budget [1] = parse_kib (*v + 14) * 1024u;
+		else if (!vstrncmp (*v, "VLX_REFUSE_MEMTYPE=", 19)) { const char *x = *v + 19; unsigned t = 0; if (x [0] == '0' && (x [1] == 'x' || x [1] == 'X')) x += 2;   /* kit #13 walkc (TEST ONLY) */
+			for (; *x; x++) { unsigned d = *x >= '0' && *x <= '9' ? (unsigned) (*x - '0') : *x >= 'a' && *x <= 'f' ? (unsigned) (*x - 'a' + 10) : *x >= 'A' && *x <= 'F' ? (unsigned) (*x - 'A' + 10) : 16u; if (d > 15) break; t = t * 16 + d; }
+			g_refuse_type = t; }
 		else if (!vstrncmp (*v, "VLX_PHYCONT_KIB=", 16)) g_budget [2] = parse_kib (*v + 16) * 1024u;
 		else if (!vstrncmp (*v, "VLX_PROF=", 9)) g_prof_us = parse_kib (*v + 9);
 		else if (!vstrncmp (*v, "VLX_FORVM_QUOTA_KIB=", 20)) g_forvm_quota = parse_kib (*v + 20) * 1024u;   /* kit #8 jit: the ForVM model */
@@ -1592,6 +1755,8 @@ void vlx_boot (uint32_t *sp0)
 		else if (!vstrncmp (*v, "VLX_AVC_IDR=", 12)) { g_avc_idr_bump = !vstrncmp (*v + 12, "bump", 4); g_avc_idr_drop = !vstrncmp (*v + 12, "drop", 4) ? 1 : !vstrncmp (*v + 12, "one", 3) ? 2 : 0; g_avc_idr_hang = !vstrncmp (*v + 12, "hang", 4); }   /* kit #10 boot (+ review: drop / one; integration review: hang) */
 		else if (!vstrncmp (*v, "VLX_AVC_PTS=", 12)) g_avc_pts = (*v) [12] != '0';   /* kit #10 integration review: 0 = a decoder that hands back no time stamps */
 		else if (!vstrncmp (*v, "VLX_AVC_DEC_KIB=", 16)) g_avc_dec_kib = parse_kib (*v + 16);          /* kit #9 review */
+		else if (!vstrncmp (*v, "VLX_DEVADDR=", 12)) g_devaddr = (*v) [12] != '0';                     /* kit #13 bootc: the device's CDRAM / PHYCONT addresses */
+		else if (!vstrncmp (*v, "VLX_AVC_CHECK=", 14)) g_avc_check = (*v) [14] != '0';                 /* kit #13 bootc: the decoder's work-area rule */
 		else if (!vstrncmp (*v, "VLX_AVC_LIB_KIB=", 16)) g_avc_lib_kib = parse_kib (*v + 16);          /* kit #9 device */
 		else if (!vstrncmp (*v, "VLX_SUSPEND_CLK=", 16)) g_susp_clk = (*v) [16] == '1';                /* kit #9 device (review: default 0) */
 		else if (!vstrncmp (*v, "VLX_SUSPEND=", 12)) {                                                /* kit #9 device: <at s>:<for s> */

@@ -128,7 +128,7 @@ sealed partial class Baker
         {
             if (p.IsNull) return;
             var (rf, ro) = _db.Resolve(from, p);
-            if (ro != null && byObj.TryGetValue((rf, ro.PathId), out var t)) t.Exact ??= why;
+            if (!ro.IsNull && byObj.TryGetValue((rf, ro.PathId), out var t)) t.Exact ??= why;
         }
         // recorded uses
         foreach (var t in _tex)
@@ -154,7 +154,7 @@ sealed partial class Baker
                     {
                         var ps = (e.Tree["m_AtlasTextures"] as List<object> ?? new List<object>()).OfType<PPtr>().ToList();
                         if (e.Tree["atlas"] is PPtr ap2) ps.Add(ap2);
-                        foreach (var p in ps) { if (p.IsNull) continue; var (rf, ro) = _db.Resolve(e.File, p); if (ro != null && byObj.TryGetValue((rf, ro.PathId), out var st)) st.Stub ??= why; }
+                        foreach (var p in ps) { if (p.IsNull) continue; var (rf, ro) = _db.Resolve(e.File, p); if (!ro.IsNull && byObj.TryGetValue((rf, ro.PathId), out var st)) st.Stub ??= why; }
                     }
                 }
                 else if (StylizerScript.IsMatch(name))
@@ -178,6 +178,8 @@ sealed partial class Baker
             if ((TextureFormat)t.Fmt == TextureFormat.Alpha8) t.Exact = "Alpha8 (masks / SDF atlases), kept exact";
             else if (!TextureDecoder.IsSupported((TextureFormat)t.Fmt)) t.Exact = "format the engine cannot decode, kept as stored";
         }
+        int k11Luts = K11ExactLuts();   // kit #11 gpu2 (K11Exact.cs): LUT strips kept as stored
+        if (k11Luts > 0) Say($"kit #11: {k11Luts} colour-grading LUT strip(s) kept as stored (SHEPHERD_K11_PACK_LUT=0 = kit #10's classification)");
         Say($"textures: {_tex.Count}; exact (not downscaled, not re-encoded): {_tex.Count(t => t.Exact != null)}; Stylizer-ish scripts seen: {string.Join(", ", scripts.Select(kv => kv.Key + " x" + kv.Value))}");
         foreach (var t in _tex.Where(t => t.Exact == null && _rec.TexUse.TryGetValue((t.E.File.Name, t.E.Obj.PathId), out var u) && u.Contains("sdf")))
             Say($"  note: '{t.Name}' ({(TextureFormat)t.Fmt} {t.W}x{t.H}) is drawn through the engine's SDF path but is not a font atlas (TextMeshPro/Sprite icons): transcoded; its GL upload keeps the alpha of the reduced image");

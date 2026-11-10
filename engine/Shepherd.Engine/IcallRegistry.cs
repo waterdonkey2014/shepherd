@@ -110,6 +110,17 @@ public static class IcallRegistry
         if (Physics.PhysConfig.Level >= 1 && Physics.PhysWorld.Sim)
             foreach (var (m, level, key) in physHooks ?? Physics.PhysHooks.Scan())
                 if (Physics.PhysConfig.Level >= level) Bind(m, key);
+#if !SHEPHERD_NO_PHYS
+        // kit #13 basec (Runtime/K13Basec.cs, SHEPHERD_K13_POLYPATHS): below level 4 the PolygonCollider2D / EdgeCollider2D path hooks read the
+        // typed records too (the base's bounds polygon: Follower.EnsureWithinBounds, LocationManager's structure placement). Default: level 0 off the
+        // Vita host only (no core: record reads / writes only); off = unbound (kit #12)
+        if (Physics.PhysConfig.On && Runtime.K13Basec.PolyPathsAt(Physics.PhysConfig.Level))
+        {
+            int nb = 0; foreach (var (m, key) in Physics.Physics2DPaths.BelowLevel4()) { Bind(m, key); nb++; }
+            Runtime.K13Basec.PolyPathsBound = nb;
+            Log.Info($"[k13 basec] physics level {Physics.PhysConfig.Level}: {nb} PolygonCollider2D / EdgeCollider2D path hooks bound from the records (SHEPHERD_K13_POLYPATHS=0: unbound, kit #12)");
+        }
+#endif
         void Bind(MethodInfo m, string key)
         {
             var del = (IcallImpl)Delegate.CreateDelegate(typeof(IcallImpl), m);
@@ -178,6 +189,7 @@ public static class IcallRegistry
         var all = new List<string>();
         for (int i = 0; i < Names.Length; i++) if (hits[i] > 0) all.Add($"{hits[i],9}  {(Icalls.Table[i] == null ? "-" : "+")} {Names[i]}");
         all.Sort((a, b) => string.CompareOrdinal(b, a));
+        if (!Icalls.Counting) all.Insert(0, "# no counts: SHEPHERD_ICALL_HITS=0 (kit #11 player build) -- SHEPHERD_K11_PLAYER=0 or SHEPHERD_ICALL_HITS=1 counts every icall");
         File.WriteAllLines(Path.Combine(Path.GetDirectoryName(path)!, "icall-hits.txt"), all);
         Log.Info($"missing icalls hit: {lines.Count} (see {path})");
     }

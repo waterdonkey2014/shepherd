@@ -1,5 +1,19 @@
 #!/bin/zsh
-# SHEPHERD DEVICE KIT #10 (2026-10-29) -- copies every Shepherd log from the Vita's memory card to the Mac.
+# SHEPHERD DEVICE KIT #14 (2026-11-10; template since kit #11) -- copies every Shepherd log from the Vita's memory card to the Mac.
+# (kit #14: + THE WALK -- each walk step's per-start folder runtime/logs/k14-*/ (walk1-playmt ... walk5-gameaot-il8, off6-kit14off, m-a1 / m-b1, x1 / x2) and every play
+#  app's host log: how far each start got (the rebirth, the swings, hits, the enemies' deaths from the engine log), how it ended (PASS / FAIL END, the FAIL MEM rule), the
+#  K14 NEWLIB flags line, IL in video memory, and VIDEO MEMORY IN THE FIGHT: the lowest free vram and the highest newlib among the checkpoints (the walk steps log one every
+#  500 frames: the number that decides vita/notes/kit14-integration.md R5), plus 'MISSING from pack' (the card's pack holds the intro room only))
+# (kit #13: + the README's per-start folders runtime/logs/k13-*/ named by step (the Measure A/B STEPS 4-7 = m-a1 / m-b1 / m-a2 / m-b2, the
+#  profiler X8, the boot-sequence / boot-screen A/Bs), cache/gxp/'s listing (the shader cache's file names and sizes), and the kit #13
+#  lines -- K13 defaults (the table), [k13] (bootc's clip 2 / crossfade / Press X, walkc, basec, looks, speed), [gl] gxp cache (miss / verify /
+#  hit; a refused program keeps an empty slot: its FALLBACK line says so))
+# (kit #13 fix: + the VRAM pool reading at CP500: free <= total, kit13-fix.md section 6)
+# (kit #11: + ux0:data/shepherd-probes/ (the hardware probes' result files: plugin-check.txt, helper-core.txt, gpu-exactness.txt +
+#  gpu-exactness-gxp/, framebuffer-fetch.txt (+ any framebuffer-fetch-*.rgba), cram-bench.txt, venezia.txt when it comes) with their
+#  RESULT / PASS / FAIL lines; the kit #11 lines -- K11 device defaults / K11 boot screen emblem (device), the walk's '<tag> cheap:' C heap
+#  census and the shared pool's K10 POOL lines (walk: the pool is the play apps' default now), [k11] Verify Files window (device), [k11] gpu1
+#  totals / pass counters (gpu1 / gpu2, only when an env file asked) -- and the README's per-start folders runtime/logs/k11-step*/ / k11-x*/)
 # (kit #10: + the kit #10 lines -- K10 MEM / POOL / LADDER (memory), H8 K10 aot / K10 ilz / K10 learn (aot), [k10] io (io), [k10] learning /
 #  Verify Files / Cache rows (cache), K10 boot screen / K10 IL bundle / K10 the splash's drain / K10 video / K10 BOOT anatomy (boot), K10 FP
 #  (fidelity) -- the README's per-start log folders runtime/logs/k10-step*/ (each launcher start of STEPS 1-2 writes its own engine log),
@@ -11,7 +25,7 @@
 #  (README-KIT9 STEPS 2-7); the pull that holds them runs vita/jit/ab/logic_ab.py on their prof.tsv files: game logic per arm, render flat)
 #
 # On the Vita: VitaShell -> START -> USB, cable in. Then on the Mac:
-#     ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit10/kit/read-logs.sh          (waits up to 60 min for the card; "read-logs.sh 120" waits 120)
+#     ${SHEPHERD_WORK:-$HOME/shepherd-work}/kit14/kit/read-logs.sh          (waits up to 60 min for the card; "read-logs.sh 120" waits 120)
 #
 # It copies into ${SHEPHERD_WORK:-$HOME/shepherd-work}/devicelogs/<date-time>/:
 #   - every .txt file in ux0:data/shepherd/ (kit #8: menu_gl-measure.txt, menu-aot.txt, play.txt, play-mt.txt, play-gaot.txt and the launcher
@@ -48,7 +62,7 @@ O=${SHEPHERD_DEVICELOGS:-${SHEPHERD_WORK:-$HOME/shepherd-work}/devicelogs}/$(dat
 is_card() { [[ -d $1/VitaShell && -d $1/app && -d $1/data && ! -e $1/gc ]]; }
 is_cart() { [[ ! -d $1/VitaShell && -d $1/app ]] || return 1; [[ -d $1/gc || -d $1/license ]] && return 0
   local t=($1/app/[A-Z][A-Z][A-Z][A-Z][0-9][0-9][0-9][0-9][0-9](N/)); (( ${#t} )); }
-echo "read-logs.sh (Shepherd device kit #10): waiting up to $WAIT_MIN min for the Vita's MEMORY CARD (VitaShell: START -> USB)"
+echo "read-logs.sh (Shepherd device kit #13): waiting up to $WAIT_MIN min for the Vita's MEMORY CARD (VitaShell: START -> USB)"
 end=$(( $(date +%s) + WAIT_MIN * 60 )); V=; typeset -A told
 while [[ $(date +%s) -lt $end ]]; do
   cands=()
@@ -91,6 +105,14 @@ for jl in "$D"/cache/jit-learn*.tsv(N); do [[ ${jl:t} == ._* ]] && continue; mkd
 for kf in cache/k10index.tsv cache/k10-ilz-verified.tsv cache/il/k10-ilb.ok cache/boot/k10-bootscreen.txt; do
   [[ -f $D/$kf ]] || continue; mkdir -p "$O/${kf:h}"; cp -p "$D/$kf" "$O/$kf" && echo "   $kf (kit #10: $(grep -vc '^#' "$O/$kf") line(s))"
 done
+# (kit #13) the shader cache's folder: the listing only (the .gxpc files are the console's own compiled shaders: not copied)
+if [[ -d $D/cache/gxp ]]; then
+  mkdir -p "$O/cache/gxp"; ls -l "$D/cache/gxp" > "$O/cache/gxp/LISTING.txt" 2>/dev/null
+  echo "   cache/gxp/: $(ls "$D/cache/gxp" | grep -c '\.gxpc$') program set(s) cached (kit #13: listing only)"
+fi
+# (kit #11) the hardware probes' result files: ux0:data/shepherd-probes/ (outside ux0:data/shepherd/: each probe VPK writes only there)
+P2=$V/data/shepherd-probes
+[[ -d $P2 ]] && { rsync -rt --exclude='._*' "$P2" "$O/" && echo "   shepherd-probes/: $(find "$O/shepherd-probes" -type f | wc -l | tr -d ' ') file(s) (kit #11: the hardware probes: $(cd "$O/shepherd-probes" && for f in *.txt(N); do echo -n "${f:r} "; done))"; } || echo "   ux0:data/shepherd-probes/: not on the card (no probe run yet)"
 # 3. recent crash dumps (the Vita writes them to ux0:data/)
 cores=("$V"/data/psp2core-*.psp2dmp(N.m-3))
 if (( ${#cores} )); then mkdir -p "$O/coredumps"; for c in $cores; do cp -p "$c" "$O/coredumps/"; done; echo "   coredumps/: ${#cores} crash dump(s) from the last 3 days"
@@ -137,6 +159,13 @@ SHOW_N=20; for x in menu_gl-measure.txt menu_gl-measure-llvm.txt; do show $x "^(
 PLAYLOGS=(play.prev.txt play.txt play-mt.prev.txt play-mt.txt play-gaot.prev.txt play-gaot.txt play-mt-launcher.prev.txt play-mt-launcher.txt play-gaot-launcher.prev.txt play-gaot-launcher.txt play-mt-llvm.txt)
 SHOW_N=64; for x in $PLAYLOGS; do show $x "^(BEGIN|CLK start|CLK k6|T0|H1 multicore|H1 memory guard|H1 env|H7 game AOT|C3|TAI|PIN|GCG|G1 vgl|A0|A1|PAD read|TOUCH (front|off|read|end|sceTouchPeek|tap)|FAIL|WARN LIMIT|WARN newlib|WARN MT|STALL|PASS M1|PASS END|FAIL END|END audio|$K5H)"; done; SHOW_N=12
 for x in $PLAYLOGS; do [[ -f $O/$x ]] && { echo "--- ${x}: the last heartbeat (frame time, newlib slope, fixed steps, audio clock)"; grep '^P f=' "$O/$x" | tail -1 | cut -c1-760; }; done
+# (kit #12 compare audit, 2026-11-04) WHICH SCREEN each start's [sim] window (frames 1301-1400) covered -- kit #11's X2 window was the title
+#  screen and STEP 7's the menu buttons, and the "+11 % menu render" between them was the screen. One line per run: title / menu / mixed /
+#  other, the selected button's index, the draws, the menu watch's presses near the window, the clock at the window, the env switches, and
+#  the mean without the press / GC frames. Compare two windows ONLY when both say the same screen at the same clock
+#  (vita/tools/perf_history.py ab <A> <B> does it, and finds the same-screen frames two runs share when their windows differ).
+PHW=${SHEPHERD_REPO:-${SHEPHERD_REPO:-$HOME/src/shepherd}}/vita/tools/perf_history.py
+[[ -f $PHW ]] && { echo "--- the [sim] windows' screens (perf_history.py window):"; python3 "$PHW" window "$O" 2>/dev/null | cut -c1-400; }
 # (kit #5 revision 2) Credits, from the HOST log of every play start that opened it (STEP 4's first start = play-mt.prev.txt, or play-mt.txt
 #  when read-logs.sh ran between STEP 4's two starts): the engine log of that start is overwritten by the next start of the same app, so the
 #  host log is where its numbers are. "opening" = the host clock from the last host line before the press to the menu's answer
@@ -171,9 +200,42 @@ for x in play.txt play-mt.prev.txt play-mt.txt play-gaot.txt play-mt-launcher.tx
 #  [jsonbake] = the catalog bake ("the catalog came from the bake"); [Icall] hook list = the hook-list cache; [blackgc] = the black-frame
 #  GC at the Main Menu transition (mode scene); the long frames = every frame over 1 s after the Main Menu arrived (simstats-frames.tsv):
 #  Settings open / close, Credits open, the New Game load)
-for a in ${${(f)"$(cd $O/runtime/logs 2>/dev/null && print -l k10-step*(N/))"}} menu_gl-measure menu-aot play play-mt play-gaot play-mt-launcher play-gaot-launcher ${${(f)"$(cd $O/runtime/logs 2>/dev/null && print -l play-ab-*(N/))"}} menu_gl-measure-llvm play-mt-llvm play-gaot-readahead; do
+for a in ${${(f)"$(cd $O/runtime/logs 2>/dev/null && print -l k14-*(N/) k13-*(N/) k12-*(N/) k11-step*(N/) k11-x*(N/) k10-step*(N/))"}} menu_gl-measure menu-aot play play-mt play-gaot play-mt-launcher play-gaot-launcher ${${(f)"$(cd $O/runtime/logs 2>/dev/null && print -l play-ab-*(N/))"}} menu_gl-measure-llvm play-mt-llvm play-gaot-readahead; do
   e=$O/runtime/logs/$a/engine.log; [[ -f $e ]] || continue
   case $a in
+    k14-walk1*) echo "--- runtime/logs/$a/engine.log = kit #14 STEP 1, THE WALK on Play MT (00098) as shipped (IL in video memory off): the owner plays New Game -> the intro -> the altar -> the deal -> the rebirth -> the first fight";;
+    k14-walk2*) echo "--- runtime/logs/$a/engine.log = kit #14 STEP 2, the walk on game AOT (00095) as shipped (VLX: memory runs out between the death scene and the rebirth)";;
+    k14-walk3*) echo "--- runtime/logs/$a/engine.log = kit #14 STEP 3, the walk on the MT launcher (00193) as shipped (VLX: 2 of 3 end in the fight)";;
+    k14-walk4*) echo "--- runtime/logs/$a/engine.log = kit #14 STEP 4, the walk on the game-AOT launcher (00194) as shipped (VLX: ends before the fight)";;
+    k14-walk5*) echo "--- runtime/logs/$a/engine.log = kit #14 STEP 5, THE CACHED-IL ARM: the walk on game AOT (00095) with 8 MiB of IL in video memory (VLX: passes; the video memory decides)";;
+    k14-off6*) echo "--- runtime/logs/$a/engine.log = kit #14 STEP 6, THE OFF ARM on Play MT (00098): every kit 14 env switch off = kit 13.1's way (expected: a red END at the intro's load)";;
+    k14-m-a*|k14-m-b*) echo "--- runtime/logs/$a/engine.log = kit #14 STEPS 7-8 / X3-X4 ${a#k14-}: THE IDLE-MENU FPS CHECK on Measure (00099; a = as shipped, b = every kit 14 env switch off): the [sim] window 1677-1776";;
+    k14-*) echo "--- runtime/logs/$a/engine.log = kit #14 optional / arm ${a#k14-} (README-KIT14.txt)";;
+    k13-step01*) echo "--- runtime/logs/$a/engine.log = kit #13 STEP 1, the MT launcher (00193), the FIRST start after the kit: the boot sequence (clip 2), the crossfade, Press X (touch + rear swallowed), New Game; the 19-program gxp miss";;
+    k13-step02*) echo "--- runtime/logs/$a/engine.log = kit #13 STEP 2, Play MT (00098): Press X on an eboot app, the Main Menu look, Settings + Verify Files (MASKFIX); the gxp verify";;
+    k13-step03*) echo "--- runtime/logs/$a/engine.log = kit #13 STEP 3, Play MT (00098) with SHEPHERD_K13_SDF=1: the owner's small-text LOOK (its own program set: a gxp miss)";;
+    k13-m-a*|k13-m-b*) echo "--- runtime/logs/$a/engine.log = kit #13 STEPS 4-7 ${a#k13-}: THE IDLE-MENU A/B on Measure (00099; a = as shipped, b = every kit #13 switch off): the [sim] window 1677-1776";;
+    k13-m-prof*) echo "--- runtime/logs/$a/engine.log = kit #13 optional X8, Measure profiled (SHEPHERD_K7_PROF window 1677:1776): read with vita/tools/k13_idle_profile.py";;
+    k13-ab-bootseq-*) echo "--- runtime/logs/$a/engine.log = kit #13 STEPS 8-11 A/B boot sequence ${a#k13-ab-bootseq-} (00193; a = as shipped, b = SHEPHERD_K12_BOOTSEQ=0; the pad ab-menu, ends at m+700): compare K7 TOTAL + phases";;
+    k13-ab-bootscreen-*) echo "--- runtime/logs/$a/engine.log = kit #13 STEPS 12-15 A/B boot screen ${a#k13-ab-bootscreen-} (00095; a = the loading screen + crossfade, b = SHEPHERD_K10_BOOTSCREEN=0; the pad ab-menu): compare K7 TOTAL + phases";;
+    k13-step16*) echo "--- runtime/logs/$a/engine.log = kit #13 STEP 16, the JIT app (00097) as shipped: its MEM start line (the 320..321 straddle)";;
+    k13-*) echo "--- runtime/logs/$a/engine.log = kit #13 optional / arm ${a#k13-} (README-KIT13.txt)";;
+    k12-step01*|k12-step21*) echo "--- runtime/logs/$a/engine.log = kit #12 ${a#k12-}: Measure (00099) as shipped, the session control (STEP 1 first, STEP 21 last)";;
+    k12-step02*) echo "--- runtime/logs/$a/engine.log = kit #12 STEP 2, the MT launcher (00193), the FIRST start after the kit: the boot sequence, the loading screen look, Press X, New Game";;
+    k12-step07*) echo "--- runtime/logs/$a/engine.log = kit #12 STEP 7, game AOT (00095): the PS Vita tab, Verify Files at its new place";;
+    k12-step12*) echo "--- runtime/logs/$a/engine.log = kit #12 STEP 12, Play MT (00098) as shipped, New Game (before the cleanup A/B)";;
+    k12-step19*) echo "--- runtime/logs/$a/engine.log = kit #12 STEP 19, the JIT app (00097) as shipped";;
+    k12-step20*) echo "--- runtime/logs/$a/engine.log = kit #12 STEP 20, the game AOT launcher (00194), New Game (the boot sequence)";;
+    k12-ab-bootseq-*) echo "--- runtime/logs/$a/engine.log = kit #12 A/B boot sequence ${a#k12-ab-bootseq-} (00193; a = as shipped, b = SHEPHERD_K12_BOOTSEQ=0; the pad ab-menu, ends at m+700): compare K7 TOTAL + phases";;
+    k12-ab-vpkilz-*) echo "--- runtime/logs/$a/engine.log = kit #12 A/B compressed code ${a#k12-ab-vpkilz-} (00095; a = as shipped, b = SHEPHERD_K12_VPKILZ=0; the pad ab-menu): compare K7 TOTAL + phases, newlib";;
+    k12-ab-cleanup-*) echo "--- runtime/logs/$a/engine.log = kit #12 A/B scene-change cleanup ${a#k12-ab-cleanup-} (00098; a = as shipped, b = SHEPHERD_K12_INTRO=0; the pad ab-newgame): the [k12] scene change lines, GC heap at the quotes";;
+    k12-m-*) echo "--- runtime/logs/$a/engine.log = kit #12 STEP 17 / 18 ${a#k12-}: Measure (00099), the B part (A = STEPS 1 + 21: k12-step01-measure / k12-step21-measure)";;
+    k12-x*|k12-if-*) echo "--- runtime/logs/$a/engine.log = kit #12 optional ${a#k12-} (README-KIT12.txt)";;
+    k11-step1*) echo "--- runtime/logs/$a/engine.log = kit #11 STEP 1, Play MT launcher (00193), the FIRST start after the kit: the logos, the boot loading screen (one emblem of the card's set, drawn at random), New Game";;
+    k11-step2*) echo "--- runtime/logs/$a/engine.log = kit #11 STEP 2, Play MT launcher (00193), the SECOND start (the learning caches in use), New Game";;
+    k11-step4*) echo "--- runtime/logs/$a/engine.log = kit #11 STEP 4, the JIT app (00097) with the white-panels fix (SHEPHERD_K11_WATERCOLOR=1): Verify Files";;
+    k11-step6*) echo "--- runtime/logs/$a/engine.log = kit #11 STEP 6, Play MT (00098), the PLAYER BUILD (B; STEP 5 = A = runtime/logs/play-mt/)";;
+    k11-x*) echo "--- runtime/logs/$a/engine.log = kit #11 optional extra ${a#k11-} (README-KIT11.txt)";;
     k10-step1*) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 1, Play MT launcher (00193), the FIRST start after the kit: the logos (188 / 188), the boot loading screen, the PS Vita rows + Verify Files, New Game (the learning caches fill)";;
     k10-step2*) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 2, Play MT launcher (00193), the SECOND start: the boot with the bundle, the compressed-IL stamps and the learned prefetches, New Game";;
     k10-step8*) echo "--- runtime/logs/$a/engine.log = kit #10 STEP 8, Measure (00099) with the PC's float rules + the float bench (STEP F (b); STEP 3 = runtime/logs/menu_gl-measure/)";;
@@ -222,7 +284,7 @@ done
 #     host line 'FAIL derived: ...' and a red FAIL END). An older api that the engine still loads (3 = kit #5's DLL) runs, but means the
 #     card's DLL is not the kit's (push-kit.sh step 5 checks it). The derived-AOT apps refuse a foreign DLL at start instead: 'Failed to
 #     load AOT module 'Shepherd.Engine.Derived' ... doesn't match assembly' + 'FAIL runtime fatal error' in their host log.
-DERIVED_API=${SHEPHERD_DERIVED_API:-4}   # kit #6: the render contract of the kit's Derived DLL (Render/DerivedRender.cs Api)
+DERIVED_API=${SHEPHERD_DERIVED_API:-6}   # the render contract of the kit's Derived DLL (engine/Shepherd.Engine/Render/DerivedRender.cs Api): kit #6-#10 4, kit #11-#12 5 (gpu2's LUT blend fields), kit #13 6 (looks' world programs)
 echo "--- the owner-local Derived DLL each app loaded ('[derived] render'; the kit's DLL: api $DERIVED_API)"
 dbad=0
 for e in $O/runtime/logs/*/engine.log(N); do
@@ -240,6 +302,75 @@ for f in $O/*.txt(N); do
 done
 (( dbad )) && echo "   !! $dbad Derived DLL problem line(s) above: the apps named did not run the owner-local lighting / grading / Stylizer as the kit's DLL" \
   || echo "   ok: no Derived DLL problem in any log"
+
+# 5b2. (kit #13 fix, vita/notes/kit13-fix.md section 6) THE VRAM READING: STEP 1 passing the press only shows the corrupted chunk was not picked on that route; this line can show the
+#     corruption is gone. Every play-app log with kit #8's black frame reads more free VRAM than the pool holds, from before f121 on, on every kit #8-#13 start (DEVICE: 93 logs; the 104 logs
+#     without a black frame read sane) -- the mspace's stats stop answering once the GPU has written the free chunk at f3 (INFERRED: the mechanism is not shown). With the kit #13 fix's
+#     hold CP500 must read free <= total (ESTIMATE); SHEPHERD_K13_TARGETHOLD=0 (the negative control) must bring the broken figure back. An app with no black frame proves nothing either way.
+echo "--- the VRAM pool reading at CP500 (kit #13 fix: free <= total; 'more free than the total' = the pool was corrupted at f3)"
+vbad=0; vchk=0
+for f in $O/*.txt(N); do
+  [[ ${f:t} == *.prev.txt || ${f:t} == card-manifest.txt ]] && continue
+  l=$(grep -m1 -E '^CP500 vgl pools free/total KiB: vram [0-9]+/[0-9]+' "$f"); [[ -z $l ]] && continue
+  [[ $l =~ 'vram ([0-9]+)/([0-9]+)' ]] || continue
+  vf=${match[1]} vt=${match[2]}
+  grep -qm1 'one black frame presented' "$f" && vblack=1 || vblack=0
+  grep -qm1 -E '^H1 env SHEPHERD_K13_TARGETHOLD=0 ' "$f" && voff=1 || voff=0
+  vb=$(grep -m1 -E '^BEGIN ' "$f" | sed -E 's/.* build ([^ ]+).*/\1/' | cut -c1-15)
+  if (( ! vblack )); then
+    (( vf > vt )) && { vbad=$((vbad + 1)); echo "   !! ${f:t}: VRAM free $vf of $vt KiB with NO black frame: a kind of log no kit has produced -- read this one by hand (build $vb)"; } \
+      || echo "   ${f:t}: VRAM free $vf of $vt KiB (no black frame: proves nothing about the hold)"
+    continue
+  fi
+  vchk=$((vchk + 1))
+  if (( voff )); then
+    (( vf > vt )) && echo "   ${f:t}: VRAM free $vf of $vt KiB: broken, as the negative control SHEPHERD_K13_TARGETHOLD=0 wants (build $vb)" \
+      || { vbad=$((vbad + 1)); echo "   !! ${f:t}: VRAM free $vf of $vt KiB with SHEPHERD_K13_TARGETHOLD=0: the negative control did NOT bring the broken figure back (build $vb): the reading is not what kit13-fix.md says it is"; }
+  elif (( vf > vt )); then
+    vbad=$((vbad + 1)); echo "   !! ${f:t}: VRAM free $vf of $vt KiB: impossible. Kit #13 as shipped reads this; on the rebuilt kit it means the pool is STILL corrupted, or the reading has another cause, even if the press passed (build $vb)"
+  else echo "   ${f:t}: VRAM free $vf of $vt KiB: sane (build $vb)"; fi
+done
+(( vbad )) && echo "   !! $vbad VRAM reading line(s) above" || { (( vchk )) && echo "   ok: every black-frame app read sane, or broken only as the negative control" || echo "   NOT checked: no log with a black frame and a CP500 line"; }
+
+# 5k. (kit #14) THE WALK: how far each start got and how it ended, and VIDEO MEMORY IN THE FIGHT (vita/notes/kit14-integration.md R5: the model says the fight needs ~108-110 MiB of
+#     a 96 MiB pool on 00098 -- ESTIMATE; what does not fit goes to vitaGL's other pools, then to newlib, the GC's room). The walk steps log a checkpoint every 500 frames (their env
+#     line SHEPHERD_CHECKPOINTS): the lowest 'vram' free and the highest newlib sbrk among them are the device's own answer. Reads only the copied folder.
+echo "--- kit #14: THE WALK (each start: how far, how it ended; video memory and newlib at the checkpoints)"
+python3 -I - "$O" <<'PYEOF'
+import glob, os, re, sys
+O = sys.argv[1]
+def rd(p):
+    try: return open(p, errors='replace').read()
+    except OSError: return ''
+for f in sorted(glob.glob(os.path.join(O, 'play*.txt'))):
+    s = rd(f)
+    if 'K14 NEWLIB flags' not in s and 'SHEPHERD_STOP_SCENE=0' not in s: continue
+    b = re.search(r'^BEGIN ([^\[]*)\[(SHPD\d+)\] build (\S+)', s, re.M)
+    env = re.findall(r'^H1 env (SHEPHERD_[A-Z0-9_]+)=(\S*)', s, re.M); ev = dict(env)
+    fl = re.search(r'K14 NEWLIB flags (0x[0-9a-f]+) over (\d+)', s)
+    end = re.findall(r'^(PASS|FAIL) END frame (\d+)[^\n]*', s, re.M)
+    fm = re.findall(r'^FAIL MEM[^\n]*', s, re.M)
+    vr = [(int(m[0]), int(m[1]), int(m[2])) for m in re.findall(r'^CP(\d+) vgl pools free/total KiB: vram (\d+)/(\d+)', s, re.M)]
+    nl = [(int(m[0]), int(m[1])) for m in re.findall(r'^CP(\d+) ram: [^\n]*?newlib heap used \d+ KiB, sbrk (\d+)', s, re.M)]
+    oth = re.findall(r'^CP(\d+) vgl pools free/total KiB: vram \d+/\d+, ([^|]*)\|', s, re.M)
+    oom = re.findall(r'OutOfMemoryException: (\d+)', s)
+    print(f"   {os.path.basename(f)}: {b[1].strip() if b else '?'} [{b[2] if b else '?'}] build {b[3][:15] if b else '?'}; flags {fl[1] + ' over ' + fl[2] if fl else '-'}; IL in VRAM {ev.get('SHEPHERD_K10_IL_VRAM_MB', 'off')}; "
+          f"stop scene {'0 (the walk)' if ev.get('SHEPHERD_STOP_SCENE') == '0' else 'default (ends at the intro load)'}; K14 off {'SMALL=0 ' if ev.get('SHEPHERD_K14_SMALL') == '0' else ''}{'NEWLIB=0' if ev.get('SHEPHERD_K14_NEWLIB') == '0' else ''}")
+    print(f"      end: {(end[-1][0] + ' END frame ' + end[-1][1]) if end else 'NO END LINE (a crash or the PS button: see coredumps/)'}" + (f" | {fm[-1][:170]}" if fm else '') + (f" | OutOfMemoryException {oom[-1]}" if oom else ''))
+    if vr:
+        lo = min(vr, key=lambda x: x[1]); last = vr[-1]
+        print(f"      video memory: {len(vr)} checkpoints to CP{last[0]}; vram free lowest {lo[1]} of {lo[2]} KiB at CP{lo[0]}, last {last[1]} KiB" + (f"; other pools at CP{oth[-1][0]}: {oth[-1][1].strip()[:120]}" if oth else ''))
+    if nl:
+        hi = max(nl, key=lambda x: x[1])
+        print(f"      newlib: highest sbrk {hi[1]} KiB at CP{hi[0]} (the guard's rule ends the session within 4 MiB of the cap)")
+for e in sorted(glob.glob(os.path.join(O, 'runtime', 'logs', 'k14-*', 'engine.log'))):
+    s = rd(e); n = os.path.basename(os.path.dirname(e))
+    fr = lambda pat: (re.search(r'^\[\s*(\d+)\][^\n]*' + pat, s, re.M) or [None, '-'])[1]
+    last = re.findall(r'^\[\s*(\d+)\]', s, re.M)
+    print(f"   {n}: last frame {last[-1] if last else '-'} | the intro load f{fr('Game Biome Intro')} | rebirth: sword f{fr('WEAPON SET Sword')}, HUD f{fr('Spawn Dungeon Single Player HUD')} | "
+          f"Square seen {len(re.findall(r'\[pad\] Square', s))}, hit-stops {len(re.findall(r'HitStopRoutine[^\n]*Coroutines\.Start\)', s))}, the Lamb hit {len(re.findall(r'UIDodgePromptTutorial\.Play < Health\.DealDamage', s))}, "
+          f"enemy deaths (sound) first f{fr('enemy/enemy_death_small')} | MISSING from pack {s.count('MISSING from pack')}")
+PYEOF
 
 # 5c. (kit #7, track probes) the Devolver splash: kit #6's device run had no splash time (data/video-lengths.tsv was not on the card:
 #     every engine log said VIDEO(0 clip lengths), the measurement apps' H1 line "not re-based"). Per app: the host's H1 frame-clock line
@@ -386,6 +517,61 @@ for t in $O/runtime/logs/*/assemblies.txt(N); do echo "   ${t#$O/}: $(grep -vc '
 if grep -qE $'\truntime/k10-avc-refeed\\.(off|marker)$' "$O/card-manifest.txt" 2>/dev/null; then
   echo "   !! runtime/k10-avc-refeed.off / .marker is on the card: the logos' drain did not come back once and is now skipped (send the logs; delete the file to try again)"
 else echo "   runtime/k10-avc-refeed.off: not on the card (the logos' drain never failed)"; fi
+
+# 5j. (kit #11) the host's and the engines' kit #11 lines -- device (K11 device defaults: the logging diet / DMA copies / the player build per
+#     app; K11 boot screen emblem: which emblem of the card's set this start drew), walk ('<tag> cheap:' = the C heap census; K10 POOL / H2
+#     partition: the shared pool, the play apps' default), [k11] Verify Files window (the short line), [k11] gpu1 / pass counters (opt-in) --
+#     and the hardware probes' answers (RESULT / PASS / FAIL lines of ux0:data/shepherd-probes/*.txt)
+echo "--- kit #11 lines (device defaults, the boot screen's emblem, the shared pool, the C heap census, Verify Files, the GPU rows asked for)"
+K11X='^(K11 |WARN K11|FAIL K11|K10 POOL|H2 partition)| cheap: '
+for f in $O/*.txt(N); do
+  [[ ${f:t} == (card-manifest|device-profile|vita-settings|pad).txt ]] && continue
+  n=$(grep -cE "$K11X" "$f" 2>/dev/null); (( n )) || continue
+  echo "   ${f:t}:"; grep -hE "$K11X" "$f" | cut -c1-300 | sed 's/^/      /' | head -${SHOW_K11:-24}
+done
+for e in $O/runtime/logs/*/engine.log(N); do
+  n=$(grep -cE '\[k11\]' "$e" 2>/dev/null); (( n )) || continue
+  echo "   ${e:h:t}/engine.log:"; grep -hE '\[k11\]' "$e" | sed 's/^\[ *\([0-9]*\)\] */f\1 /' | cut -c1-260 | sed 's/^/      /' | head -${SHOW_K11:-16}
+done
+# 5k. (kit #12) the host's and the engines' kit #12 lines -- the defaults table (K12 defaults: which rows are on, which the env file set),
+#     the boot rows (K12 boot sequence / plugins), walkb (K12 WALKB, K12 vpkilz), walka (the GC params, objects marked in place), the engine's
+#     [k12] lines (the scene-change cleanup: GC heap in use old scene -> unloaded -> collected, textures, the pause; the boot sequence; the
+#     plugin handoff; the PS Vita tab)
+echo "--- kit #12 lines (the defaults table, the boot sequence, plugins, the compressed code, the scene-change cleanup)"
+K12X='^(K12 |WARN K12|FAIL K12)'
+for f in $O/*.txt(N); do
+  [[ ${f:t} == (card-manifest|device-profile|vita-settings|pad).txt ]] && continue
+  n=$(grep -cE "$K12X" "$f" 2>/dev/null); (( n )) || continue
+  echo "   ${f:t}:"; grep -hE "$K12X" "$f" | cut -c1-300 | sed 's/^/      /' | head -${SHOW_K12:-24}
+done
+for e in $O/runtime/logs/*/engine.log(N); do
+  n=$(grep -cE '\[k12\]' "$e" 2>/dev/null); (( n )) || continue
+  echo "   ${e:h:t}/engine.log:"; grep -hE '\[k12\]' "$e" | sed 's/^\[ *\([0-9]*\)\] */f\1 /' | cut -c1-260 | sed 's/^/      /' | head -${SHOW_K12:-16}
+done
+# 5l. (kit #13) the host's and the engines' kit #13 lines -- the defaults table (K13 defaults), the shader cache's lines ([gl] gxp cache: miss /
+#     verify / hit; a refused program's empty slot), the engine's [k13] lines (bootc: clip 2's decoder work area, the
+#     crossfade, Press X's swallowed touches; walkc / basec / looks / speed end lines) and cache/gxp/'s file list
+echo "--- kit #13 lines (the defaults table, the shader cache, bootc / walkc / basec / looks / speed)"
+K13X='^(K13 |WARN K13|FAIL K13|K8 L launcher: K13)'
+for f in $O/*.txt(N); do
+  [[ ${f:t} == (card-manifest|device-profile|vita-settings|pad).txt ]] && continue
+  n=$(grep -cE "$K13X" "$f" 2>/dev/null); (( n )) || continue
+  echo "   ${f:t}:"; grep -hE "$K13X" "$f" | cut -c1-300 | sed 's/^/      /' | head -${SHOW_K13:-24}
+done
+for e in $O/runtime/logs/*/engine.log(N); do
+  n=$(grep -cE '\[k13\]|\[gl\] gxp cache' "$e" 2>/dev/null); (( n )) || continue
+  echo "   ${e:h:t}/engine.log:"; grep -hE '\[gl\] gxp cache|\[k13\] (FALLBACK|Press X|clip|K13 clip|crossfade)' "$e" | sed 's/^\[ *\([0-9]*\)\] */f\1 /' | cut -c1-260 | sed 's/^/      /' | head -${SHOW_K13:-16}
+done
+[[ -f $O/cache/gxp/LISTING.txt ]] && echo "   cache/gxp/: $(grep -c 'gxpc' $O/cache/gxp/LISTING.txt) program set file(s)"
+grep -hE 'gxp cache|FALLBACK: the shader compiler rejected' $O/runtime/logs/*/engine.log(N) 2>/dev/null | grep -E 'empty slot|rejected' | sort -u | cut -c1-220 | sed 's/^/   REFUSED: /' | head -8
+if [[ -d $O/shepherd-probes ]]; then
+  echo "--- the hardware probes (ux0:data/shepherd-probes/)"
+  for f in $O/shepherd-probes/*.txt(N); do
+    echo "   ${f:t}: $(grep -cE '^RESULT' "$f") RESULT line(s); last line: $(tail -1 "$f" | tr -d '\r' | cut -c1-120)"
+    grep -hE '^RESULT' "$f" | tr -d '\r' | cut -c1-220 | sed 's/^/      /' | head -${SHOW_PROBES:-12}
+  done
+  [[ -d $O/shepherd-probes/gpu-exactness-gxp ]] && echo "   gpu-exactness-gxp/: $(find $O/shepherd-probes/gpu-exactness-gxp -type f | wc -l | tr -d ' ') compiled shader file(s)"
+fi
 
 # 6. the numbers, version by version (owner request 2026-10-13): this pull's runs -> vita/perf-history.tsv + .md in the repo, then
 #    "vs last version" (idle Main Menu ms / fps, boot, memory, GC). Reads $O only. The two files are left for a commit after a look.

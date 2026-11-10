@@ -154,6 +154,12 @@ public static class SpineReadShare
     /// <summary>L1b: a stream over a big pack TextAsset's bytes, or null (TextAsset.bytes as the game reads it).</summary>
     static object Open(object textAsset)
     {
+        // kit #13 basec (SHEPHERD_K13_LAZYSKINS, SpineLazySkins.Resident): a skeleton file outside the pack keeps its bytes in the TextAsset record;
+        // the read gets a stream over that same array (the bytes TextAsset.bytes holds, in the same order), so L2 can find a skin's section again
+        if (SpineLazySkins.Resident && Objects.Get(textAsset)?.Get("__bytes") is byte[] rb && rb.Length >= StreamMin && Array.IndexOf(Skip, _asset) < 0)
+        {
+            var ms = new MemoryStream(rb, 0, rb.Length, false, true); SpineLazySkins.OpenedResident(rb, ms); return ms;
+        }
         if (Objects.Get(textAsset)?.Get("__bytes") is not Assets.PackAssets.PackBytes pb || pb.Length < StreamMin || Array.IndexOf(Skip, _asset) >= 0) return null;
         _pStreamed = pb.Length; var s = pb.OpenStream(); SpineLazySkins.Opened(pb, s); return s;   // kit #7 L2: the sections of this read can be found again
     }

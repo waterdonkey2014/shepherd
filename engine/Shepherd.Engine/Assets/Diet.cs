@@ -62,6 +62,7 @@ public static class Diet
     {
         Runtime.MemLadder.Tick();       // kit #10 memory: the memory-pressure ladder (every 16th frame asks the host; off = one call, then nothing)
         Loader.DropTransientCaches();   // the sprite-atlas trees of this frame's sprite creation
+        if (Shepherd.Assets.StringPool.On || Shepherd.Assets.StringPool.Pending) Shepherd.Assets.StringPool.Clear();   // kit #13 basec: the frame's string pool dropped (its strings stay with their readers); the first frame's end starts it
         long now = ++SerializedFile.Clock;
         if (KeepFiles || Loader.Db == null || now % 8 != 0) return;
         var (n, bytes) = Loader.Db.ReleaseIdle(now - FileIdleFrames);
@@ -142,7 +143,11 @@ public static class Diet
     /// follows the normal idle release). <paramref name="transient"/>: put a file that was not resident back (diagnostics).</summary>
     public static TypeTreeObject Reread(NObj n, bool transient = false)
     {
+#if !SHEPHERD_K11_TOC
+        if (!n.HasSource || n.SourceFile is not SerializedFile f || f.GetObject(n.PathId) is not { IsNull: false } o) return null;
+#else
         if (!n.HasSource || n.SourceFile is not SerializedFile f || f.GetObject(n.PathId) is not { } o) return null;
+#endif
         bool wasResident = f.IsResident;
         try { TreeRereads++; return TypeTreeReader.Read(f, o); }
         catch (Exception e) { Log.Warn($"re-read {ClassIds.Name(o.ClassId)} #{n.PathId} in {f.Name}: {e.Message}"); return null; }
@@ -153,7 +158,11 @@ public static class Diet
     /// alone (no object bytes read).</summary>
     public static IEnumerable<string> SourceFieldPaths(NObj n)
     {
+#if !SHEPHERD_K11_TOC
+        if (!n.HasSource || n.SourceFile is not SerializedFile f || f.GetObject(n.PathId) is not { IsNull: false } o) return Array.Empty<string>();
+#else
         if (!n.HasSource || n.SourceFile is not SerializedFile f || f.GetObject(n.PathId) is not { } o) return Array.Empty<string>();
+#endif
         return TypeTreeReader.FieldPaths(f, o);
     }
 }

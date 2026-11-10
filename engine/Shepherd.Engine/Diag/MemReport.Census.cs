@@ -284,6 +284,7 @@ public static partial class MemReport
         public List<Tally> Roots = new(); public Dictionary<int, Tally> Owners = new(); public Dictionary<Type, Tally> Types = new();
         public Dictionary<(int, Type), Tally> Joint;
         public long DupArrN, DupArrB32; public Dictionary<int, (long n, long b32)> DupArrByOwner;   // SHEPHERD_CENSUS_DUPARRAYS
+        public Dictionary<string, (long n, long b32)> DupStrBySite; public Dictionary<string, (int n, long b32)> DupStrTop;   // kit #13 basec: SHEPHERD_CENSUS_DUPSTRINGS
     }
     sealed class Root { public string Label; public object Value; public VInfo V; }
 
@@ -297,9 +298,13 @@ public static partial class MemReport
         var stack = new Stack<(object o, int owner)>(1 << 16);
         var strDup = detail ? new Dictionary<string, int>(StringComparer.Ordinal) : null;
         var arrDup = detail && MemReportKit4.DupArrays ? new HashSet<(Type, int, ulong, int)>() : null; if (arrDup != null) r.DupArrByOwner = new();
+        // kit #13 basec (SHEPHERD_CENSUS_DUPSTRINGS=<n>): a duplicate string's site = the type.field (or array / boxed struct) that reached it
+        var strSite = detail && MemReportKit4.DupStrings > 0 ? new Dictionary<object, string>(ReferenceEqualityComparer.Instance) : null;
+        if (strSite != null) { r.DupStrBySite = new(); r.DupStrTop = new(StringComparer.Ordinal); }
+        string site = null;
         int staticOwner = OwnerId("static-held (no UnityEngine.Object / engine record above it)");
         Tally rt = null;
-        void Push(object o, int owner) { if (o != null && visited.Add(o)) stack.Push((o, owner)); }
+        void Push(object o, int owner) { if (o != null && visited.Add(o)) { stack.Push((o, owner)); if (strSite != null && (o is string || o is object[])) strSite[o] = site ?? "(root)"; } }
         void PushStruct(object box, VInfo v, int owner, int depth)
         {
             if (box == null || depth > 16) return;
@@ -317,7 +322,15 @@ public static partial class MemReport
                 if (ti.IsString)
                 {
                     int len = ((string)o).Length; s32 = A(12 + 2 * (len + 1), 8); r.StrN++; r.StrB32 += s32;
-                    if (detail && len <= 512) { ref var c = ref CollectionsMarshal.GetValueRefOrAddDefault(strDup, (string)o, out bool had); if (had) { r.DupStrN++; r.DupStrB32 += s32; } c++; }
+                    if (detail && len <= 512)
+                    {
+                        ref var c = ref CollectionsMarshal.GetValueRefOrAddDefault(strDup, (string)o, out bool had); if (had) { r.DupStrN++; r.DupStrB32 += s32; } c++;
+                        if (had && strSite != null)
+                        {
+                            var st = strSite.GetValueOrDefault(o) ?? "?"; var cs = r.DupStrBySite.GetValueOrDefault(st); r.DupStrBySite[st] = (cs.n + 1, cs.b32 + s32);
+                            var ct = r.DupStrTop.GetValueOrDefault((string)o); r.DupStrTop[(string)o] = (ct.n + 1, ct.b32 + s32);
+                        }
+                    }
                 }
                 else if (ti.IsArray)
                 {
@@ -339,6 +352,7 @@ public static partial class MemReport
                 if (detail || cut != null) { if (!r.Owners.TryGetValue(owner, out var ot)) r.Owners[owner] = ot = new Tally(); ot.Add(s64, s32, sg); if (!r.Types.TryGetValue(ti.T, out var tt)) r.Types[ti.T] = tt = new Tally(); tt.Add(s64, s32, sg); }
                 if (r.Joint != null) { if (!r.Joint.TryGetValue((owner, ti.T), out var jt)) r.Joint[(owner, ti.T)] = jt = new Tally(); jt.Add(s64, s32, sg); }
                 if (ti.Leaf) continue;
+                if (strSite != null) site = ti.IsArray ? (strSite.GetValueOrDefault(o) ?? "?") + " -> " + TypeLabel(ti.T) : null;
                 if (ti.IsArray)
                 {
                     if (ti.ElemRef) { if (ti.SzArray) foreach (var e in (object[])o) Push(e, owner); else foreach (var e in (Array)o) Push(e, owner); }
@@ -350,12 +364,14 @@ public static partial class MemReport
                     int ow = ti.RefOwner != null ? ti.RefOwner[i] : owner; if (cut != null && ti.RefOwner != null && cut.Contains(OwnerBase[ow])) continue;
                     object x; try { x = ti.Refs[i].GetValue(o); } catch { r.ReadErrors++; continue; }
                     if (x != null && detail && ti.IsNObj && BigRecordFields.Contains(ow)) ow = RecordFieldOwner((NObj)o, ow);
+                    if (strSite != null && x is string) site = ti.T.Name + "." + ti.Refs[i].Name;
                     Push(x, ow);
                 }
                 for (int i = 0; i < ti.Structs.Length; i++)
                 {
                     int ow = ti.StructOwner != null ? ti.StructOwner[i] : owner; if (cut != null && ti.StructOwner != null && cut.Contains(OwnerBase[ow])) continue;
                     object x; try { x = ti.Structs[i].f.GetValue(o); } catch { r.ReadErrors++; continue; }
+                    if (strSite != null) site = ti.T.Name + "." + ti.Structs[i].f.Name + " (struct)";
                     PushStruct(x, ti.Structs[i].v, ow, 0);
                 }
             }
@@ -374,6 +390,16 @@ public static partial class MemReport
 
     /// <summary>Property-bag bytes by (managed type, key), first-reach over all bags (64-bit actual sizes); the walk stops at
     /// UnityEngine.Object / engine records / asset files, so it is the bag's own payload (LazyRef objects count, not their file).</summary>
+    /// <summary>kit #13 basec: a short generic type label (Dictionary`2+Entry[String,Object][] style) for the duplicate-string sites.</summary>
+    static string TypeLabel(Type t)
+    {
+        if (t.IsArray) return TypeLabel(t.GetElementType()) + "[]";
+        if (!t.IsGenericType) return t.Name;
+        string n = t.Name; int q = n.IndexOf('`'); if (q > 0) n = n[..q];
+        if (t.DeclaringType is { IsGenericType: true } d) { string dn = d.Name; int dq = dn.IndexOf('`'); n = (dq > 0 ? dn[..dq] : dn) + "+" + n; }
+        return n + "<" + string.Join(",", t.GetGenericArguments().Select(TypeLabel)) + ">";
+    }
+
     static void PropsBreakdown()
     {
         var visited = new HashSet<object>(ReferenceEqualityComparer.Instance);
@@ -521,7 +547,28 @@ public static partial class MemReport
         W($"TOTAL projected 32-bit Mono + SGen size classes = {MB(b32sg)}  (major-heap block size-class rounding + LOS pages; +{100.0 * (b32sg - b32) / Math.Max(1, b32):F1}%)");
         W($"   arrays of primitives/no-ref structs: {full.PrimArrN:N0} objects, 64-bit {MB(full.PrimArr64)}, 32-bit {MB(full.PrimArr32)}; objects >= 85000 B (LOH on CoreCLR): {full.BigN:N0} = {MB(full.Big64)}");
         W($"   everything else (object graph proper): 64-bit {MB(b64 - full.PrimArr64)} -> 32-bit {MB(b32 - full.PrimArr32)} ({100.0 * (b32 - full.PrimArr32) / Math.Max(1, b64 - full.PrimArr64):F1}%)");
+#if !SHEPHERD_NO_K13WALKC   // (kit #13 walkc: compiled out with the build switch back to kit #12, SHEPHERD_K13_WALKC_CODE=0)
+        // kit #13 walkc: the "MiB short" meter -- the census's 32-bit figures against the GC heap's cap at the device partitions on the walk (kit #12
+        // VLX: 00098 ~140 MiB, 00095 ~135 MiB at the intro's newlib; SHEPHERD_K13_SHORT_CAPS=<a>,<b> replaces them). DERIVED: the object graph is
+        // the yardstick that matched the Vita (kit13-prep-findings section 2: the intro's 172.9 vs the Vita's ~175); the total adds the Mac's
+        // primitive arrays (texture copies, unpacked TextAsset bytes) that a pack run on the Vita mostly does not hold.
+        {
+            double c98 = 140, c95 = 135;
+            var cs = (Environment.GetEnvironmentVariable("SHEPHERD_K13_SHORT_CAPS") ?? "").Split(',');
+            if (cs.Length == 2 && double.TryParse(cs[0], out var x98) && double.TryParse(cs[1], out var x95)) { c98 = x98; c95 = x95; }
+            double og = (b32 - full.PrimArr32) / 1048576.0, tot = b32sg / 1048576.0;
+            string S(double need, double cap) => need > cap ? $"SHORT {need - cap:F1} MiB" : $"spare {cap - need:F1} MiB";
+            W($"K13 SHORT (DERIVED; kit #13 walkc's meter): against the GC heap cap at the device partitions on the walk (00098 {c98:F0} / 00095 {c95:F0} MiB): the object graph {og:F1} MiB -> {S(og, c98)} / {S(og, c95)}; the whole 32-bit + SGen total {tot:F1} MiB -> {S(tot, c98)} / {S(tot, c95)}");
+        }
+#endif
         W($"   strings: {full.StrN:N0} = {MB(full.StrB32)} (32-bit); duplicates (<=512 chars, same content seen before): {full.DupStrN:N0} = {MB(full.DupStrB32)} reclaimable by interning/dedupe");
+        if (full.DupStrBySite != null)
+        {
+            W($"   duplicate strings by the field that reached them (SHEPHERD_CENSUS_DUPSTRINGS; first-reach: the copy the walk met second and later), top {MemReportKit4.DupStrings}:");
+            foreach (var kv in full.DupStrBySite.OrderByDescending(x => x.Value.b32).Take(MemReportKit4.DupStrings)) W($"      {kv.Value.n,10:N0} {MB(kv.Value.b32),12}  {kv.Key}");
+            W($"   the most duplicated values (top {MemReportKit4.DupStrings} by bytes; text cut at 60 characters):");
+            foreach (var kv in full.DupStrTop.OrderByDescending(x => x.Value.b32).Take(MemReportKit4.DupStrings)) W($"      {kv.Value.n,10:N0} {MB(kv.Value.b32),12}  \"{(kv.Key.Length > 60 ? kv.Key[..60] + "..." : kv.Key).Replace("\n", "\\n")}\"");
+        }
         if (full.DupArrByOwner != null) foreach (var line in MemReportKit4.DupArrayLines(full.DupArrN, full.DupArrB32, full.DupArrByOwner.Select(kv => (OwnerNames[kv.Key], kv.Value.n, kv.Value.b32)), x => MB(x))) W(line);
         var vt = TCache.Values.Where(t => t.N > 0 && !t.IsArray && !t.IsString && !t.Box && !t.T.IsAbstract).ToList();
         var bad = vt.Where(t => t.Inst64Rule != t.Real64).ToList();

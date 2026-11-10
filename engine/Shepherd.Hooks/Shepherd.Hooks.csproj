@@ -1,1 +1,5 @@
-<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>netstandard2.0</TargetFramework><LangVersion>latest</LangVersion><Nullable>disable</Nullable></PropertyGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>netstandard2.0</TargetFramework><LangVersion>latest</LangVersion><Nullable>disable</Nullable></PropertyGroup>
+  <!-- Device kit #14, track small (vita/notes/kit14-small.md): -p:ShepherdK14Small=0 (vita/shepherd/build.sh SHEPHERD_K14_SMALL_CODE=0) = kit #13's
+       Shepherd.Hooks.dll: the lazy catalog's seam left out. Default: compiled in. -->
+  <ItemGroup Condition="'$(ShepherdK14Small)' == '0'"><Compile Remove="AddrLazy.cs" /></ItemGroup>
+</Project>

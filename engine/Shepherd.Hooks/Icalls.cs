@@ -21,6 +21,10 @@ namespace Shepherd.Hooks
         static int[] _lo = new int[0];
         /// <summary>SHEPHERD_ICALL_HITS=64 (env file): every hit counted with the 64-bit Interlocked.Increment, as kit #5 did.</summary>
         static readonly bool Wide = Environment.GetEnvironmentVariable("SHEPHERD_ICALL_HITS") == "64";
+        /// <summary>Device kit #11 (track device, the player build; vita/notes/kit11-device.md): SHEPHERD_ICALL_HITS=0 -- no hit is counted (the
+        /// player build's default in the play apps: one atomic increment less on every engine call). The missing-icall report still works
+        /// (it has its own once-per-id flag); icall-hits.txt and MemReport then show no counts. Unset = counted, as kit #10.</summary>
+        public static readonly bool Counting = Environment.GetEnvironmentVariable("SHEPHERD_ICALL_HITS") != "0";
         /// <summary>A 32-bit counter is folded into <see cref="Hits"/> when it reaches this (a single hit per id never overflows it).</summary>
         const int FoldAt = 1 << 30;
         static readonly object _fold = new object();
@@ -33,7 +37,8 @@ namespace Shepherd.Hooks
             var t = Table;
             if ((uint)id < (uint)t.Length)
             {
-                if (!Wide) { if (Interlocked.Increment(ref _lo[id]) >= FoldAt) Fold(id); }
+                if (!Counting) { }
+                else if (!Wide) { if (Interlocked.Increment(ref _lo[id]) >= FoldAt) Fold(id); }
                 else Interlocked.Increment(ref Hits[id]);
                 var f = t[id];
                 if (f != null) return f(args);
@@ -46,6 +51,7 @@ namespace Shepherd.Hooks
         /// this, so icall-hits.txt / MemReport see the same counts with or without them.</summary>
         public static void Count(int id)
         {
+            if (!Counting) return;
             if (!Wide) { if (Interlocked.Increment(ref _lo[id]) >= FoldAt) Fold(id); }
             else Interlocked.Increment(ref Hits[id]);
         }

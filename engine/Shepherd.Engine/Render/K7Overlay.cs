@@ -20,7 +20,13 @@ public static class K7Overlay
     static bool _choice;
     /// <summary>Drawn this frame (the row's choice unless the env file forces it).</summary>
     public static bool On;
+#if SHEPHERD_EBOOT
     static void Decide() => On = Diag.K7.Master && Backends.Kind == "gl" && (Forced == "1" || (Forced != "0" && _choice));
+#else
+    // kit #11 measure (Diag/K11Heat.cs, SHEPHERD_K11_HEAT=...,overlay; Mac / tools builds): the heat map's tiles are drawn from here too
+    static bool _k7;
+    static void Decide() { _k7 = Diag.K7.Master && Backends.Kind == "gl" && (Forced == "1" || (Forced != "0" && _choice)); On = _k7 || (Diag.K11Heat.Overlay && Backends.Kind == "gl"); }
+#endif
     static K7Overlay() => Decide();
     /// <summary>The row (and vita-settings.txt at boot): the owner's choice.</summary>
     public static void SetChoice(bool on) { _choice = on; Decide(); }
@@ -62,6 +68,9 @@ public static class K7Overlay
     /// <summary>SceneRenderer.Frame, after the UI canvases (the main target, no clip): the overlay's draw (its text refreshed every 0.5 s).</summary>
     public static void Draw(IRenderBackend g)
     {
+#if !SHEPHERD_EBOOT
+        if (Diag.K11Heat.Overlay) { Diag.K11Heat.DrawOverlay(g); if (!_k7) return; }
+#endif
         Diag.K7Prof.Push(Diag.K7Prof.ZOverlay);
         long t0 = Stopwatch.GetTimestamp();
         if (_tex == IntPtr.Zero) _tex = Atlas(g);

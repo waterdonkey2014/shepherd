@@ -1,4 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable></PropertyGroup>
   <ItemGroup><PackageReference Include="Mono.Cecil" Version="0.11.6" /></ItemGroup>
+  <!-- device kit #14: the owner-local call sequence the addr-lazy pass checks (git-ignored engine/Derived); without the file AddrPasses.cs refuses every build -->
+  <PropertyGroup Condition="Exists('../../engine/Derived/tools/AddrLocatorCalls.cs')"><DefineConstants>$(DefineConstants);SHEPHERD_DERIVED_ADDR</DefineConstants></PropertyGroup>
+  <ItemGroup Condition="Exists('../../engine/Derived/tools/AddrLocatorCalls.cs')"><Compile Include="../../engine/Derived/tools/AddrLocatorCalls.cs" Link="AddrLocatorCalls.cs" /></ItemGroup>
 </Project>

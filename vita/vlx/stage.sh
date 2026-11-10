@@ -18,6 +18,14 @@ case $APP in
          cp "$HERE/../hello/managed/hello-data.txt" "$R/app0/managed/"; mkdir -p "$R/ux0/data/shepherd" ;;
   menu)  W=${SHEPHERD_V6_WORK:-$B/shepherd-v6}; OWN=${SHEPHERD_OWNER_DIR:-$B/v6b/owner/shepherd}
          cp "$W"/bcl/*.dll "$R/app0/managed/"; mkdir -p "$R/ux0/data/shepherd"
+         # kit #12 walkb: a build with SHEPHERD_K12_VPKILZ=1 packs its DLLs' compressed-IL forms into the VPK's managed-ilz/ as well. (Review
+         # fix) only this build's: build.sh writes bcl-ilz/ after bcl/ in the same run, so a form older than its original is an earlier
+         # build's (a work dir from before build.sh cleared bcl-ilz/ on every run) -- then none is staged, as that build's VPK has none
+         if [[ -d $W/bcl-ilz ]]; then
+           stale=(); for f in "$W"/bcl-ilz/*.dll(N); do [[ -f $W/bcl/${f:t} && ! $W/bcl/${f:t} -nt $f ]] || stale+=(${f:t}); done
+           if (( ${#stale} )); then echo "stage.sh: $W/bcl-ilz is not this build's (${#stale} form(s) older than / without their bcl/ original, e.g. ${stale[1]}): app0/managed-ilz NOT staged"
+           else mkdir -p "$R/app0/managed-ilz"; cp "$W"/bcl-ilz/*.dll "$R/app0/managed-ilz/"; fi
+         fi
          # kit #8: a launcher build's engine module (the launcher's loader stand-in checks the file is there, as the device's would)
          [[ -f $W/obj/shepherd.suprx ]] && { mkdir -p "$R/app0/module"; cp "$W/obj/shepherd.suprx" "$R/app0/module/"; }
          # kit #8.1: the module's imported libraries + the libraries loaded at its load (vlx.c models the device's import binding: 0x8002D003)

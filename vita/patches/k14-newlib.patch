@@ -1,0 +1,668 @@
+diff -ruN a/src/mono/mono/eglib/ghashtable.c b/src/mono/mono/eglib/ghashtable.c
+--- a/src/mono/mono/eglib/ghashtable.c	2026-11-06 10:46:26
++++ b/src/mono/mono/eglib/ghashtable.c	2026-11-06 10:46:26
+@@ -41,6 +41,53 @@
+ 
+ static gpointer KEYMARKER_REMOVED = &KEYMARKER_REMOVED;
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md): a table entry is 12 bytes in a 16-byte newlib chunk. The entries are private to
++ * this file: with the row on (MONO_VITA_K14_SLOTS: monoeg_k14_slots set before the runtime starts) they come from 64-KiB slabs at 12 bytes, a freed
++ * one waits for the next insert, and a slab never goes back. Off: g_new / g_free, as kit #13. An entry made before the row went on may end
++ * on the free list: it is a valid piece of memory, just never returned to malloc. */
++#include <pthread.h>
++int monoeg_k14_slots;
++static pthread_mutex_t k14_slot_lock = PTHREAD_MUTEX_INITIALIZER;
++static Slot *k14_slot_freed, *k14_slot_next, *k14_slot_end;
++#define K14_SLAB_SLOTS (65520 / sizeof (Slot))
++static Slot *
++k14_slot_new (void)
++{
++	Slot *s;
++	if (!monoeg_k14_slots)
++		return g_new (Slot, 1);
++	pthread_mutex_lock (&k14_slot_lock);
++	s = k14_slot_freed;
++	if (s) {
++		k14_slot_freed = s->next;
++	} else {
++		if (k14_slot_next == k14_slot_end) {
++			k14_slot_next = g_new (Slot, K14_SLAB_SLOTS);
++			k14_slot_end = k14_slot_next + K14_SLAB_SLOTS;
++		}
++		s = k14_slot_next++;
++	}
++	pthread_mutex_unlock (&k14_slot_lock);
++	return s;
++}
++static void
++k14_slot_free (Slot *s)
++{
++	if (!monoeg_k14_slots) {
++		g_free (s);
++		return;
++	}
++	pthread_mutex_lock (&k14_slot_lock);
++	s->next = k14_slot_freed;
++	k14_slot_freed = s;
++	pthread_mutex_unlock (&k14_slot_lock);
++}
++#else
++#define k14_slot_new() g_new (Slot, 1)
++#define k14_slot_free(s) g_free (s)
++#endif
++
+ struct _GHashTable {
+ 	GHashFunc      hash_func;
+ 	GEqualFunc     key_equal_func;
+@@ -257,7 +304,7 @@
+ 			return;
+ 		}
+ 	}
+-	s = g_new (Slot, 1);
++	s = k14_slot_new ();
+ 	s->key = key;
+ 	s->value = value;
+ 	s->next = hash->table [hashcode];
+@@ -423,7 +470,7 @@
+ 				hash->table [hashcode] = s->next;
+ 			else
+ 				last->next = s->next;
+-			g_free (s);
++			k14_slot_free (s);
+ 			hash->in_use--;
+ 			sanity_check (hash);
+ 			return TRUE;
+@@ -463,7 +510,7 @@
+ 					last->next = s->next;
+ 					n = last->next;
+ 				}
+-				g_free (s);
++				k14_slot_free (s);
+ 				hash->in_use--;
+ 				count++;
+ 				s = n;
+@@ -498,7 +545,7 @@
+ 				hash->table [hashcode] = s->next;
+ 			else
+ 				last->next = s->next;
+-			g_free (s);
++			k14_slot_free (s);
+ 			hash->in_use--;
+ 			sanity_check (hash);
+ 			return TRUE;
+@@ -535,7 +582,7 @@
+ 					last->next = s->next;
+ 					n = last->next;
+ 				}
+-				g_free (s);
++				k14_slot_free (s);
+ 				hash->in_use--;
+ 				count++;
+ 				s = n;
+@@ -569,7 +616,7 @@
+ 				(*hash->key_destroy_func)(s->key);
+ 			if (hash->value_destroy_func != NULL)
+ 				(*hash->value_destroy_func)(s->value);
+-			g_free (s);
++			k14_slot_free (s);
+ 		}
+ 	}
+ 	g_free (hash->table);
+diff -ruN a/src/mono/mono/metadata/class-internals.h b/src/mono/mono/metadata/class-internals.h
+--- a/src/mono/mono/metadata/class-internals.h	2026-11-06 10:24:01
++++ b/src/mono/mono/metadata/class-internals.h	2026-11-06 11:57:05
+@@ -328,7 +328,37 @@
+ #define mono_class_interface_match(bmap,uiid) ((bmap) [(uiid) >> 3] & (1 << ((uiid)&7)))
+ #endif
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md): interface bitmaps made when first read. A bitmap is max_interface_id / 8
++ * bytes and interface ids are process-global, so every generic instance of the game pays for all the interfaces before it, whether or not any
++ * cast ever looks at it: 14 MiB of the load context's mempool on the walk, for ~33,000 classes of which ~10,000 ever get a vtable. With the row on
++ * (mono_vita_k14_set, MONO_VITA_K14_BITMAPS; default off here: the host turns it on) class setup keeps interfaces_packed + offsets as ever and
++ * leaves interface_bitmap NULL; a vtable's creation makes it (AOT code reads it through the vtable, or through the element class of an array
++ * object: object.c), and so does the first C read through this accessor. The bits are the same: one for each interface of interfaces_packed. */
++#define MONO_VITA_K14_BITMAPS 1u        /* bitmaps on first read */
++#define MONO_VITA_K14_INLHDR 4u         /* an inlined method's header freed at the end of the transform */
++#define MONO_VITA_K14_SEQNULL 8u        /* no seq_points table entry for a method without a table */
++#define MONO_VITA_K14_SORTED 16u        /* an AOT image's address -> method table without the addresses, as long as its compiled methods */
++#define MONO_VITA_K14_MEMPOOL 32u       /* a mempool request over 1 KiB that does not fit gets its own block (the chunk's tail stays in use) */
++#define MONO_VITA_K14_SLOTS 64u         /* eglib's hash table entries from slabs (no malloc header) */
++#define MONO_VITA_K14_SITES 128u        /* tier-up patch sites from slabs */
++#define MONO_VITA_K14_CARDS 2048u       /* sgen's card table only for [0x40000000, 0xC0000000): sgen/sgen-cardtable.c */
++#define MONO_VITA_K14_ISTACK 4096u      /* interpreter stacks: 1 MiB for the first thread, 256 KiB for the others */
++#define MONO_VITA_K14_BITMAP_AUDIT 256u /* test: every deferred bitmap also computed at class setup, kept aside and compared when it is made */
++#define MONO_VITA_K14_BITMAP_AUDIT_FAKE 512u /* test: the audit's negative control: one bit of each kept copy flipped */
++extern unsigned mono_vita_k14_flags;
++void mono_vita_k14_set (unsigned flags);
++guint8 *mono_vita_class_interface_bitmap_slow (MonoClass *klass);
++static inline guint8 *
++mono_vita_class_interface_bitmap (MonoClass *klass)
++{
++	guint8 *b = m_class_get_interface_bitmap (klass);
++	return G_LIKELY (b) ? b : mono_vita_class_interface_bitmap_slow (klass);
++}
++#define MONO_CLASS_IMPLEMENTS_INTERFACE(k,uiid) (((uiid) <= m_class_get_max_interface_id (k)) && mono_class_interface_match (mono_vita_class_interface_bitmap (k), (uiid)))
++#else
+ #define MONO_CLASS_IMPLEMENTS_INTERFACE(k,uiid) (((uiid) <= m_class_get_max_interface_id (k)) && mono_class_interface_match (m_class_get_interface_bitmap (k), (uiid)))
++#endif
+ 
+ #define MONO_VTABLE_AVAILABLE_GC_BITS 4
+ 
+diff -ruN a/src/mono/mono/metadata/class-setup-vtable.c b/src/mono/mono/metadata/class-setup-vtable.c
+--- a/src/mono/mono/metadata/class-setup-vtable.c	2026-11-06 10:17:06
++++ b/src/mono/mono/metadata/class-setup-vtable.c	2026-11-06 16:24:29
+@@ -16,6 +16,11 @@
+ #include <mono/metadata/marshal.h>
+ #include <mono/utils/mono-logger-internals.h>
+ #include <mono/utils/unlocked.h>
++#ifdef HOST_VITA
++#include <mono/utils/atomic.h>
++#include <mono/utils/mono-memory-model.h>
++#include <mono/utils/mono-os-mutex.h>
++#endif
+ #ifdef MONO_CLASS_DEF_PRIVATE
+ /* Class initialization gets to see the fields of MonoClass */
+ #define REALLY_INCLUDE_CLASS_DEF 1
+@@ -130,6 +135,102 @@
+ 	klass->interface_offsets_packed = NULL;
+ }
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md; class-internals.h): interface bitmaps made on first read. */
++unsigned mono_vita_k14_flags;
++/* MONO_VITA_K14_AUDIT (compiled in a test runtime only: vita/patches/k14-newlib-audit.patch defines it): every deferred bitmap also computed at setup and compared when it is
++ * made; the counts go to stderr every 1000 bitmaps (the vlx console), with the deferred and made sizes. */
++#ifdef MONO_VITA_K14_AUDIT
++static gint64 k14_bm_deferred, k14_bm_deferred_bytes, k14_bm_made, k14_bm_made_bytes, k14_bm_audit_bad;
++gint64 mono_vita_k14_bm_assign;    /* class.c: deferred bitmaps found by class_is_inited_for_assignable_check */
++static GHashTable *k14_bm_audit;   /* class -> the bitmap computed at setup */
++static mono_mutex_t k14_bm_audit_lock;
++#endif
++void
++mono_vita_k14_set (unsigned flags)
++{
++	extern int monoeg_k14_slots;   /* eglib/ghashtable.c */
++	mono_vita_k14_flags = flags;
++	monoeg_k14_slots = (flags & MONO_VITA_K14_SLOTS) != 0;
++#ifdef MONO_VITA_K14_AUDIT
++	{
++		const char *a = g_getenv ("SHEPHERD_K14_BITMAP_AUDIT");
++		if (a && *a && strcmp (a, "0")) {
++			mono_vita_k14_flags |= MONO_VITA_K14_BITMAP_AUDIT | (!strcmp (a, "fake") ? MONO_VITA_K14_BITMAP_AUDIT_FAKE : 0);
++			mono_os_mutex_init_recursive (&k14_bm_audit_lock);
++		}
++	}
++#endif
++}
++static inline int
++k14_bitmap_size (guint32 max_iid)
++{
++	return (sizeof (guint8) * ((max_iid + 1) >> 3)) + (((max_iid + 1) & 7)? 1 :0);
++}
++static void
++k14_bitmap_fill (MonoClass *klass, guint8 *bitmap)
++{
++	int count = klass->interface_offsets_count;
++	guint32 max_iid = klass->max_interface_id;
++	for (int i = 0; i < count; i++) {
++		guint32 id = klass->interfaces_packed [i]->interface_id;
++		if (id <= max_iid)   /* (an id given after the class's setup is past its check too: the bitmap stops at max_interface_id) */
++			bitmap [id >> 3] |= (1 << (id & 7));
++	}
++}
++#ifdef MONO_VITA_K14_AUDIT
++static void
++k14_bitmap_deferred (MonoClass *klass, guint32 max_iid)
++{
++	k14_bm_deferred++;
++	k14_bm_deferred_bytes += k14_bitmap_size (max_iid);
++	if (mono_vita_k14_flags & MONO_VITA_K14_BITMAP_AUDIT) {
++		int bsize = k14_bitmap_size (max_iid);
++		guint8 *copy = (guint8 *)g_malloc0 (bsize + 4);
++		*(gint32 *)copy = bsize;
++		k14_bitmap_fill (klass, copy + 4);
++		if (mono_vita_k14_flags & MONO_VITA_K14_BITMAP_AUDIT_FAKE)
++			copy [4] ^= 0x80;
++		mono_os_mutex_lock (&k14_bm_audit_lock);
++		if (!k14_bm_audit)
++			k14_bm_audit = g_hash_table_new (NULL, NULL);
++		g_hash_table_insert (k14_bm_audit, klass, copy);
++		mono_os_mutex_unlock (&k14_bm_audit_lock);
++	}
++}
++#endif
++guint8 *
++mono_vita_class_interface_bitmap_slow (MonoClass *klass)
++{
++	if (!(mono_vita_k14_flags & MONO_VITA_K14_BITMAPS))
++		return NULL;   /* (the row off: as kit #13) */
++	guint16 *offsets = klass->interface_offsets_packed;
++	mono_memory_barrier ();
++	if (!offsets || klass->interface_bitmap)
++		return klass->interface_bitmap;   /* (no bitmap and none deferred: as kit #13; or another thread made it) */
++	guint32 max_iid = klass->max_interface_id;
++	int bsize = k14_bitmap_size (max_iid);
++	guint8 *bitmap = (guint8 *)mono_class_alloc0 (klass, bsize);
++	k14_bitmap_fill (klass, bitmap);
++#ifdef MONO_VITA_K14_AUDIT
++	if (mono_vita_k14_flags & MONO_VITA_K14_BITMAP_AUDIT) {
++		mono_os_mutex_lock (&k14_bm_audit_lock);
++		guint8 *copy = k14_bm_audit ? (guint8 *)g_hash_table_lookup (k14_bm_audit, klass) : NULL;
++		if (!copy || *(gint32 *)copy != bsize || memcmp (copy + 4, bitmap, bsize) != 0)
++			k14_bm_audit_bad++;
++		k14_bm_made++;
++		k14_bm_made_bytes += bsize;
++		if ((k14_bm_made % 1000) == 0)
++			g_printerr ("K14 AUDIT: %d deferred (%d KiB), %d made (%d KiB), %d differed, %d found by the assignable check\n", (int) k14_bm_deferred, (int) (k14_bm_deferred_bytes / 1024), (int) k14_bm_made, (int) (k14_bm_made_bytes / 1024), (int) k14_bm_audit_bad, (int) mono_vita_k14_bm_assign);
++		mono_os_mutex_unlock (&k14_bm_audit_lock);
++	}
++#endif
++	mono_memory_barrier ();
++	mono_atomic_cas_ptr ((gpointer volatile *)&klass->interface_bitmap, bitmap, NULL);   /* (lost the race: this copy stays in the mempool, unused) */
++	return klass->interface_bitmap;
++}
++#endif
++
+ /**
+  * mono_class_setup_interface_offsets_internal:
+  *
+@@ -323,6 +424,28 @@
+ 	} else {
+ 		uint8_t *bitmap;
+ 		int bsize;
++#ifdef HOST_VITA
++		/* kit #14 newlib: the row on and the class not a TypeBuilder's: no bitmap now (class-internals.h). interface_offsets_packed goes in last, with
++		 * both arrays full: "offsets there, no bitmap" is what a reader on another thread takes for "make it" (mono_vita_class_interface_bitmap_slow).
++		 * With the row on a class that already has a bitmap (BITMAP_ONLY came first) makes no second one: kit #13 made it and threw it away. */
++		if ((mono_vita_k14_flags & MONO_VITA_K14_BITMAPS) && !bitmap_only && !image_is_dynamic (klass->image)) {
++			MonoClass **pk = (MonoClass **)mono_class_alloc (klass, sizeof (MonoClass*) * interface_offsets_count);
++			guint16 *po = (guint16 *)mono_class_alloc (klass, sizeof (guint16) * interface_offsets_count);
++			for (int i = 0; i < interface_offsets_count; i++) {
++				pk [i] = interfaces_full [i];
++				po [i] = GINT_TO_UINT16 (interface_offsets_full [i]);
++			}
++			klass->interface_offsets_count = GINT_TO_UINT16 (interface_offsets_count);
++			klass->interfaces_packed = pk;
++			mono_memory_barrier ();
++			klass->interface_offsets_packed = po;
++#ifdef MONO_VITA_K14_AUDIT
++			if (!klass->interface_bitmap)
++				k14_bitmap_deferred (klass, max_iid);
++#endif
++			goto end;
++		}
++#endif
+ 		klass->interface_offsets_count = GINT_TO_UINT16 (interface_offsets_count);
+ 		klass->interfaces_packed = (MonoClass **)mono_class_alloc (klass, sizeof (MonoClass*) * interface_offsets_count);
+ 		if (!bitmap_only) {
+diff -ruN a/src/mono/mono/metadata/class.c b/src/mono/mono/metadata/class.c
+--- a/src/mono/mono/metadata/class.c	2026-11-06 10:24:01
++++ b/src/mono/mono/metadata/class.c	2026-11-06 16:45:57
+@@ -3982,6 +3982,15 @@
+ 	 * MonoClass structure to be initialized, this method will need to do additional work.
+ 	 */
+ 
++#ifdef HOST_VITA
++	/* (kit #14 newlib: after a full setup a bitmap is made when first read, so the check above finds none: it is made here and that is all this class needed, as in kit #13.
++	 * The BITMAP_ONLY setup below would make none, under the loader lock, on every check until the class is inited. Row off: NULL, and the path below is kit #13's) */
++#ifdef MONO_VITA_K14_AUDIT
++	{ extern gint64 mono_vita_k14_bm_assign; if (m_class_get_interface_offsets_packed (klass) && !m_class_get_interface_bitmap (klass)) mono_vita_k14_bm_assign++; }   /* (test runtime: how often this path finds a deferred bitmap) */
++#endif
++	if (m_class_get_supertypes (klass) && mono_vita_class_interface_bitmap_slow (klass))
++		return;
++#endif
+ 	if (mono_class_is_ginst (klass)) {
+ 		MonoClass *gklass = mono_class_get_generic_class (klass)->container_class;
+ 		ensure_inited_for_assignable_check (gklass);
+@@ -4080,6 +4089,10 @@
+ 	if (MONO_CLASS_IS_INTERFACE_INTERNAL (klass)) {
+ 
+ 		/* interface_offsets might not be set for dynamic classes */
++#ifdef HOST_VITA
++		/* (kit #14 newlib: a bitmap made on first read is not a missing one) */
++		mono_vita_class_interface_bitmap (oklass);
++#endif
+ 		if (mono_class_get_ref_info_handle (oklass) && !m_class_get_interface_bitmap (oklass)) {
+ 			/*
+ 			 * oklass might be a generic type parameter but they have
+diff -ruN a/src/mono/mono/metadata/mempool.c b/src/mono/mono/metadata/mempool.c
+--- a/src/mono/mono/metadata/mempool.c	2026-11-06 10:17:06
++++ b/src/mono/mono/metadata/mempool.c	2026-11-06 10:46:55
+@@ -280,7 +280,14 @@
+ 
+ 		// For large objects, allocate the object into its own block.
+ 		// (In individual allocation mode, the constant will be 0 and this path will always be taken)
++#ifdef HOST_VITA
++		/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md): a request that does not fit abandoned the chunk's tail, up to 8 KiB; 1.6 MiB of
++		 * the walk's load context. With the row on (MONO_VITA_K14_MEMPOOL, 32) a request of 1 KiB or more gets its own block and the tail stays in use. */
++		extern unsigned mono_vita_k14_flags;
++		if (size >= ((mono_vita_k14_flags & 32u) ? 1024u : (guint) MONO_MEMPOOL_PREFER_INDIVIDUAL_ALLOCATION_SIZE)) {
++#else
+ 		if (size >= MONO_MEMPOOL_PREFER_INDIVIDUAL_ALLOCATION_SIZE) {
++#endif
+ 			guint new_size = SIZEOF_MEM_POOL + size;
+ 			MonoMemPool *np = (MonoMemPool *)g_malloc (new_size);
+ 
+diff -ruN a/src/mono/mono/metadata/object.c b/src/mono/mono/metadata/object.c
+--- a/src/mono/mono/metadata/object.c	2026-11-06 10:24:01
++++ b/src/mono/mono/metadata/object.c	2026-11-06 10:24:01
+@@ -2314,7 +2314,20 @@
+ 	}
+ 
+ 	vt->max_interface_id = m_class_get_max_interface_id (klass);
++#ifdef HOST_VITA
++	/* kit #14 newlib: AOT code reads the bitmap through the vtable -- or through the class, on one path only: an array object's element (cast)
++	 * class, at any rank (mini_emit_iface_class_cast, type-checking.c), a class that may have no vtable of its own. So a vtable makes its
++	 * class's bitmap and those of its element and cast classes, all the way down. */
++	vt->interface_bitmap = mono_vita_class_interface_bitmap (klass);
++	if (m_class_get_rank (klass)) {
++		for (MonoClass *e = klass; m_class_get_rank (e); e = m_class_get_element_class (e)) {
++			mono_vita_class_interface_bitmap (m_class_get_element_class (e));
++			mono_vita_class_interface_bitmap (m_class_get_cast_class (e));
++		}
++	}
++#else
+ 	vt->interface_bitmap = m_class_get_interface_bitmap (klass);
++#endif
+ 
+ 	//printf ("Initializing VT for class %s (interface_offsets_count = %d)\n",
+ 	//		class->name, klass->interface_offsets_count);
+diff -ruN a/src/mono/mono/mini/aot-runtime.c b/src/mono/mono/mini/aot-runtime.c
+--- a/src/mono/mono/mini/aot-runtime.c	2026-11-06 10:31:42
++++ b/src/mono/mono/mini/aot-runtime.c	2026-11-06 15:49:51
+@@ -3521,6 +3521,10 @@
+ 	/* Compute a sorted table mapping code to method indexes. */
+ 	if (amodule->sorted_methods)
+ 		return;
++#ifdef HOST_VITA
++	if (amodule->sorted_method_indexes)
++		return;
++#endif
+ 
+ 	// FIXME: async
+ 	gpointer *methods = g_new0 (gpointer, nmethods);
+@@ -3540,6 +3544,21 @@
+ 	for (int i = 0; i < methods_len -1; ++i)
+ 		g_assert (methods [i] <= methods [i + 1]);
+ 
++#ifdef HOST_VITA
++	/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md): both tables were sized for every method of the image, compiled or not, and the
++	 * addresses are amodule->methods []'s. With the row on (MONO_VITA_K14_SORTED) only the indexes stay, as long as the compiled methods: 870 KiB
++	 * on the walk's 00098 and 2.1 MiB on 00095 become 0.3 and 0.3. The search reads through them. */
++	if (mono_vita_k14_flags & MONO_VITA_K14_SORTED) {
++		g_free (methods);
++		int *shrunk = methods_len ? (int *)g_realloc (method_indexes, methods_len * sizeof (int)) : method_indexes;
++		amodule->sorted_methods_len = methods_len;
++		mono_memory_barrier ();
++		if (mono_atomic_cas_ptr ((gpointer*)&amodule->sorted_method_indexes, shrunk, NULL) != NULL)
++			/* Somebody got in before us */
++			g_free (shrunk);
++		return;
++	}
++#endif
+ 	amodule->sorted_methods_len = methods_len;
+ 	if (mono_atomic_cas_ptr ((gpointer*)&amodule->sorted_methods, methods, NULL) != NULL)
+ 		/* Somebody got in before us */
+@@ -3590,13 +3609,21 @@
+ 	/* Binary search in the sorted_methods table */
+ 	methods = amodule->sorted_methods;
+ 	methods_len = amodule->sorted_methods_len;
++#ifdef HOST_VITA
++	/* kit #14 newlib: each address through its index (the same value with the row off, where methods [] holds a copy) */
++#define K14_SORTED_ADDR(i) (amodule->methods [sorted_indexes [(i)]])
++	int *sorted_indexes = amodule->sorted_method_indexes;
++	(void) methods;
++#else
++#define K14_SORTED_ADDR(i) (methods [(i)])
++#endif
+ 	code = (guint8 *)addr;
+ 	left = 0;
+ 	right = methods_len;
+ 	while (TRUE) {
+ 		pos = (left + right) / 2;
+ 
+-		code1 = (guint8 *)methods [pos];
++		code1 = (guint8 *)K14_SORTED_ADDR (pos);
+ 		if (pos + 1 == methods_len) {
+ #ifdef HOST_WASM
+ 			code2 = code1 + 1;
+@@ -3607,7 +3634,7 @@
+ 				code2 = amodule->llvm_code_end;
+ #endif
+ 		} else {
+-			code2 = (guint8 *)methods [pos + 1];
++			code2 = (guint8 *)K14_SORTED_ADDR (pos + 1);
+ 		}
+ 
+ 		if (code < code1)
+@@ -3623,9 +3650,9 @@
+ 		return NULL;
+ #endif
+ 
+-	g_assert (addr >= methods [pos]);
++	g_assert (addr >= K14_SORTED_ADDR (pos));
+ 	if (pos + 1 < methods_len)
+-		g_assert (addr < methods [pos + 1]);
++		g_assert (addr < K14_SORTED_ADDR (pos + 1));
+ 	method_index = amodule->sorted_method_indexes [pos];
+ 
+ 	/* In async mode, jinfo is not added to the normal jit info table, so have to cache it ourselves */
+@@ -3661,7 +3688,7 @@
+ 		else
+ 			code_len = amodule->llvm_code_end - code;
+ 	} else {
+-		guint8* code_end = (guint8*)methods [pos + 1];
++		guint8* code_end = (guint8*)K14_SORTED_ADDR (pos + 1);
+ 
+ 		if (code >= amodule->jit_code_start && code < amodule->jit_code_end && code_end > amodule->jit_code_end) {
+ 			code_end = amodule->jit_code_end;
+diff -ruN a/src/mono/mono/mini/interp/interp.c b/src/mono/mono/mini/interp/interp.c
+--- a/src/mono/mono/mini/interp/interp.c	2026-11-06 11:10:44
++++ b/src/mono/mono/mini/interp/interp.c	2026-11-06 11:10:44
+@@ -409,9 +409,20 @@
+ 	ThreadContext *context = (ThreadContext *) mono_native_tls_get_value (thread_context_id);
+ 	if (context == NULL) {
+ 		context = g_new0 (ThreadContext, 1);
++#ifdef HOST_VITA
++		/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md): 1 MiB of the shared pool per thread that runs managed code. With the row on (MONO_VITA_K14_ISTACK) the
++		 * first thread (the game's) keeps it and every other thread gets 256 KiB (the walk's deepest other thread: see the note); stack_end's overflow check is the
++		 * same one. Off: 1 MiB each, as kit #13. */
++		static gint32 k14_contexts;
++		guint k14_size = ((mono_vita_k14_flags & MONO_VITA_K14_ISTACK) && mono_atomic_inc_i32 (&k14_contexts) > 1) ? 256 * 1024 : INTERP_STACK_SIZE;
++		context->stack_start = (guchar*)mono_valloc_aligned (k14_size, MINT_STACK_ALIGNMENT, MONO_MMAP_READ | MONO_MMAP_WRITE, MONO_MEM_ACCOUNT_INTERP_STACK);
++		context->stack_end = context->stack_start + k14_size - INTERP_REDZONE_SIZE;
++		context->stack_real_end = context->stack_start + k14_size;
++#else
+ 		context->stack_start = (guchar*)mono_valloc_aligned (INTERP_STACK_SIZE, MINT_STACK_ALIGNMENT, MONO_MMAP_READ | MONO_MMAP_WRITE, MONO_MEM_ACCOUNT_INTERP_STACK);
+ 		context->stack_end = context->stack_start + INTERP_STACK_SIZE - INTERP_REDZONE_SIZE;
+ 		context->stack_real_end = context->stack_start + INTERP_STACK_SIZE;
++#endif
+ 		/* We reserve a stack slot at the top of the interp stack to make temp objects visible to GC */
+ 		context->stack_pointer = context->stack_start + MINT_STACK_ALIGNMENT;
+ 
+@@ -436,7 +447,11 @@
+ 		set_context (NULL);
+ 	}
+ 
++#ifdef HOST_VITA
++	mono_vfree (context->stack_start, context->stack_real_end - context->stack_start, MONO_MEM_ACCOUNT_INTERP_STACK);
++#else
+ 	mono_vfree (context->stack_start, INTERP_STACK_SIZE, MONO_MEM_ACCOUNT_INTERP_STACK);
++#endif
+ 	/* Prevent interp_mark_stack from trying to scan the data_stack, before freeing it */
+ 	context->stack_start = NULL;
+ 	mono_compiler_barrier ();
+@@ -8861,7 +8876,11 @@
+ {
+ 	ThreadContext *context = get_context ();
+ 
++#ifdef HOST_VITA
++	return (context->stack_pointer + size) < context->stack_real_end;
++#else
+ 	return (context->stack_pointer + size) < (context->stack_start + INTERP_STACK_SIZE);
++#endif
+ }
+ 
+ gboolean
+diff -ruN a/src/mono/mono/mini/interp/tiering.c b/src/mono/mono/mini/interp/tiering.c
+--- a/src/mono/mono/mini/interp/tiering.c	2026-11-06 10:17:06
++++ b/src/mono/mono/mini/interp/tiering.c	2026-11-06 11:23:34
+@@ -58,9 +58,46 @@
+ 	*addr = (InterpMethod*)(tagged ? INTERP_IMETHOD_TAG_1 (user_data) : user_data);
+ }
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md): a patch site in a GSList is an 8-byte node in a 16-byte newlib chunk, ~54,000 of them on
++ * the walk. With the row on (MONO_VITA_K14_SITES) the same list out of 16-KiB slabs; freed nodes wait for the next site, and a tiered method's table entry goes (kit #13
++ * removed by the list, which is never a key: the entry stayed, pointing at the freed list). Only under tiering_mutex. */
++typedef struct K14Site { struct K14Site *next; gpointer site; } K14Site;
++static K14Site *k14_site_freed, *k14_site_next, *k14_site_end;
++#define K14_SITES_SLAB (16376 / sizeof (K14Site))
++static K14Site *
++k14_site_new (void)
++{
++	K14Site *n = k14_site_freed;
++	if (n) {
++		k14_site_freed = n->next;
++		return n;
++	}
++	if (k14_site_next == k14_site_end) {
++		k14_site_next = g_new (K14Site, K14_SITES_SLAB);
++		k14_site_end = k14_site_next + K14_SITES_SLAB;
++	}
++	return k14_site_next++;
++}
++#endif
++
+ static void
+ patch_interp_data_items (InterpMethod *old_imethod, InterpMethod *new_imethod)
+ {
++#ifdef HOST_VITA
++	if (mono_vita_k14_flags & MONO_VITA_K14_SITES) {
++		K14Site *n = (K14Site *)g_hash_table_lookup (patch_sites_table, old_imethod);
++		g_hash_table_remove (patch_sites_table, old_imethod);
++		while (n) {
++			K14Site *next = n->next;
++			patch_imethod_site (n->site, new_imethod);
++			n->next = k14_site_freed;
++			k14_site_freed = n;
++			n = next;
++		}
++		return;
++	}
++#endif
+ 	GSList *sites = g_hash_table_lookup (patch_sites_table, old_imethod);
+ 	g_slist_foreach (sites, patch_imethod_site, new_imethod);
+ 
+@@ -100,6 +137,15 @@
+ register_imethod_patch_site (InterpMethod *imethod, gpointer *ptr)
+ {
+ 	g_assert (!imethod->optimized);
++#ifdef HOST_VITA
++	if (mono_vita_k14_flags & MONO_VITA_K14_SITES) {
++		K14Site *n = k14_site_new ();
++		n->site = ptr;
++		n->next = (K14Site *)g_hash_table_lookup (patch_sites_table, imethod);
++		g_hash_table_insert_replace (patch_sites_table, imethod, n, TRUE);
++		return;
++	}
++#endif
+ 	GSList *sites = g_hash_table_lookup (patch_sites_table, imethod);
+ 	sites = g_slist_prepend (sites, ptr);
+ 	g_hash_table_insert_replace (patch_sites_table, imethod, sites, TRUE);
+diff -ruN a/src/mono/mono/mini/interp/transform.c b/src/mono/mono/mini/interp/transform.c
+--- a/src/mono/mono/mini/interp/transform.c	2026-11-06 10:29:39
++++ b/src/mono/mono/mini/interp/transform.c	2026-11-06 11:17:57
+@@ -1287,6 +1287,14 @@
+ static MintICallSig
+ interp_get_icall_sig (MonoMethodSignature *sig);
+ 
++#ifdef HOST_VITA
++/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md): an inlined method's header was never freed (the main method's is, by
++ * mono_interp_transform_method; mini's JIT frees its inlined headers at the end of the compile, cfg->headers_to_free). Each inline attempt left
++ * one transient header in newlib: ~25,000 tiny ones on the walk, ~1 MiB with the fat ones. With the row on (MONO_VITA_K14_INLHDR) they are
++ * freed at generate's exit: the transform is the only thing that looks at them. */
++#define K14_KEEP_INLINE_HEADER(td, h) do { if ((mono_vita_k14_flags & MONO_VITA_K14_INLHDR) && (h)) (td)->k14_inline_headers = g_slist_prepend_mempool ((td)->mempool, (td)->k14_inline_headers, (h)); } while (0)
++#endif
++
+ static gpointer
+ imethod_alloc0 (TransformData *td, size_t size)
+ {
+@@ -3179,6 +3187,9 @@
+ 
+ 	MonoMethodHeader *mheader = interp_method_get_header (target_method, error);
+ 	goto_if_nok (error, fail);
++#ifdef HOST_VITA
++	K14_KEEP_INLINE_HEADER (td, mheader);
++#endif
+ 
+ 	if (!interp_inline_method (td, target_method, mheader, error))
+ 		goto fail;
+@@ -3650,6 +3661,9 @@
+ 	if ((mono_interp_opt & INTERP_OPT_INLINE) && op == -1 && !is_virtual && target_method && interp_method_check_inlining (td, target_method, csignature)) {
+ 		MonoMethodHeader *mheader = interp_method_get_header (target_method, error);
+ 		return_val_if_nok (error, FALSE);
++#ifdef HOST_VITA
++		K14_KEEP_INLINE_HEADER (td, mheader);
++#endif
+ 
+ 		if (interp_inline_method (td, target_method, mheader, error)) {
+ 			td->ip += 5;
+@@ -11355,6 +11369,10 @@
+ #endif
+ 
+ exit:
++#ifdef HOST_VITA
++	for (GSList *l = td->k14_inline_headers; l; l = l->next)
++		mono_metadata_free_mh ((MonoMethodHeader *)l->data);
++#endif
+ 	g_free (td->in_offsets);
+ 	g_free (td->clause_indexes);
+ 	g_free (td->data_items);
+@@ -11541,6 +11559,11 @@
+ 		// FIXME Publishing of seq points seems to be racy with tiereing. We can have both tiered and untiered method
+ 		// running at the same time. We could therefore get the optimized imethod seq points for the unoptimized method.
+ 		gpointer seq_points = g_hash_table_lookup (jit_mm->seq_points, imethod->method);
++#ifdef HOST_VITA
++		/* kit #14 newlib: without IL sequence points (the default, SHEPHERD_K12_SEQPOINTS=0) every method got a table entry saying NULL, which is
++		 * what a lookup of a missing key says: ~24,000 entries on the walk. With the row on (MONO_VITA_K14_SEQNULL) no entry for no table. */
++		if (imethod->jinfo->seq_points || !(mono_vita_k14_flags & MONO_VITA_K14_SEQNULL))
++#endif
+ 		if (!seq_points || seq_points != imethod->jinfo->seq_points)
+ 			g_hash_table_replace (jit_mm->seq_points, imethod->method, imethod->jinfo->seq_points);
+ 	}
+diff -ruN a/src/mono/mono/mini/interp/transform.h b/src/mono/mono/mini/interp/transform.h
+--- a/src/mono/mono/mini/interp/transform.h	2026-11-06 10:29:39
++++ b/src/mono/mono/mini/interp/transform.h	2026-11-06 10:29:39
+@@ -271,6 +271,9 @@
+ 	guint optimized : 1;
+ 	guint has_invalid_code : 1;
+ 	guint has_inlined_one_call : 1;
++#ifdef HOST_VITA
++	GSList *k14_inline_headers;   /* kit #14 newlib: the headers of the methods inlined here, freed at the end of the transform */
++#endif
+ } TransformData;
+ 
+ #define STACK_TYPE_I4 0
+diff -ruN a/src/mono/mono/sgen/sgen-cardtable.c b/src/mono/mono/sgen/sgen-cardtable.c
+--- a/src/mono/mono/sgen/sgen-cardtable.c	2026-11-06 11:10:16
++++ b/src/mono/mono/sgen/sgen-cardtable.c	2026-11-06 11:10:16
+@@ -633,6 +633,16 @@
+ void
+ sgen_card_table_init (SgenRememberedSet *remset, gboolean consistency_checks)
+ {
++#ifdef HOST_VITA
++	/* SHEPHERD-VITA device kit #14, track newlib (vita/notes/kit14-newlib.md): the table covers all 4 GiB (8 MiB of the shared pool), while a reference is only ever stored at
++	 * an address of the app's memory. With the row on (MONO_VITA_K14_CARDS, 2048; the runtime's flags are set before mini_init) the table is the part for
++	 * [0x40000000, 0xC0000000) -- 4 MiB; on the device everything lies at 0x60000000..0xA0000000, under vlx from 0x40000000 up -- and sgen_cardtable is where the whole
++	 * table would have started: every card address (C, the managed barrier wrappers, AOT code, which all add address >> 9 to it) is unchanged. */
++	extern unsigned mono_vita_k14_flags;
++	if (mono_vita_k14_flags & 2048u)
++		sgen_cardtable = (guint8 *)sgen_alloc_os_memory ((0xC0000000u - 0x40000000u) >> CARD_BITS, (SgenAllocFlags)(SGEN_ALLOC_INTERNAL | SGEN_ALLOC_ACTIVATE), "card table", MONO_MEM_ACCOUNT_SGEN_CARD_TABLE) - (0x40000000u >> CARD_BITS);
++	else
++#endif
+ 	sgen_cardtable = (guint8 *)sgen_alloc_os_memory (CARD_COUNT_IN_BYTES, (SgenAllocFlags)(SGEN_ALLOC_INTERNAL | SGEN_ALLOC_ACTIVATE), "card table", MONO_MEM_ACCOUNT_SGEN_CARD_TABLE);
+ 
+ #ifdef SGEN_HAVE_OVERLAPPING_CARDS

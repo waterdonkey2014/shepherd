@@ -16,7 +16,8 @@ any Derived/ directory:
   - a shader file name: a file of git's named like a derived shader (a copy of lut.frag anywhere); a mention of the name in text is not
     a leak (the engine names its owner-local programs: GlBackend.Programs)
   - an owner-local list made from the game's runs (kit #9): a file that starts with the R5 order list's or the CoreLib keep list's header
-    (vita/tools/k9_order.py writes them; the order list names ported game methods by their AOT symbols)
+    (vita/tools/k9_order.py writes them; the order list names ported game methods by their AOT symbols), or (kit #13) with the generic
+    "# owner-local: a list made from the game's runs" line -- e.g. the engine methods a first-call trace of the game saw run
 Markers listed in the owner-local engine/Derived/leak-allow.txt (one per line as printed, '#' comments) are generic text that may also
 sit in tracked files (e.g. the engine's own vertex-shader line); that list lives with the derived files, never in git.
 Every hit is listed (file:line: marker); exit 1 on a hit. With no engine/**/Derived on this machine the check is VACUOUS (exit 0; with
@@ -101,7 +102,8 @@ def git_files(repo):
 
 # owner-local lists made from the game's runs (kit #9 runtime review fix): the R5 order list (ported game methods' AOT symbol names) and the
 # CoreLib keep list, recognised by the first line vita/tools/k9_order.py (or a hand merge) writes
-OWNER_LIST_HEADERS = ("# kit #9 R5: hot-first symbol order", "# kit #9 CoreLib trimming")
+OWNER_LIST_HEADERS = ("# kit #9 R5: hot-first symbol order", "# kit #9 CoreLib trimming",
+                      "# owner-local: a list made from the game's runs")   # kit #13: the generic header for any later run-derived list
 
 def leaks(repo, markers, shnames, files):
     hits = []

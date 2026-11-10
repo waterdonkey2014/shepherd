@@ -27,8 +27,10 @@
 #                               install's current game DLLs: a kit #9 eboot binds the typed v2 modules by MVID (and the game-AOT apps the
 #                               kit's Assembly-CSharp / spine-unity), so a full stage needs STAGE_TYPED=<dir> (the typed modules laid over
 #                               managed/) and must match the kit's game DLLs -- kit stages clone the previous kit card instead
-# usage: [STAGE_PACK=<pack dir>] [STAGE_PK2=<dir with shepherd.pk2>] [STAGE_CACHE=<cache dir>] [STAGE_VIDEO_LENGTHS=0|<file>] [STAGE_SPLASH=0|all|<dir>] [STAGE_SPLASH_REF=1] [STAGE_SPLASH_ONLY=1] [STAGE_TYPED=<dir>] [STAGE_SHADER_CULL=1|<file>] [STAGE_PHYS2D=0|<file>] [STAGE_BOOTSCREEN=1] [STAGE_ILBUNDLE=<assemblies.txt>] [STAGE_K10_ONLY=1] stage-owner.sh [out dir]   (default ${SHEPHERD_WORK:-$HOME/shepherd-work}/v6b/owner)
+# usage: [STAGE_PACK=<pack dir>] [STAGE_PK2=<dir with shepherd.pk2>] [STAGE_CACHE=<cache dir>] [STAGE_VIDEO_LENGTHS=0|<file>] [STAGE_SPLASH=0|all|<dir>] [STAGE_SPLASH_REF=1] [STAGE_SPLASH_ONLY=1] [STAGE_TYPED=<dir>] [STAGE_ADDR_LAZY=<dir>] [STAGE_ILZ_HOT=<hot list>] [STAGE_SHADER_CULL=1|<file>] [STAGE_PHYS2D=0|<file>] [STAGE_BOOTSCREEN=1] [STAGE_ILBUNDLE=<assemblies.txt>] [STAGE_K10_ONLY=1] stage-owner.sh [out dir]   (default ${SHEPHERD_WORK:-$HOME/shepherd-work}/v6b/owner)
 set -euo pipefail
+# (kit #11 integration review: zsh writes here-documents under TMPPREFIX, /tmp/zsh on the system disk by default -- keep them next to TMPDIR)
+[[ -n ${TMPDIR:-} ]] && export TMPPREFIX=${TMPDIR%/}/zsh
 HERE=${0:a:h}
 REPO=${HERE:h:h}
 R=$REPO/runtime
@@ -60,6 +62,9 @@ fi
 # card itself -- into an EXISTING card with STAGE_K10_ONLY=1 (nothing else touched), or at the end of a full stage below:
 #   STAGE_BOOTSCREEN=1   data/video/BootLoading.shb: the game's own loading screen, lossless, from the Mac engine's own screenshots of the New
 #                        Game route on this card's pack (vita/tools/bootscreen_record.sh: needs this worktree's Debug engine, dotnet build)
+#                        -- kit #11 (track device): with BOOTREC_SEEDS="<seed> ..." in the environment, the EMBLEM SET instead: one recording per
+#                        emblem the game draws in those runs -> data/video/boot/ + SET.txt (shown by default only when the rings check says 'rings drawn'
+#                        AND BOOTREC_DEFAULT_ON=1 -- the owner's yes to that set, question 3 -- wrote 'default on'; else opt-in)
 #   STAGE_ILBUNDLE=<assemblies.txt>  managed/boot.ilb: the card's DLLs a boot loads, in that file's load order (any start's
 #                        runtime/logs/<app>/assemblies.txt -- the device's own or a vlx run's; vita/tools/il_bundle.py). Re-make it whenever
 #                        managed/ changes (the host verifies it once per card and stops using it when a bundled DLL changes)
@@ -72,11 +77,29 @@ k10_stage () {
     python3 -I "$REPO/vita/tools/il_bundle.py" "$D/managed" "$STAGE_ILBUNDLE" $ilz | sed 's/^/   /' || { echo "STAGE_ILBUNDLE: the bundle failed"; exit 1; }
   fi
 }
+# device kit #14 (track small, vita/notes/kit14-small.md): STAGE_ADDR_LAZY=<dir> lays the owner's --addr-lazy Unity.Addressables.dll over managed/ (tools/Rewriter
+# <managed> <dir> --only-addr-lazy: the game catalog kept compact until asked for), in a full stage or, with STAGE_K10_ONLY=1, on an existing card (the way a kit card is
+# staged: kit stages clone the previous card). The game-AOT apps are bound to its MVID and their token-keyed lists must be re-keyed for it (tools/Rewriter <orig> <dir>
+# --rekey-tokens ...). A card's IL bundle is all or nothing: one ILZ form missing or one bundled DLL changed and the host reads EVERY DLL from its own file, so with a
+# managed-ilz/ the form is re-made here (STAGE_ILZ_HOT=<the hot list re-keyed the same way>; unset = every body cold) and a card holding boot.ilb must re-make it in the
+# same call (STAGE_ILBUNDLE=<assemblies.txt>, which runs after this step): without it the stage stops.
+k14_addr_lazy () {
+  [[ -n ${STAGE_ADDR_LAZY:-} ]] || return 0
+  [[ -f "$STAGE_ADDR_LAZY/Unity.Addressables.dll" ]] || { echo "STAGE_ADDR_LAZY=$STAGE_ADDR_LAZY has no Unity.Addressables.dll"; exit 1; }
+  [[ ! -f "$D/managed/boot.ilb" || -n ${STAGE_ILBUNDLE:-} ]] || { echo "STAGE_ADDR_LAZY: $D/managed/boot.ilb holds the old DLL and the host would stop using it: pass STAGE_ILBUNDLE=<assemblies.txt> in the same call"; exit 1; }
+  cp "$STAGE_ADDR_LAZY/Unity.Addressables.dll" "$D/managed/"; echo "   managed/: the --addr-lazy Unity.Addressables.dll of $STAGE_ADDR_LAZY laid over"
+  if [[ -d "$D/managed-ilz" ]]; then
+    rm -f "$D/managed-ilz/Unity.Addressables.dll"
+    python3 -I "$REPO/vita/tools/k10_ilz.py" pack "$D/managed/Unity.Addressables.dll" "$D/managed-ilz/Unity.Addressables.dll" ${STAGE_ILZ_HOT:+"$STAGE_ILZ_HOT"} | sed 's/^/   /' || { echo "STAGE_ADDR_LAZY: the compressed-IL form failed"; exit 1; }
+    python3 -I "$REPO/vita/tools/k10_ilz.py" verify "$D/managed/Unity.Addressables.dll" "$D/managed-ilz/Unity.Addressables.dll" | tail -1 | sed 's/^/   /' || { echo "STAGE_ADDR_LAZY: the compressed-IL form did not verify"; exit 1; }
+  fi
+}
 if [[ ${STAGE_K10_ONLY:-0} == 1 ]]; then
   [[ -d "$D/managed" ]] || { echo "STAGE_K10_ONLY=1 writes into an EXISTING card: $D/managed is missing (copy a kit card there first)"; exit 1; }
-  [[ ${STAGE_BOOTSCREEN:-0} == 1 || -n ${STAGE_ILBUNDLE:-} ]] || { echo "STAGE_K10_ONLY=1 needs STAGE_BOOTSCREEN=1 and / or STAGE_ILBUNDLE=<assemblies.txt>"; exit 1; }
+  [[ ${STAGE_BOOTSCREEN:-0} == 1 || -n ${STAGE_ILBUNDLE:-} || -n ${STAGE_ADDR_LAZY:-} ]] || { echo "STAGE_K10_ONLY=1 needs STAGE_BOOTSCREEN=1, STAGE_ILBUNDLE=<assemblies.txt> and / or STAGE_ADDR_LAZY=<dir>"; exit 1; }
+  k14_addr_lazy
   k10_stage
-  echo "staged the kit #10 boot files only into $D (the rest of the card untouched)"
+  echo "staged the kit #10 / #14 files only into $D (the rest of the card untouched)"
   exit 0
 fi
 [[ -f "$R/ManagedVita/icalls.json" ]] || { echo "runtime/ManagedVita missing: run vita/v4/check.sh --rewrite"; exit 1; }
@@ -102,6 +125,7 @@ if [[ -n ${STAGE_TYPED:-} ]]; then
 else
   echo "   NOTE managed/ holds runtime/ManagedVita's UNTYPED Unity modules and the install's current game DLLs: a kit #9 eboot will not boot on this card (MVIDs) -- STAGE_TYPED=<dir> lays the typed modules over, and the game DLLs must be the kit's"
 fi
+k14_addr_lazy   # device kit #14: STAGE_ADDR_LAZY (above)
 zsh "$REPO/tools/IcallBake/bake.sh" "$D/managed" > /dev/null || { echo "stage-owner: IcallBake failed (tools/IcallBake/bake.sh $D/managed)" >&2; exit 1; }   # kit #4 B-1: icalls.bin, the flat copy of icalls.json the engine reads at boot (same rows; ~14-20 s less boot)
 DER=$(zsh "$HERE/build-derived.sh")                    # the owner-local derived engine code (loaded by name from managed/)
 [[ -f "$DER" ]] && cp "$DER" "$D/managed/" || echo "note: no engine/Derived source here: the game will run its own Febucci scan, and the apps draw without the Stylizer pass, lighting and grading"

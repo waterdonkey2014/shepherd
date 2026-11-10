@@ -35,26 +35,44 @@ internal sealed class WorldEmitter
     public Vertex[] Verts(int n) { if (VBuf.Length < n) VBuf = new Vertex[Math.Max(n, VBuf.Length * 2)]; return VBuf; }
     internal Vector4[] ClipBuf(int n) { if (_cvbuf.Length < n) _cvbuf = new Vector4[Math.Max(n, _cvbuf.Length * 2)]; return _cvbuf; }
 
-    void Out(Vertex[] v, int nv, int[] ib, int ni, NTexture tex, uint blend, bool sdf)
+    void Out(Vertex[] v, int nv, int[] ib, int ni, NTexture tex, uint blend, bool sdf, bool world = false)
     {
         if (_skip0 && !sdf)
         {   // kit #7 spine (Render/SpineSkip.cs): a Spine draw's triangles of colour 0 leave the GPU draw (none left: no draw call; the
             // black-frame watch still sees the draw, as SubmitIdx would show it)
             int nf = SpineSkip.Filter(v, ib, ni);
-            if (nf < 3) { if (Rx == null) SceneRenderer.SkippedDraw(v, nv, ni, tex, blend); return; }
+            if (nf < 3) { if (Rx == null) SceneRenderer.SkippedDraw(v, nv, ni, tex, blend); K11Rec?.Keep(v, nv, ib, ni, false); return; }
             ni = nf;
         }
+        var pw = world && K13Looks.Persp && !sdf ? PerspW(nv) : null;   // kit #13 looks (off: no call)
+        K11Rec?.Keep(v, nv, ib, ni, true, pw);   // kit #11 gpu1 (SHEPHERD_K11_REUSE=1): the finished draw, kept for the next frame (null: no call; kit #13 looks: with its w)
+        if (pw != null) { if (Rx == null) SceneRenderer.SubmitIdxW(v, nv, ib, ni, tex, blend, pw); else Rx.DrawW(v, nv, ib, ni, blend, pw); return; }
         if (Rx == null) SceneRenderer.SubmitIdx(v, nv, ib, ni, tex, blend, sdf);
         else Rx.Draw(v, nv, ib, ni, blend, sdf);
     }
+    /// <summary>Kit #13 looks (K13Looks.Persp): the current world draw's clip w per vertex (the clip positions Project / ClipTriangles left in
+    /// _cvbuf[0..nv), clamped as Project clamps them), or null when every w is exactly 1 (an orthographic camera: the affine mapping is exact).</summary>
+    float[] PerspW(int nv)
+    {
+        var cv = _cvbuf; if (nv <= 0 || cv.Length < nv) return null;
+        bool any = false;
+        for (int i = 0; i < nv; i++) if (cv[i].w != 1f) { any = true; break; }
+        if (!any) return null;
+        if (_wbuf == null || _wbuf.Length < nv) _wbuf = new float[Math.Max(nv, Math.Max(256, (_wbuf?.Length ?? 0) * 2))];
+        for (int i = 0; i < nv; i++) { float w = cv[i].w; _wbuf[i] = w <= 1e-5f ? 1e-5f : w; }
+        return _wbuf;
+    }
+    float[] _wbuf;
+    /// <summary>Kit #11 gpu1 (SceneRenderer.K11Reuse.cs): while set, the draw Out finishes is copied into this entry (the frame's own emitter only).</summary>
+    internal SceneRenderer.K11Entry K11Rec;
     /// <summary>kit #7 spine: set for the duration of an EmitMesh whose draw may leave out its colour-0 triangles (Render/SpineSkip.cs).</summary>
     bool _skip0;
     /// <summary>Emit's index filter (idx.Where(i => i >= 0 && i &lt; nv)), then the draw.</summary>
-    public void Submit(Vertex[] v, int nv, int[] idx, NTexture tex, uint blend, bool sdf)
+    public void Submit(Vertex[] v, int nv, int[] idx, NTexture tex, uint blend, bool sdf, bool world = false)
     {
         if (IBuf.Length < idx.Length) IBuf = new int[Math.Max(idx.Length, IBuf.Length * 2)];
         var ib = IBuf; int ni = 0; for (int k = 0; k < idx.Length; k++) { int ix = idx[k]; if (ix >= 0 && ix < nv) ib[ni++] = ix; }
-        Out(v, nv, ib, ni, tex, blend, sdf);
+        Out(v, nv, ib, ni, tex, blend, sdf, world);   // (world: kit #13 looks -- the world emitters' draws, never the UI pass's)
     }
 
     public void EmitSprite(Vector2[] verts, Vector2[] uvs, ushort[] tris, bool fx, bool fy, in Matrix4x4 lw, in Matrix4x4 vp, in RectF pr, float gh, NTexture tex, Color tint, uint blend)
@@ -76,7 +94,7 @@ internal sealed class WorldEmitter
         if (IBuf.Length < tris.Length) IBuf = new int[Math.Max(tris.Length, IBuf.Length * 2)];
         var ib = IBuf; int ni = 0; for (int k = 0; k < tris.Length; k++) { int ix = tris[k]; if (ix >= 0 && ix < nv) ib[ni++] = ix; }
         if (outside) { ni = ClipTriangles(ni, ref nv, in pr, gh); v = VBuf; }
-        Out(v, nv, IBuf, ni, tex, blend, false);
+        Out(v, nv, IBuf, ni, tex, blend, false, true);
     }
 
     public void EmitMesh(Vector3[] pos, Color32[] col, Vector4[] uv, int[] idx, in Matrix4x4 lw, in Matrix4x4 vp, in RectF pr, float gh, NTexture tex, Color tint, uint blend, bool skipZero = false)
@@ -113,11 +131,11 @@ internal sealed class WorldEmitter
                 SceneRenderer.Project(in lw, in vp, in pr, gh, p.x, p.y, p.z, out var sx, out var sy, ref cv[i], ref outside);
                 SceneRenderer.Vertex(ref v[i], sx, sy, col, uv, i, tint, premul);
             }
-        if (!outside) { Submit(v, pos.Length, idx, tex, blend, false); return; }
+        if (!outside) { Submit(v, pos.Length, idx, tex, blend, false, true); return; }
         if (IBuf.Length < idx.Length) IBuf = new int[Math.Max(idx.Length, IBuf.Length * 2)];
         var ib = IBuf; int nv = pos.Length, ni = 0; for (int k = 0; k < idx.Length; k++) { int ix = idx[k]; if (ix >= 0 && ix < nv) ib[ni++] = ix; }
         ni = ClipTriangles(ni, ref nv, in pr, gh);
-        Out(VBuf, nv, IBuf, ni, tex, blend, false);
+        Out(VBuf, nv, IBuf, ni, tex, blend, false, true);
     }
 
     /// <summary>Glow: an additive mesh with no texture (the volumetric light spheres) as a soft disc: per vertex, the tint x f^2 where f is
@@ -150,7 +168,7 @@ internal sealed class WorldEmitter
         if (IBuf.Length < idx.Length) IBuf = new int[Math.Max(idx.Length, IBuf.Length * 2)];
         var ib = IBuf; int ni = 0; for (int k = 0; k < idx.Length; k++) { int ix = idx[k]; if (ix >= 0 && ix < nv) ib[ni++] = ix; }
         if (outside) ni = ClipTriangles(ni, ref nv, in pr, gh);
-        Out(VBuf, nv, IBuf, ni, white, blend, false);
+        Out(VBuf, nv, IBuf, ni, white, blend, false, true);
     }
 
     /// <summary>IBuf[0..ni) (whole triangles of the current draw, vertices VBuf/_cvbuf[0..nv)) clipped against the near and far planes:

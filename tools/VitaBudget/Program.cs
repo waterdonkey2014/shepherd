@@ -191,7 +191,7 @@ public static class Program
                             if (e.Str("first") is not { } path || !paths.Contains(path)) continue;
                             var ptr = e.Obj("second")?.PPtr("asset") ?? default;
                             var (tf, to) = db.Resolve(f, ptr);
-                            if (to == null) continue;
+                            if (to.IsNull) continue;
                             seededAssets.Add(path);
                             if (seen.Add((tf.Name, to.PathId))) q.Enqueue((tf, to));
                         }
@@ -225,7 +225,7 @@ public static class Program
             {
                 if (p.IsNull || p.PathId == 0) continue;
                 var (tf, to) = db.Resolve(f, p);
-                if (to == null) { unresolved++; continue; }
+                if (to.IsNull) { unresolved++; continue; }
                 if (seen.Add((tf.Name, to.PathId)))
                 {
                     depth[(tf.Name, to.PathId)] = dep + 1;

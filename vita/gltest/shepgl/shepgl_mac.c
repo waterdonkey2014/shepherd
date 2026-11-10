@@ -14,7 +14,7 @@ static const entry k_entries[] = {
 #include "shepgl_entries.h"
 };
 #undef SHEPGL_E
-_Static_assert(sizeof k_entries / sizeof k_entries[0] == SHEPGL_COUNT, "Gl.cs has 51 entry points");
+_Static_assert(sizeof k_entries / sizeof k_entries[0] == SHEPGL_COUNT, "Gl.cs has SHEPGL_COUNT entry points");
 
 /* The Mac rehearsal feeds GlBackend's essl100 dialect: "#version 100" + "precision <p> float;" + the body. Apple's legacy (2.1)
  * compiler accepts neither line (it knows GLSL 1.20 only), so a source whose first line is "#version 100" gets "#version 120"

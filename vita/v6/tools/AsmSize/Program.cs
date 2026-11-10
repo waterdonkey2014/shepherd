@@ -26,7 +26,200 @@ static class P
         if (a.Length >= 3 && a[0] == "pinvokes") return PInvokes(a[1], a.Skip(2).ToArray());
         if (a.Length >= 2 && a[0] == "typenames") return TypeNames(a.Skip(1).ToArray());
         if (a.Length >= 2 && a[0] == "literals") return Literals(a[1]);
+        if (a.Length >= 6 && a[0] == "remaptok") return RemapTok(a[1], a[2], a[3], a[4], a[5]);
+        if (a.Length >= 5 && a[0] == "remapname") return RemapName(a[1], a[2], a[3], a[4]);
+        if (a.Length >= 6 && a[0] == "addhot") return AddHot(a[1], a[2], a[3], a[4], a[5]);
+        if (a.Length >= 5 && a[0] == "tok2id") return TokToId(a[1], a[2], a[3], a[4]);
         Console.Error.WriteLine("usage: AsmSize sizes <assemblies.txt> <out.tsv> | AsmSize refs <out.tsv> <dll|dir>... | AsmSize pinvokes <out.tsv> <dll|dir>..."); return 2;
+    }
+
+    // ---- kit #12 boot track: the cold recipe's ran list moved to another build of the same assembly (vita/notes/kit12-boot.md section 5) ----
+    /// <summary>AsmSize remaptok &lt;from.dll&gt; &lt;to.dll&gt; &lt;image&gt; &lt;in.tsv&gt; &lt;out.tsv&gt;: the "&lt;image&gt;\t&lt;method token&gt;" lines of in.tsv for
+    /// <paramref name="image"/> are translated from from.dll's method tokens to to.dll's -- the same method = the same declaring type (full name,
+    /// nesting included), name, generic arity and decoded signature (type NAMES: a type added before another moves its token too) -- every other
+    /// line copied as it is; a method to.dll does not have is dropped, a from.dll token that names no method is dropped. The launcher builds
+    /// compile the engine with the kit #8 boot code (SHEPHERD_K8_ENGINE=1), which adds methods and types and so moves the tokens the ran list
+    /// (made on the eboot builds' engine) names: in kit #11 the game-AOT launcher marked 1,120 engine methods hot that the eboot marks cold (and
+    /// the reverse) -- diagnostic methods compiled without the cold inline cap, ~162 KB of text, its eboot span 305..306.</summary>
+    static int RemapTok(string from, string to, string image, string inTsv, string outTsv)
+    {
+        Dictionary<int, string> Ids(string dll)
+        {
+            using var pe = new PEReader(File.OpenRead(dll)); var md = pe.GetMetadataReader();
+            var prov = new K12SigNames(md); var map = new Dictionary<int, string>();
+            foreach (var mh in md.MethodDefinitions)
+            {
+                var m = md.GetMethodDefinition(mh);
+                string sig; try { var ms = m.DecodeSignature(prov, null); sig = ms.ReturnType + "(" + string.Join(",", ms.ParameterTypes) + ")`" + ms.GenericParameterCount; } catch (Exception e) { sig = "?" + e.GetType().Name + Convert.ToHexString(md.GetBlobBytes(m.Signature)); }
+                map[MetadataTokens.GetToken(mh)] = K12SigNames.TypeName(md, m.GetDeclaringType()) + "::" + md.GetString(m.Name) + "/" + sig;
+            }
+            return map;
+        }
+        var a = Ids(from); var b = Ids(to);
+        var byId = new Dictionary<string, int>();
+        foreach (var kv in b) byId.TryAdd(kv.Value, kv.Key);   // (an identity twice in one assembly: the first token)
+        // kit #12 integration: a SECOND CHANCE for compiler-generated methods (lambdas, closure classes, local functions). Their names carry the
+        // ordinal of the enclosing method in its class (<>c__DisplayClass124_0, <Main>b__17_0, <F>g__P|152_0), so a method added earlier in the
+        // same class renames every lambda after it although the lambda is the same code: 35 hot engine lambdas fell out of the merged kit #12
+        // list (MtBackend's RunOnApi / Api* closures, SceneRenderer's DrawOverlayCanvasesRef, CameraIcalls / RenderIcalls K9). With the ordinals
+        // taken out, a line moves when its identity is UNIQUE in both builds (a closure class's .ctor never is: those stay dropped).
+        // SHEPHERD_K12_COLD_REMAP_LAMBDA=0 = exact identities only (the boot track's remaptok).
+        bool lam = Environment.GetEnvironmentVariable("SHEPHERD_K12_COLD_REMAP_LAMBDA") != "0";
+        static string Norm(string id) => System.Text.RegularExpressions.Regex.Replace(id, @"(DisplayClass|b__|g__[^|/:]*\|)\d+_", "$1#_");
+        var na = new Dictionary<string, int>(); var nb = new Dictionary<string, List<int>>();
+        if (lam)
+        {
+            foreach (var kv in a) { var k = Norm(kv.Value); na[k] = na.TryGetValue(k, out var c) ? c + 1 : 1; }
+            foreach (var kv in b) { var k = Norm(kv.Value); if (!nb.TryGetValue(k, out var l)) nb[k] = l = new List<int>(); l.Add(kv.Key); }
+        }
+        int n = 0, moved = 0, same = 0, dropped = 0, byLam = 0;
+        using var w = new StreamWriter(outTsv);
+        foreach (var line in File.ReadLines(inTsv))
+        {
+            var f = line.Split('\t');
+            if (line.StartsWith("#") || f.Length < 2 || f[0] != image) { w.WriteLine(line); continue; }
+            n++;
+            int tok = Convert.ToInt32(f[1].Trim(), 16);
+            if (!a.TryGetValue(tok, out var id)) { dropped++; continue; }
+            if (!byId.TryGetValue(id, out var nt))
+            {
+                var k = lam && id != Norm(id) ? Norm(id) : null;
+                if (k == null || na.GetValueOrDefault(k) != 1 || !nb.TryGetValue(k, out var l) || l.Count != 1) { dropped++; continue; }
+                nt = l[0]; byLam++;
+            }
+            if (nt == tok) same++; else moved++;
+            f[1] = nt.ToString("x8"); w.WriteLine(string.Join("\t", f));
+        }
+        Console.WriteLine($"remaptok {image}: {n} lines -- {same} at the same token, {moved} moved, {dropped} dropped (no such method in {Path.GetFileName(to)}); {a.Count} / {b.Count} methods in the two builds" + (lam ? $"; {byLam} compiler-generated by their name without its ordinal" : "; exact identities only (SHEPHERD_K12_COLD_REMAP_LAMBDA=0)"));
+        return 0;
+    }
+
+    /// <summary>kit #12 integration: AsmSize remapname &lt;to.dll&gt; &lt;image&gt; &lt;in.tsv&gt; &lt;out.tsv&gt; -- the learned-AOT list's method records
+    /// for <paramref name="image"/> ("m\t&lt;image&gt;\t&lt;token&gt;\t&lt;image&gt;!&lt;token&gt;\t&lt;Namespace.Type:Method&gt;\t...", vita/tools/k10_learn.py
+    /// safe v3) moved to to.dll's token of the method the record NAMES (its 5th column): the list was made on kit #10's engine, and the engine's
+    /// tokens move with every new engine method or type (in kit #11's engine its four Shepherd.Engine records named LogDiet:Summary,
+    /// LogDiet:.cctor, K9House:.cctor and IPhysCore:Scene3DStats, not the four accessors k10_learn.py safe had checked). A name to.dll holds
+    /// once = that token; a name it holds zero or several times (overloads) = the record dropped (it stays interpreted, as before kit #10).
+    /// Every other line copied as it is (the header first: build.sh checks it).</summary>
+    static int RemapName(string to, string image, string inTsv, string outTsv)
+    {
+        var byName = new Dictionary<string, List<int>>();
+        using (var pe = new PEReader(File.OpenRead(to)))
+        {
+            var md = pe.GetMetadataReader();
+            foreach (var mh in md.MethodDefinitions)
+            {
+                var m = md.GetMethodDefinition(mh);
+                var k = K12SigNames.TypeName(md, m.GetDeclaringType()) + ":" + md.GetString(m.Name);
+                if (!byName.TryGetValue(k, out var l)) byName[k] = l = new List<int>();
+                l.Add(MetadataTokens.GetToken(mh));
+            }
+        }
+        int n = 0, same = 0, moved = 0, dropped = 0;
+        using var w = new StreamWriter(outTsv);
+        foreach (var line in File.ReadLines(inTsv))
+        {
+            var f = line.Split('\t');
+            if (line.StartsWith("#") || f.Length < 5 || f[0] != "m" || f[1] != image) { w.WriteLine(line); continue; }
+            n++;
+            if (!byName.TryGetValue(f[4], out var l) || l.Count != 1) { dropped++; Console.WriteLine($"  dropped: {f[4]} ({(l == null ? "no such method" : l.Count + " methods of that name")})"); continue; }
+            var nt = l[0].ToString("x8");
+            if (nt == f[2].Trim().ToLowerInvariant()) same++; else moved++;
+            Console.WriteLine($"  {f[4]}: {f[2]} -> {nt}");
+            f[2] = nt; f[3] = image + "!" + nt; w.WriteLine(string.Join("\t", f));
+        }
+        Console.WriteLine($"remapname {image}: {n} learned records -- {same} at the same token, {moved} moved to the token of the method they name, {dropped} dropped (absent or overloaded in {Path.GetFileName(to)})");
+        return 0;
+    }
+    // ---- kit #13 speed: AOT lists keyed by METHOD NAME (vita/notes/kit13-speed.md) ----
+    /// <summary>The method identities of one assembly: token -> "Type::Name/sig`arity" (remaptok's identity) and "Type:Name" -> tokens.</summary>
+    static (Dictionary<int, string> ids, Dictionary<string, List<int>> byName, Dictionary<string, int> byId) K13Ids(string dll)
+    {
+        using var pe = new PEReader(File.OpenRead(dll)); var md = pe.GetMetadataReader();
+        var prov = new K12SigNames(md); var ids = new Dictionary<int, string>(); var byName = new Dictionary<string, List<int>>(); var byId = new Dictionary<string, int>();
+        foreach (var mh in md.MethodDefinitions)
+        {
+            var m = md.GetMethodDefinition(mh); int tok = MetadataTokens.GetToken(mh);
+            string sig; try { var ms = m.DecodeSignature(prov, null); sig = ms.ReturnType + "(" + string.Join(",", ms.ParameterTypes) + ")`" + ms.GenericParameterCount; } catch (Exception e) { sig = "?" + e.GetType().Name + Convert.ToHexString(md.GetBlobBytes(m.Signature)); }
+            string tn = K12SigNames.TypeName(md, m.GetDeclaringType()), nm = md.GetString(m.Name), id = tn + "::" + nm + "/" + sig;
+            ids[tok] = id; byId.TryAdd(id, tok);
+            var k = tn + ":" + nm; if (!byName.TryGetValue(k, out var l)) byName[k] = l = new List<int>(); l.Add(tok);
+        }
+        return (ids, byName, byId);
+    }
+    /// <summary>AsmSize addhot &lt;dll&gt; &lt;image&gt; &lt;names.txt&gt; &lt;in.tsv&gt; &lt;out.tsv&gt;: the cold recipe's ran list (in.tsv, copied as it is) plus a
+    /// "&lt;image&gt;\t&lt;token&gt;" line for every method of dll that names.txt names and the list does not have yet: HOT BY NAME, whatever the
+    /// tokens did. A names.txt line is "Namespace.Type:Method" (every overload; nested types Outer/Inner) or an exact identity
+    /// "Namespace.Type::Method/sig`arity", either alone (a Shepherd.Engine method) or after "&lt;image&gt;\t" (tok2id's form); '#' starts a comment. A name dll does not hold is reported (and skipped).</summary>
+    static int AddHot(string dll, string image, string namesTxt, string inTsv, string outTsv)
+    {
+        var (ids, byName, byId) = K13Ids(dll);
+        var have = new HashSet<int>(); var lines = new List<string>();
+        foreach (var line in File.ReadLines(inTsv))
+        {
+            lines.Add(line); var f = line.Split('\t');
+            if (!line.StartsWith("#") && f.Length >= 2 && f[0] == image) { try { have.Add(Convert.ToInt32(f[1].Trim(), 16)); } catch (FormatException) { } }
+        }
+        int names = 0, missing = 0, added = 0, already = 0;
+        foreach (var raw in File.ReadLines(namesTxt))
+        {
+            var n = raw.Split('#')[0].Trim(); if (n.Length == 0) continue;
+            if (n.Contains('\t')) { var f = n.Split('\t'); if (f[0] != image) continue; n = f[1].Trim(); }
+            else if (image != "Shepherd.Engine") continue;   // (a line without an image column names a Shepherd.Engine method)
+            names++;
+            List<int> toks = n.Contains("::") ? (byId.TryGetValue(n, out var t1) ? new List<int> { t1 } : null) : (byName.TryGetValue(n, out var l) ? l : null);
+            if (toks == null) { missing++; Console.WriteLine($"  not in {Path.GetFileName(dll)}: {n}"); continue; }
+            foreach (var t in toks) { if (have.Add(t)) { added++; lines.Add(image + "\t" + t.ToString("x8")); } else already++; }
+        }
+        File.WriteAllLines(outTsv, lines);
+        Console.WriteLine($"addhot {image}: {names} names -- {added} methods added hot, {already} already hot, {missing} names not found; {ids.Count} methods in {Path.GetFileName(dll)}");
+        return 0;
+    }
+    /// <summary>AsmSize tok2id &lt;dll&gt; &lt;image&gt; &lt;in.tsv&gt; &lt;out.txt&gt;: a token-keyed list's lines for image ("&lt;image&gt;\t&lt;token&gt;", e.g. k10_learn.py
+    /// hot's output from first-call traces of THIS build) as "&lt;image&gt;\t&lt;exact identity&gt;" lines, which addhot reads in any later build.</summary>
+    static int TokToId(string dll, string image, string inTsv, string outTxt)
+    {
+        var (ids, _, _) = K13Ids(dll);
+        int n = 0, bad = 0; var outl = new List<string> { $"# AsmSize tok2id: the {image} lines of {Path.GetFileName(inTsv)} by method identity ({Path.GetFileName(dll)})" };
+        foreach (var line in File.ReadLines(inTsv))
+        {
+            var f = line.Split('\t'); if (line.StartsWith("#") || f.Length < 2 || f[0] != image) continue;
+            n++; int tok; try { tok = Convert.ToInt32(f[1].Trim(), 16); } catch (FormatException) { bad++; continue; }
+            if (ids.TryGetValue(tok, out var id)) outl.Add(image + "\t" + id); else bad++;
+        }
+        File.WriteAllLines(outTxt, outl);
+        Console.WriteLine($"tok2id {image}: {n} lines -- {n - bad} named, {bad} not a method of {Path.GetFileName(dll)}");
+        return 0;
+    }
+    /// <summary>Type names for decoded signatures (enough to tell two methods apart).</summary>
+    sealed class K12SigNames : ISignatureTypeProvider<string, object>
+    {
+        readonly MetadataReader _md; public K12SigNames(MetadataReader md) => _md = md;
+        public static string TypeName(MetadataReader md, TypeDefinitionHandle h)
+        {
+            var t = md.GetTypeDefinition(h); var name = md.GetString(t.Name);
+            for (var d = t.GetDeclaringType(); !d.IsNil; d = md.GetTypeDefinition(d).GetDeclaringType()) { name = md.GetString(md.GetTypeDefinition(d).Name) + "/" + name; t = md.GetTypeDefinition(d); }
+            var ns = md.GetString(t.Namespace); return ns.Length > 0 ? ns + "." + name : name;
+        }
+        public string GetPrimitiveType(PrimitiveTypeCode c) => c.ToString();
+        public string GetTypeFromDefinition(MetadataReader md, TypeDefinitionHandle h, byte k) => TypeName(md, h);
+        public string GetTypeFromReference(MetadataReader md, TypeReferenceHandle h, byte k)
+        {
+            var r = md.GetTypeReference(h); var ns = md.GetString(r.Namespace); var nm = md.GetString(r.Name);
+            if (r.ResolutionScope.Kind == HandleKind.TypeReference) return GetTypeFromReference(md, (TypeReferenceHandle)r.ResolutionScope, k) + "/" + nm;
+            return ns.Length > 0 ? ns + "." + nm : nm;
+        }
+        public string GetTypeFromSpecification(MetadataReader md, object c, TypeSpecificationHandle h, byte k) => md.GetTypeSpecification(h).DecodeSignature(this, c);
+        public string GetSZArrayType(string e) => e + "[]";
+        public string GetArrayType(string e, ArrayShape s) => e + "[" + new string(',', s.Rank - 1) + "]";
+        public string GetByReferenceType(string e) => e + "&";
+        public string GetPointerType(string e) => e + "*";
+        public string GetPinnedType(string e) => e + " pinned";
+        public string GetGenericInstantiation(string g, System.Collections.Immutable.ImmutableArray<string> a) => g + "<" + string.Join(",", a) + ">";
+        public string GetGenericTypeParameter(object c, int i) => "!" + i;
+        public string GetGenericMethodParameter(object c, int i) => "!!" + i;
+        public string GetFunctionPointerType(MethodSignature<string> s) => "fnptr(" + string.Join(",", s.ParameterTypes) + ")" + s.ReturnType;
+        public string GetModifiedType(string m, string u, bool req) => u + (req ? " modreq(" : " modopt(") + m + ")";
     }
 
     // ---- literals (V6 stage 2) ----

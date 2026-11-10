@@ -75,7 +75,7 @@ static class Subset
                 {
                     if (p.IsNull || p.PathId == 0) continue;
                     var (tf, to) = db.Resolve(f, p);
-                    if (to != null && seen.Add((tf.Name, to.PathId))) q.Enqueue((label, tf, to));
+                    if (!to.IsNull && seen.Add((tf.Name, to.PathId))) q.Enqueue((label, tf, to));
                 }
             }
             Program.Log($"subset: reached + scanned {scanned} objects, {bytes / 1048576.0:F1} MiB");

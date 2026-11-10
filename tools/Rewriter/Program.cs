@@ -8,6 +8,10 @@ var managed = args[0]; var outDir = args[1]; Directory.CreateDirectory(outDir);
 bool vita = args.Skip(2).Contains("--vita");
 var resolver = new DefaultAssemblyResolver(); resolver.AddSearchDirectory(managed);
 var rp = new ReaderParameters { AssemblyResolver = resolver, ReadingMode = ReadingMode.Immediate, ReadSymbols = false };
+// Device kit #14 (track small, vita/notes/kit14-small.md): --only-addr-lazy = the Unity.Addressables.dll pass alone (AddrPasses.cs), nothing else
+// read or written; --addr-lazy = the same pass next to a full run (below). Without either flag every output is what it always was.
+if (args.Skip(2).Contains("--only-addr-lazy")) Environment.Exit(AddrPasses.Run(managed, outDir, rp));
+if (args.Length > 2 && args[2] == "--rekey-tokens") Environment.Exit(AddrPasses.Rekey(managed, outDir, rp, args.Skip(3).ToArray()));
 bool IsBcl(string n) => n is "mscorlib" or "netstandard" || n.StartsWith("System") || n.StartsWith("Mono.") || n.StartsWith("Microsoft.");
 
 // Pass 1: collect every icall in a stable order so ids are deterministic.
@@ -190,6 +194,7 @@ if (vita)
 // --spine-share alone the output is byte-for-byte kit #6's.
 bool spShare = args.Skip(2).Contains("--spine-share"), spLazy = args.Skip(2).Contains("--spine-lazyskin"), spClip = args.Skip(2).Contains("--spine-clip");
 if ((spShare || spLazy || spClip) && SpinePasses.Run(managed, outDir, rp, spShare, spLazy, spClip) != 0) { Console.Error.WriteLine("spine passes: refused (see above); spine-unity.dll not written"); Environment.Exit(3); }
+if (args.Skip(2).Contains("--addr-lazy") && AddrPasses.Run(managed, outDir, rp) != 0) { Console.Error.WriteLine("--addr-lazy: refused (see above); Unity.Addressables.dll not written"); Environment.Exit(3); }
 File.WriteAllText(Path.Combine(outDir, "icalls.json"), JsonSerializer.Serialize(manifest, new JsonSerializerOptions { WriteIndented = false }));
 Console.WriteLine($"rewrote {icalls.Count} icalls in {mods.Count} assemblies ({unsupported} with span/byref-return parts stubbed) -> {outDir}");
 foreach (var (file, a) in mods) Console.WriteLine($"  {a.Name.Name}: {a.MainModule.GetTypes().SelectMany(t => t.Methods).Count(m => m.HasBody && m.Body.Instructions.Any(i => i.Operand is MethodReference r && r.Name == "Call" && r.DeclaringType.Name == "Icalls"))}");

@@ -24,6 +24,9 @@ public sealed class FrameTimes
         long t1 = Stopwatch.GetTimestamp(), al = GC.GetAllocatedBytesForCurrentThread();
         bool mt = g is MtBackend;   // SHEPHERD_MT_RENDER=1: frame i reaches the backend later; its draw counts are filled in when it has
         if (i >= _from && i <= _to) _rows.Add((i, (t1 - t0) * 1000.0 / Stopwatch.Frequency, SceneRenderer.LastFrameTicks * 1000.0 / Stopwatch.Frequency, al - _alloc0, mt ? -1 : g.Stats.DrawsIn, mt ? -1 : g.Stats.DrawsOut));
+#if !SHEPHERD_EBOOT
+        if (K12Ui.FrameCsv != null) K12Ui.Csv(i, (t1 - t0) * 1000.0 / Stopwatch.Frequency, SceneRenderer.LastFrameTicks * 1000.0 / Stopwatch.Frequency, al - _alloc0, mt ? -1 : g.Stats.DrawsIn, mt ? -1 : g.Stats.DrawsOut);   // kit #12 menusa (Mac measurement only)
+#endif
         _alloc0 = al;
         if (mt) FillMt((MtBackend)g);
     }
@@ -40,7 +43,7 @@ public sealed class FrameTimes
         return $"mean {a.Average():F2} p50 {P(0.5):F2} p95 {P(0.95):F2} max {a[^1]:F2} ms";
     }
     public void Shot(int i, IRenderBackend g) => Log.Info($"[render] frame {i}: {g.Name} {g.Stats} | scene culled={SceneRenderer.LastCulled} clipTris={SceneRenderer.LastClipTris} dropTris={SceneRenderer.LastDropTris} rtCams={SceneRenderer.LastRtCams} (skipped {SceneRenderer.LastRtSkipped}) fx skip={SceneRenderer.LastFxSkips} blend={SceneRenderer.LastFxBlends} glow={SceneRenderer.LastFxGlows} grab={SceneRenderer.LastFxGrabs} rtZero={SceneRenderer.LastFxRtZero}" +
-        $" | fidelity lut={PostStats.Lut} maskDraws={PostStats.MaskDraws} (unsupported {PostStats.MaskSkipped}) litDraws={SceneRenderer.ShadingStats.Lit} foggedVerts={SceneRenderer.ShadingStats.Fog} triggers2d colliders={Runtime.Triggers2D.LastColliders} tests={Runtime.Triggers2D.LastTests} callbacks={Runtime.Triggers2D.LastCallbacks} pairs={Runtime.Triggers2D.LastPairs} (since start: {Runtime.Triggers2D.Steps} steps, {Runtime.Triggers2D.PairSteps} pair-steps, {Runtime.Triggers2D.MatrixSkips} layer-matrix skips)");
+        $" | fidelity lut={PostStats.Lut} maskDraws={PostStats.MaskDraws} (unsupported {PostStats.MaskSkipped}) litDraws={SceneRenderer.ShadingStats.Lit} foggedVerts={SceneRenderer.ShadingStats.Fog} triggers2d colliders={Runtime.Triggers2D.LastColliders} tests={Runtime.Triggers2D.LastTests} callbacks={Runtime.Triggers2D.LastCallbacks} pairs={Runtime.Triggers2D.LastPairs} (since start: {Runtime.Triggers2D.Steps} steps, {Runtime.Triggers2D.PairSteps} pair-steps, {Runtime.Triggers2D.MatrixSkips} layer-matrix skips)" + K11World.Line(g.Stats) + K12Ui.Line());
     static (int Lut, int MaskDraws, int MaskSkipped) PostStats => DerivedRender.Post?.LastStats ?? default;
     public void Summary(IRenderBackend g)
     {

@@ -368,12 +368,18 @@ static void k10_fp_bench (void)
 	unsigned fb0, fb1;
 	memcpy (&fb0, &rf [0], 4);
 	memcpy (&fb1, &rf [1], 4);
+	unsigned long long db0, db1;   /* device kit #11 (track device): the double results' bits too -- kit #10's device run printed "NOT as expected"
+	                                  for the doubles without the values (vita/notes/progress-log.md "Kit #10 on the Vita") */
+	memcpy (&db0, &rd [0], 8);
+	memcpy (&db1, &rd [1], 8);
 	LOG ("K10 FP bench (main thread, %d multiply-adds per cell, the median of 3 interleaved rounds, ns per op; clock as CLK says): float normal "
 	     "FZ1 %.2f / FZ0 %.2f, float DENORMAL FZ1 %.2f / FZ0 %.2f (x%.2f); double normal FZ1 %.2f / FZ0 %.2f, double DENORMAL FZ1 %.2f / FZ0 %.2f "
-	     "(x%.2f); denormal results FZ0 0x%08x (kept) / FZ1 0x%08x (flushed), double %s -- the PC's rules cost only on maths that meets denormals "
-	     "(VLX timings are meaningless: qemu)", K10_BENCH_N,
+	     "(x%.2f); denormal results FZ0 0x%08x (kept) / FZ1 0x%08x (flushed), double FZ0 0x%016llx / FZ1 0x%016llx %s -- the PC's rules cost only on maths "
+	     "that meets denormals (VLX timings are meaningless: qemu)", K10_BENCH_N,
 	     md [1][0] * 1000.0 / K10_BENCH_N, md [0][0] * 1000.0 / K10_BENCH_N, md [1][1] * 1000.0 / K10_BENCH_N, md [0][1] * 1000.0 / K10_BENCH_N,
 	     md [1][1] ? (double) md [0][1] / md [1][1] : 0.0,
 	     md [1][2] * 1000.0 / K10_BENCH_N, md [0][2] * 1000.0 / K10_BENCH_N, md [1][3] * 1000.0 / K10_BENCH_N, md [0][3] * 1000.0 / K10_BENCH_N,
-	     md [1][3] ? (double) md [0][3] / md [1][3] : 0.0, fb0, fb1, rd [0] != 0.0 && rd [1] == 0.0 ? "kept / flushed" : "NOT as expected");
+	     md [1][3] ? (double) md [0][3] / md [1][3] : 0.0, fb0, fb1, db0, db1,
+	     rd [0] != 0.0 && rd [1] == 0.0 ? "(kept / flushed)" : rd [0] == 0.0 && rd [1] == 0.0 ? "(NOT as expected: both zero -- the double denormals flushed under FZ0 too)"
+	     : rd [1] != 0.0 ? "(NOT as expected: FZ1 kept a double denormal)" : "(NOT as expected)");
 }

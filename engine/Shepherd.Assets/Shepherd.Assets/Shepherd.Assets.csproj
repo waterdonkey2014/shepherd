@@ -17,4 +17,15 @@
   <PropertyGroup Condition="'$(ShepherdK8)' == '0'">
     <DefineConstants>$(DefineConstants);SHEPHERD_NO_K8</DefineConstants>
   </PropertyGroup>
+  <!-- device kit #11 walk track: -p:ShepherdK11Records=0 (a global property, as ShepherdEboot) = kit #10's ObjectInfo layout (SHEPHERD_K10_RECORDS)
+       as Shepherd.Engine's records. -->
+  <PropertyGroup Condition="'$(ShepherdK11Records)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_K10_RECORDS</DefineConstants>
+  </PropertyGroup>
+  <!-- device kit #12 walkb (review fix): -p:ShepherdK12TocCode=0 (a global property, as ShepherdEboot; vita/shepherd/build.sh
+       SHEPHERD_K12_TOC_CODE=0) = kit #11's index entries (compile symbol SHEPHERD_K11_TOC: ObjectInfo a class, one object per entry) as
+       Shepherd.Engine's callers: kit #11's eboot span. An eboot switch: the Mac tools and tests compile the view only. -->
+  <PropertyGroup Condition="'$(ShepherdK12TocCode)' == '0'">
+    <DefineConstants>$(DefineConstants);SHEPHERD_K11_TOC</DefineConstants>
+  </PropertyGroup>
 </Project>

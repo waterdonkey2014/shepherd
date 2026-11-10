@@ -18,6 +18,13 @@ varying vec2 v_screen;
 attribute vec4 a_add;
 varying vec4 v_add;
 #endif
+#ifdef PERSP
+// kit #13 looks (SHEPHERD_K13_PERSP=1): a world draw under a perspective camera carries each vertex's clip w in the added-colour stream's
+// fourth component (sign = the ADD variant's premultiplied mark), so the GPU interpolates uv and colour perspective-correctly as Unity's does
+#ifndef ADD
+attribute vec4 a_add;
+#endif
+#endif
 void main()
 {
     v_color = a_color;
@@ -28,5 +35,13 @@ void main()
 #ifdef ADD
     v_add = a_add;
 #endif
+#ifdef PERSP
+    float w = abs(a_add.w);
+#ifdef ADD
+    v_add.a = a_add.w < 0.0 ? 1.0 : 0.0;
+#endif
+    gl_Position = vec4((a_pos * u_xform.xy + u_xform.zw) * w, 0.0, w);
+#else
     gl_Position = vec4(a_pos * u_xform.xy + u_xform.zw, 0.0, 1.0);
+#endif
 }

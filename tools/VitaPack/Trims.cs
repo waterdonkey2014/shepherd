@@ -70,14 +70,14 @@ sealed partial class Baker
             else if (ControllerData.Parse(f.GetObjectBytes(o).ToArray()) is { } cd) def = cd.Default;
             else { TrimReport.Add($"  WARNING {f.Name} #{o.PathId}: ControllerDataFiles not readable: joystick maps kept"); Program.KeepJoystickMaps = true; Properties.Remove("joystick-maps"); return; }
             var (rf, ro) = _db.Resolve(f, def);
-            if (ro != null) _keepJoystickMaps.Add((rf, ro.PathId));
-            TrimReport.Add($"  {f.Name} #{o.PathId}: ControllerDataFiles; its default map {(ro != null ? $"{rf.Name} #{ro.PathId}" : "(none)")} is kept");
+            if (!ro.IsNull) _keepJoystickMaps.Add((rf, ro.PathId));
+            TrimReport.Add($"  {f.Name} #{o.PathId}: ControllerDataFiles; its default map {(!ro.IsNull ? $"{rf.Name} #{ro.PathId}" : "(none)")} is kept");
             var maps = f.HasTree(o) ? (TypeTreeReader.Read(f, o)["hardwareJoystickMaps"] as List<object>)?.OfType<PPtr>().ToList()
                 : ControllerData.Parse(f.GetObjectBytes(o).ToArray())?.Maps.Select(PPtrOf).ToList();
             foreach (var mp in maps ?? new List<PPtr>())
             {
                 var (mf, mo) = _db.Resolve(f, mp);
-                if (mo == null || JoystickMapName(mf, mo) != VitaPadMap) continue;
+                if (mo.IsNull || JoystickMapName(mf, mo) != VitaPadMap) continue;
                 _keepJoystickMaps.Add((mf, mo.PathId)); _vitaPadMaps.Add((mf, mo.PathId));
                 TrimReport.Add($"  {f.Name} #{o.PathId}: the Vita pad's hardware map '{VitaPadMap}' ({mf.Name} #{mo.PathId}) is kept");
             }
@@ -259,7 +259,7 @@ sealed partial class Baker
         public byte[] ToArray() => _m.ToArray();
     }
 
-    bool KeptPadMap(SerializedFile from, PPtr p) { var (rf, ro) = _db.Resolve(from, p); return ro != null && _vitaPadMaps.Contains((rf, ro.PathId)); }
+    bool KeptPadMap(SerializedFile from, PPtr p) { var (rf, ro) = _db.Resolve(from, p); return !ro.IsNull && _vitaPadMaps.Contains((rf, ro.PathId)); }
     static PPtr PPtrOf(byte[] raw) => new(BinaryPrimitives.ReadInt32LittleEndian(raw), BinaryPrimitives.ReadInt64LittleEndian(raw.AsSpan(4)));
     /// <summary>A stripped MonoBehaviour's header: m_GameObject, m_Enabled, m_Script, m_Name (kept verbatim). Its length.</summary>
     static int HeaderLength(Cur c) { int p0 = c.P; c.Pptr(); c.U8(); c.Align(); c.Pptr(); c.Str(); return c.P - p0; }

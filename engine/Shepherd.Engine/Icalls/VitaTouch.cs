@@ -82,7 +82,7 @@ public static class VitaTouch
     {
         var env = Environment.GetEnvironmentVariable("SHEPHERD_TOUCH_SCRIPT") ?? "";
         var file = Environment.GetEnvironmentVariable("SHEPHERD_TOUCH_FILE");
-        if (string.IsNullOrEmpty(file) && env.StartsWith('@')) { file = env[1..]; env = ""; }
+        if (string.IsNullOrEmpty(file) && env.StartsWith('@') && !Diag.MenuClock.InlineScreenItem(env, false)) { file = env[1..]; env = ""; }   // (kit #13 bootc review fix: "@Screen+N:tap:x,y ..." is a script, not a file)
         if (string.IsNullOrEmpty(file)) return env;
         if (!File.Exists(file)) { Log.Warn("[touch] SHEPHERD_TOUCH_FILE '" + file + "' not found (no scripted touches from a file)"); return env; }
         _scriptSource = env.Length > 0 ? "SHEPHERD_TOUCH_SCRIPT + " + file : file;
@@ -98,14 +98,14 @@ public static class VitaTouch
         {
             var p = item.Split(':');
             int k = p.Length >= 3 ? p[1].ToLowerInvariant() switch { "tap" => Tap, "touch" => Touch, "drag" => Drag, _ => -1 } : -1;
-            if (k >= 0 && Diag.MenuClock.Parse(p[0], out var at) && Xy(p[2], out var a))
+            if (k >= 0 && Diag.MenuClock.ParseAt(p[0], out var at) && Xy(p[2], out var a))   // (kit #13 bootc review fix: @Screen[+N] too, as the pad script)
             {
                 var b = a; int n = k == Drag ? 10 : 1, ni = 3; bool ok = true;
                 if (k == Drag) { ok = p.Length >= 4 && Xy(p[3], out b); ni = 4; }
                 if (ok && p.Length > ni) ok = k != Tap && p.Length == ni + 1 && int.TryParse(p[ni], out n) && n >= 1;
                 if (ok) { l.Add(new Item { At = at, K = k, A = a, B = b, N = n }); continue; }
             }
-            Log.Warn("[touch] script: cannot parse '" + item + "' (want F:tap:x,y | F:touch:x,y[:frames] | F:drag:x0,y0:x1,y1[:steps]; F = N or m+N; x,y in screen pixels from the top-left)");
+            Log.Warn("[touch] script: cannot parse '" + item + "' (want F:tap:x,y | F:touch:x,y[:frames] | F:drag:x0,y0:x1,y1[:steps]; F = N, m+N or @Screen[+N]; x,y in screen pixels from the top-left)");
         }
         return l.ToArray();
     }
@@ -174,7 +174,7 @@ public static class VitaTouch
         var t = Shepherd.Engine.Native.Objects.Get<Shepherd.Engine.Native.NTransform>(a[1]);
         if (t == null || t.Destroyed || t.Go == null) return Boxes.False;
         float lx, ly;
-        if (Render.SceneRenderer.UiScreenMatrix(t, out var m))
+        if (Render.K12Ui.RayMemo ? Render.SceneRenderer.UiScreenMatrixMemo(t, out var m) : Render.SceneRenderer.UiScreenMatrix(t, out m))   // (kit #12 menusa: the memo, off by default)
         {
             float det = m.m00 * m.m11 - m.m01 * m.m10;
             if (!(MathF.Abs(det) > 1e-12f)) return Boxes.False;
@@ -256,6 +256,24 @@ public static class VitaTouch
     /// A finger already down again at the release's next frame moves there instead of leaving.</summary>
     static void Step(int frame, bool contact, Vector2 cpos, bool tap, Vector2 tpos)
     {
+        if (Runtime.K12PressX.TouchHold)
+        {   // kit #13 bootc: while the title waits for Press X, the finger reaches the game not at all -- kit #12's pointer MOVE engaged it on the
+            // device (Runtime/K12PressX.cs TouchHold); a finger that touched during the wait stays swallowed until it leaves the glass
+            bool waiting = Runtime.K12PressX.Waiting;
+            if ((contact || tap) && !_k13Swallow && waiting) { _k13Swallow = true; Runtime.K12PressX.Held(); Runtime.K12PressX.SwallowedTouch(frame, false); }
+            if (_k13Swallow) { if (!contact) _k13Swallow = false; contact = false; tap = false; }
+            if (waiting)
+            {   // review fix: the pointer's state machine stands still while the title waits. A finger down (or just released, or a tap) from BEFORE
+                // the wait would otherwise step on during it -- Down -> Released (a button-up), then Released -> Up: the pointer leaves the screen,
+                // a MOVE, the device's kit #12 start trigger (the game engages on any action's button-down, a mouse axis included: Unify's
+                // Engagement / RewiredInputManager.GetGamePadWithAnyAction). Frozen: no event, no move (InputState.Pump zeroed this frame's
+                // delta); a button held from before stays held (no new press: the game needs a button-DOWN). A press still pending (Arrived: the
+                // finger landed the frame before) is dropped -- the pointer is left as released, so once the wait is over it leaves the screen
+                // with no click. After the wait the machine goes on: a swallowed finger reads as gone, so its release and leave come then.
+                if (_phase == Arrived) { _phase = Released; _releaseDue = false; Runtime.K12PressX.Held(); }
+                return;
+            }
+        }
         var old = _pos; string what = null; bool wasOn = _phase != Up;
         switch (_phase)
         {
@@ -273,6 +291,7 @@ public static class VitaTouch
                 if (_phase == Arrived) { if (TouchFrame < 0) Log.Info("[touch] f" + frame + " first touch"); TouchFrame = frame; TouchAt = _pos; }
                 break;
             case Arrived:   // the press where the finger landed (the point aimed at); a finger already moving is followed from the next frame
+                if (Runtime.K12PressX.On && Runtime.K12PressX.Waiting) { _phase = Up; Runtime.K12PressX.Held(); what = "held back (kit #12: Press X to Start)"; break; }   // kit #12 boot: no touch press while the title waits
                 if (!contact) _releaseDue = true;
                 _phase = Down; InputState.MouseDownBits |= 1; InputState.MouseHeld |= 1; _presses++; what = "down";
                 break;
@@ -293,6 +312,7 @@ public static class VitaTouch
         else if (DiagOn && _phase == Down && (d.x != 0 || d.y != 0)) Log.Info("[touch] f" + frame + " pointer drag to (" + _pos.x.ToString("F1") + "," + _pos.y.ToString("F1") + ") " + DiagLine());
     }
     static int _placements;
+    static bool _k13Swallow;   // kit #13 bootc: a finger that touched while the title waited (Press X), swallowed until it leaves the glass
     static Vector2 Off => new Vector2(-1f, AppIcalls.ScreenH + 1f);   // Unity (-1,-1): off the screen, below its left edge
 
     static FieldInfo _playersCount; static bool _playersLooked;
